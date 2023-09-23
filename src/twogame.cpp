@@ -85,3 +85,42 @@ void Twogame::initialize_filesystem(const char* argv0, const char* app_name)
     SDL_free(pref_path);
 #endif
 }
+
+void Twogame::start()
+{
+    Uint64 frame0_time = SDL_GetTicks64(), last_frame_time = frame0_time, frame_time = SDL_GetTicks64();
+    m_active = true;
+
+    while (m_active) {
+        SDL_Event evt;
+        while (SDL_PollEvent(&evt)) {
+            if (evt.type == SDL_QUIT) {
+                m_active = false;
+            } else if (evt.type == SDL_WINDOWEVENT) {
+                if (evt.window.event == SDL_WINDOWEVENT_HIDDEN) {
+                    while (evt.window.event != SDL_WINDOWEVENT_EXPOSED)
+                        SDL_WaitEvent(&evt);
+                }
+                if (evt.window.event == SDL_WINDOWEVENT_MINIMIZED) {
+                    while (evt.window.event != SDL_WINDOWEVENT_RESTORED)
+                        SDL_WaitEvent(&evt);
+                }
+            }
+
+            // logic(frame_time - last_frame_time)
+
+            int image_index = m_renderer->acquire_image();
+            if (image_index < 0) {
+                SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "failed to acquire image before rendering");
+                m_active = false;
+                break;
+            }
+            last_frame_time = frame_time;
+            frame_time = SDL_GetTicks64();
+
+            m_renderer->draw();
+            m_renderer->next_frame(image_index);
+        }
+        m_renderer->wait_idle();
+    }
+}
