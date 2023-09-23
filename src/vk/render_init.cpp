@@ -1,9 +1,9 @@
 #define VK_ENABLE_BETA_EXTENSIONS
-#include "fs.h"
 #include "vk.h"
 #include <algorithm>
 #include <csignal>
 #include <exception>
+#include <physfs.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
 #include <set>
@@ -64,10 +64,22 @@ VulkanRenderer::VulkanRenderer(SDL_Window* window)
     create_render_pass();
     create_framebuffers();
     create_pipeline_cache();
+    create_command_buffers();
+    create_synchronizers();
+    create_sampler();
 }
 
 VulkanRenderer::~VulkanRenderer()
 {
+    for (size_t i = 0; i < 2; i++) {
+        for (size_t j = 0; j < m_command_pools[i].size(); j++)
+            vkDestroyCommandPool(m_device, m_command_pools[i][j], nullptr);
+
+        vkDestroySemaphore(m_device, m_sem_image_available[i], nullptr);
+        vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
+        vkDestroySemaphore(m_device, m_sem_blit_finished[i], nullptr);
+        vkDestroyFence(m_device, m_fence_frame[i], nullptr);
+    }
     for (size_t i = 0; i < 2; i++) {
         vfree(m_framebuffers[i]);
         vfree(m_render_att_views[i]);
@@ -320,16 +332,14 @@ void VulkanRenderer::create_logical_device()
     qf_properties.resize(count);
     vkGetPhysicalDeviceQueueFamilyProperties(m_hwd, &count, qf_properties.data());
 
-    uint32_t qf_primary = UINT32_MAX, qf_compute = UINT32_MAX, qf_transfer = UINT32_MAX, qf_primary_count = 0;
+    uint32_t qf_primary = UINT32_MAX, qf_compute = UINT32_MAX, qf_transfer = UINT32_MAX;
     VkDeviceSize transfer_granularity = 4000000000UL;
     for (uint32_t i = 0; i < count; i++) {
         if ((qf_properties[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
             VkBool32 present_support = VK_FALSE;
             vkGetPhysicalDeviceSurfaceSupportKHR(m_hwd, i, m_surface, &present_support);
-            if (present_support && qf_primary == UINT32_MAX) {
+            if (qf_primary == UINT32_MAX && present_support)
                 qf_primary = i;
-                qf_primary_count = qf_properties[i].queueCount;
-            }
         }
         if ((qf_properties[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && (qf_properties[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0) {
             if (qf_compute == UINT32_MAX && qf_properties[i].queueCount > 0)
@@ -348,48 +358,42 @@ void VulkanRenderer::create_logical_device()
         }
     }
 
-    int queue_family_count = 1;
-    queue_createinfos[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_createinfos[0].queueFamilyIndex = qf_primary;
-    queue_createinfos[0].queueCount = std::min(qf_primary_count, 2U);
-    queue_createinfos[0].pQueuePriorities = s_queue_priorities;
+    int queue_family_count = 0;
+    queue_createinfos[queue_family_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queue_createinfos[queue_family_count].queueFamilyIndex = qf_primary;
+    queue_createinfos[queue_family_count].queueCount = 1;
+    queue_createinfos[queue_family_count].pQueuePriorities = s_queue_priorities;
     if (qf_compute != UINT32_MAX) {
-        queue_createinfos[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_createinfos[1].queueFamilyIndex = qf_compute;
-        queue_createinfos[1].queueCount = 1;
-        queue_createinfos[1].pQueuePriorities = s_queue_priorities;
-        queue_family_count++;
+        queue_createinfos[++queue_family_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_createinfos[queue_family_count].queueFamilyIndex = qf_compute;
+        queue_createinfos[queue_family_count].queueCount = 1;
+        queue_createinfos[queue_family_count].pQueuePriorities = s_queue_priorities;
     }
     if (qf_transfer != UINT32_MAX) {
-        queue_createinfos[2].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_createinfos[2].queueFamilyIndex = qf_transfer;
-        queue_createinfos[2].queueCount = 1;
-        queue_createinfos[2].pQueuePriorities = s_queue_priorities;
-        queue_family_count++;
+        queue_createinfos[++queue_family_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queue_createinfos[queue_family_count].queueFamilyIndex = qf_transfer;
+        queue_createinfos[queue_family_count].queueCount = 1;
+        queue_createinfos[queue_family_count].pQueuePriorities = s_queue_priorities;
     }
 
     VkDeviceCreateInfo createinfo {};
     createinfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
     createinfo.pNext = &m_device_features;
-    createinfo.queueCreateInfoCount = queue_family_count;
+    createinfo.queueCreateInfoCount = ++queue_family_count;
     createinfo.pQueueCreateInfos = queue_createinfos.data();
     createinfo.enabledExtensionCount = extensions.size();
     createinfo.ppEnabledExtensionNames = extensions.data();
     createinfo.pEnabledFeatures = nullptr;
     VK_CHECK(vkCreateDevice(m_hwd, &createinfo, nullptr, &m_device));
 
-    m_queues.fill(VK_NULL_HANDLE);
-    vkGetDeviceQueue(m_device, queue_createinfos[0].queueFamilyIndex, 0, &m_queues[static_cast<size_t>(Queues::Universal)]);
-    if (queue_createinfos[0].queueCount == 2)
-        vkGetDeviceQueue(m_device, queue_createinfos[0].queueFamilyIndex, 1, &m_queues[static_cast<size_t>(Queues::Secondary)]);
+    m_queue_families[static_cast<size_t>(QueueFamily::Universal)] = qf_primary;
+    m_queue_families[static_cast<size_t>(QueueFamily::Compute)] = qf_compute;
+    m_queue_families[static_cast<size_t>(QueueFamily::Transfer)] = qf_transfer;
+    vkGetDeviceQueue(m_device, qf_primary, 0, &m_queues[static_cast<size_t>(QueueFamily::Universal)]);
     if (qf_compute != UINT32_MAX)
-        vkGetDeviceQueue(m_device, queue_createinfos[1].queueFamilyIndex, 0, &m_queues[static_cast<size_t>(Queues::Compute)]);
+        vkGetDeviceQueue(m_device, qf_compute, 0, &m_queues[static_cast<size_t>(QueueFamily::Compute)]);
     if (qf_transfer != UINT32_MAX)
-        vkGetDeviceQueue(m_device, queue_createinfos[2].queueFamilyIndex, 0, &m_queues[static_cast<size_t>(Queues::Transfer)]);
-    for (size_t i = 0; i < m_queues.size(); i++) {
-        if (m_queues[i] != VK_NULL_HANDLE)
-            m_queue_locks[i].emplace();
-    }
+        vkGetDeviceQueue(m_device, qf_transfer, 0, &m_queues[static_cast<size_t>(QueueFamily::Transfer)]);
 }
 
 void VulkanRenderer::create_allocator()
@@ -458,26 +462,31 @@ void VulkanRenderer::create_swapchain(VkSwapchainKHR old_swapchain)
     else
         createinfo.presentMode = VK_PRESENT_MODE_FIFO_KHR;
     VK_CHECK(vkCreateSwapchainKHR(m_device, &createinfo, nullptr, &m_swapchain));
+
+    vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, nullptr);
+    m_swapchain_images.resize(image_count);
+    vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, m_swapchain_images.data());
 }
 
 void VulkanRenderer::create_render_pass()
 {
     VkRenderPassCreateInfo createinfo {};
-    VkAttachmentDescription attachments[2] = {};
-    VkAttachmentReference refs[1] = {}, depth_ref {};
-    VkSubpassDescription subpasses[1] = {};
-    VkSubpassDependency deps[1] = {};
+    std::array<VkAttachmentDescription, 2> attachments = {};
+    std::array<VkAttachmentReference, 1> refs = {};
+    std::array<VkSubpassDescription, 1> subpasses = {};
+    std::array<VkSubpassDependency, 2> deps = {};
+    VkAttachmentReference depth_ref {};
 
-    attachments[0].format = VK_FORMAT_B8G8R8A8_SRGB;
-    attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[0].format = m_swapchain_format.format;
+    attachments[0].samples = static_cast<VkSampleCountFlagBits>(m_multisample_count);
     attachments[0].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[0].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     attachments[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    attachments[0].finalLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     attachments[1].format = VK_FORMAT_D24_UNORM_S8_UINT;
-    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].samples = static_cast<VkSampleCountFlagBits>(m_multisample_count);
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -490,30 +499,36 @@ void VulkanRenderer::create_render_pass()
     depth_ref.attachment = 1;
     depth_ref.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     subpasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-    subpasses[0].colorAttachmentCount = 1;
-    subpasses[0].pColorAttachments = refs;
+    subpasses[0].colorAttachmentCount = refs.size();
+    subpasses[0].pColorAttachments = refs.data();
     subpasses[0].pDepthStencilAttachment = &depth_ref;
 
     deps[0].srcSubpass = VK_SUBPASS_EXTERNAL;
     deps[0].dstSubpass = 0;
-    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
-    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     deps[0].srcAccessMask = 0;
-    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[1].srcSubpass = VK_SUBPASS_EXTERNAL;
+    deps[1].dstSubpass = 0;
+    deps[1].srcStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    deps[1].dstStageMask = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    deps[1].srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    deps[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
 
     createinfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-    createinfo.attachmentCount = 2;
-    createinfo.pAttachments = attachments;
-    createinfo.subpassCount = 1;
-    createinfo.pSubpasses = subpasses;
-    createinfo.dependencyCount = 1;
-    createinfo.pDependencies = deps;
+    createinfo.attachmentCount = attachments.size();
+    createinfo.pAttachments = attachments.data();
+    createinfo.subpassCount = subpasses.size();
+    createinfo.pSubpasses = subpasses.data();
+    createinfo.dependencyCount = deps.size();
+    createinfo.pDependencies = deps.data();
     VK_CHECK(vkCreateRenderPass(m_device, &createinfo, nullptr, &m_render_pass[0]));
 }
 
 void VulkanRenderer::create_framebuffers()
 {
-    constexpr size_t n_attachments = static_cast<size_t>(RenderAttachments::MAX_VALUE);
+    constexpr size_t n_attachments = static_cast<size_t>(RenderAttachment::MAX_VALUE);
     VkImageCreateInfo i_createinfo {};
     VkImageViewCreateInfo v_createinfo {};
     VmaAllocationCreateInfo a_createinfo {};
@@ -523,7 +538,7 @@ void VulkanRenderer::create_framebuffers()
 
     i_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     i_createinfo.imageType = VK_IMAGE_TYPE_2D;
-    i_createinfo.format = VK_FORMAT_B8G8R8A8_SRGB;
+    i_createinfo.format = m_swapchain_format.format;
     i_createinfo.extent.width = m_swapchain_extent.width;
     i_createinfo.extent.height = m_swapchain_extent.height;
     i_createinfo.extent.depth = 1;
@@ -544,12 +559,12 @@ void VulkanRenderer::create_framebuffers()
     v_createinfo.subresourceRange.layerCount = 1;
     for (int i = 0; i < 2; i++) {
         VK_CHECK(vmaCreateImage(m_allocator, &i_createinfo, &a_createinfo,
-            &m_render_atts[i][static_cast<size_t>(RenderAttachments::ColorBuffer)],
-            &m_render_att_allocs[i][static_cast<size_t>(RenderAttachments::ColorBuffer)],
+            &m_render_atts[i][static_cast<size_t>(RenderAttachment::ColorBuffer)],
+            &m_render_att_allocs[i][static_cast<size_t>(RenderAttachment::ColorBuffer)],
             nullptr));
-        v_createinfo.image = m_render_atts[i][static_cast<size_t>(RenderAttachments::ColorBuffer)];
+        v_createinfo.image = m_render_atts[i][static_cast<size_t>(RenderAttachment::ColorBuffer)];
         VK_CHECK(vkCreateImageView(m_device, &v_createinfo, nullptr,
-            &m_render_att_views[i][static_cast<size_t>(RenderAttachments::ColorBuffer)]));
+            &m_render_att_views[i][static_cast<size_t>(RenderAttachment::ColorBuffer)]));
     }
 
     i_createinfo.format = VK_FORMAT_D24_UNORM_S8_UINT;
@@ -558,12 +573,12 @@ void VulkanRenderer::create_framebuffers()
     v_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
     for (int i = 0; i < 2; i++) {
         VK_CHECK(vmaCreateImage(m_allocator, &i_createinfo, &a_createinfo,
-            &m_render_atts[i][static_cast<size_t>(RenderAttachments::DepthBuffer)],
-            &m_render_att_allocs[i][static_cast<size_t>(RenderAttachments::DepthBuffer)],
+            &m_render_atts[i][static_cast<size_t>(RenderAttachment::DepthBuffer)],
+            &m_render_att_allocs[i][static_cast<size_t>(RenderAttachment::DepthBuffer)],
             nullptr));
-        v_createinfo.image = m_render_atts[i][static_cast<size_t>(RenderAttachments::DepthBuffer)];
+        v_createinfo.image = m_render_atts[i][static_cast<size_t>(RenderAttachment::DepthBuffer)];
         VK_CHECK(vkCreateImageView(m_device, &v_createinfo, nullptr,
-            &m_render_att_views[i][static_cast<size_t>(RenderAttachments::DepthBuffer)]));
+            &m_render_att_views[i][static_cast<size_t>(RenderAttachment::DepthBuffer)]));
     }
 
     VkFramebufferCreateInfo fb_createinfo {};
@@ -576,8 +591,8 @@ void VulkanRenderer::create_framebuffers()
     fb_createinfo.height = m_swapchain_extent.height;
     fb_createinfo.layers = 1;
     for (int i = 0; i < 2; i++) {
-        fb_attachments[0] = m_render_att_views[i][static_cast<size_t>(RenderAttachments::ColorBuffer)];
-        fb_attachments[1] = m_render_att_views[i][static_cast<size_t>(RenderAttachments::DepthBuffer)];
+        fb_attachments[0] = m_render_att_views[i][static_cast<size_t>(RenderAttachment::ColorBuffer)];
+        fb_attachments[1] = m_render_att_views[i][static_cast<size_t>(RenderAttachment::DepthBuffer)];
         VK_CHECK(vkCreateFramebuffer(m_device, &fb_createinfo, nullptr, &m_framebuffers[i][0]));
     }
 }
@@ -590,15 +605,60 @@ void VulkanRenderer::create_pipeline_cache()
 
     PHYSFS_Stat pcs;
     if (PHYSFS_stat(PIPELINE_CACHE_NAME, &pcs) != 0 && pcs.filetype == PHYSFS_FILETYPE_REGULAR && pcs.filesize > 0) {
-        fs::InputStream is(PIPELINE_CACHE_NAME);
-        ci.initialDataSize = pcs.filesize;
-        cidata = new char[ci.initialDataSize];
-        is.read(cidata, ci.initialDataSize);
-        ci.pInitialData = cidata;
+        PHYSFS_File* fh = PHYSFS_openRead(PIPELINE_CACHE_NAME);
+        cidata = new char[pcs.filesize];
+
+        auto rc = PHYSFS_readBytes(fh, cidata, pcs.filesize);
+        if (rc >= 0) {
+            ci.initialDataSize = rc;
+            ci.pInitialData = cidata;
+        }
+        PHYSFS_close(fh);
     }
 
     VK_CHECK(vkCreatePipelineCache(m_device, &ci, nullptr, &m_pipeline_cache));
     delete[] cidata;
+}
+
+void VulkanRenderer::create_command_buffers()
+{
+    // For now, only create two command buffers: one for the universal queue family, per frame.
+    // If we add threads or async-compute this will change.
+    // If we create secondary command buffers to support a more complex rendering pipeline,
+    // this should also change.
+
+    VkCommandPoolCreateInfo pool_ci {};
+    pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_ci.queueFamilyIndex = m_queue_families[static_cast<size_t>(QueueFamily::Universal)];
+    VK_CHECK(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_command_pools[0][0]));
+    VK_CHECK(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_command_pools[1][0]));
+
+    for (int i = 0; i < 2; i++) {
+        VkCommandBufferAllocateInfo alloc_info {};
+        alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+        alloc_info.commandPool = m_command_pools[i][0];
+        alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        alloc_info.commandBufferCount = 2;
+        VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc_info, &m_command_buffers[i][0]));
+    }
+}
+
+void VulkanRenderer::create_synchronizers()
+{
+    VkSemaphoreCreateInfo sem_ci {};
+    sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_image_available[0]));
+    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_image_available[1]));
+    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_render_finished[0]));
+    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_render_finished[1]));
+    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_blit_finished[0]));
+    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_blit_finished[1]));
+
+    VkFenceCreateInfo fence_ci {};
+    fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+    fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+    VK_CHECK(vkCreateFence(m_device, &fence_ci, nullptr, &m_fence_frame[0]));
+    VK_CHECK(vkCreateFence(m_device, &fence_ci, nullptr, &m_fence_frame[1]));
 }
 
 void VulkanRenderer::create_sampler()
@@ -687,9 +747,15 @@ void VulkanRenderer::write_pipeline_cache()
 
     {
         std::lock_guard<std::mutex> lk(pcmtx);
-        fs::OutputStream os(PIPELINE_CACHE_NAME);
-        os.write(pcd.data(), pcd.size());
+        PHYSFS_File* fh = PHYSFS_openWrite(PIPELINE_CACHE_NAME);
+        PHYSFS_writeBytes(fh, pcd.data(), pcd.size());
+        PHYSFS_close(fh);
     }
+}
+
+void VulkanRenderer::wait_idle()
+{
+    vkDeviceWaitIdle(m_device);
 }
 
 }

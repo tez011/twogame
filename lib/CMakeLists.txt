@@ -1,9 +1,13 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 
 CPMAddPackage(NAME entt
               VERSION 3.12.2
               GIT_REPOSITORY https://github.com/skypjack/entt.git
               EXCLUDE_FROM_ALL TRUE)
+CPMAddPackage(NAME glm
+              VERSION 0.9.9
+              GIT_REPOSITORY https://github.com/g-truc/glm.git
+              GIT_TAG 47585fde0c49fa77a2bf2fb1d2ead06999fd4b6e)
 CPMAddPackage(NAME ktx
               VERSION 4.3.0-2cf053c193593f11c932ad742798ee1b101e50ee
               GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
@@ -30,7 +34,8 @@ CPMAddPackage(NAME physicsfs
                       "PHYSFS_ARCHIVE_VDF FALSE"
                       "PHYSFS_BUILD_TEST FALSE"
                       "PHYSFS_BUILD_DOCS FALSE"
-                      "PHYSFS_DISABLE_INSTALL ON")
+                      "PHYSFS_DISABLE_INSTALL ON"
+                      "PHYSFS_TARGETNAME_UNINSTALL PHYSFS_UNINSTALL_TGT_INT")
 CPMAddPackage(NAME pugixml
               VERSION 1.13
               GIT_REPOSITORY https://github.com/zeux/pugixml.git
@@ -49,3 +54,10 @@ CPMAddPackage(NAME vulkanmemoryallocator
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "VMA_BUILD_DOCUMENTATION OFF"
                       "VMA_BUILD_SAMPLES OFF")
+
+# ---- GLM options ----
+add_compile_definitions(GLM_FORCE_EXPLICIT_CTOR
+                        $<$<CONFIG:RELEASE>:GLM_FORCE_INLINE>
+                        GLM_FORCE_ALIGNED_GENTYPES
+                        GLM_FORCE_INTRINSICS
+                        GLM_FORCE_DEPTH_ZERO_TO_ONE)
