@@ -24,7 +24,14 @@ int32_t VulkanRenderer::acquire_image()
 
 void VulkanRenderer::draw()
 {
-    vkResetCommandPool(m_device, m_command_pools[m_frame_number % 2][0], VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+    for (auto it = m_command_pools[m_frame_number % 2].begin(); it != m_command_pools[m_frame_number % 2].end(); ++it) {
+        for (auto jt = it->begin(); jt != it->end(); ++jt) {
+            if (*jt != VK_NULL_HANDLE)
+                vkResetCommandPool(m_device, *jt, VK_COMMAND_POOL_RESET_RELEASE_RESOURCES_BIT);
+            // Yes, even the ones that belong to worker threads!
+            // There will be CPU fences in place preventing concurrent access here.
+        }
+    }
 
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::RenderOneStage)];
     VkCommandBufferBeginInfo cbuf_begin {};

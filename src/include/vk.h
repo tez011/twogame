@@ -99,7 +99,7 @@ private:
     std::vector<VkImage> m_swapchain_images;
     std::array<uint32_t, static_cast<size_t>(QueueFamily::MAX_VALUE)> m_queue_families;
     std::array<VkQueue, static_cast<size_t>(QueueFamily::MAX_VALUE)> m_queues;
-    std::array<std::array<VkCommandPool, 1>, 2> m_command_pools;
+    std::array<std::array<std::vector<VkCommandPool>, static_cast<size_t>(QueueFamily::MAX_VALUE)>, 2> m_command_pools;
     std::array<std::array<VkCommandBuffer, static_cast<size_t>(CommandBuffer::MAX_VALUE)>, 2> m_command_buffers;
 
     bool m_mip_filter = true;
@@ -154,7 +154,7 @@ private:
     }
 
 public:
-    VulkanRenderer(SDL_Window*);
+    VulkanRenderer(Twogame*, SDL_Window*);
     ~VulkanRenderer();
 
     virtual int32_t acquire_image();

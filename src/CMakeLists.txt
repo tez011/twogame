@@ -4,6 +4,7 @@ include_directories(BEFORE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 add_executable(twogame
     "main.cpp"
     "twogame.cpp"
+    "util.cpp"
     "xml.cpp"
     "vk/allocator.cpp"
     "vk/frame.cpp"
