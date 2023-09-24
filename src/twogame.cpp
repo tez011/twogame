@@ -25,7 +25,7 @@ Twogame::Twogame(const char* argv0, const char* app_name)
         std::terminate();
     }
 
-    m_renderer = new twogame::VulkanRenderer(m_window);
+    m_renderer = new twogame::VulkanRenderer(this, m_window);
 }
 
 Twogame::~Twogame()

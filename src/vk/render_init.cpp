@@ -8,6 +8,7 @@
 #include <SDL_vulkan.h>
 #include <set>
 #include <string>
+#include <twogame.h>
 
 #if TWOGAME_DEBUG_BUILD
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;
@@ -47,8 +48,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
     return VK_FALSE;
 }
 
-VulkanRenderer::VulkanRenderer(SDL_Window* window)
-    : Renderer(window)
+VulkanRenderer::VulkanRenderer(Twogame* tg, SDL_Window* window)
+    : Renderer(tg, window)
 {
     create_instance();
     create_debug_messenger();
@@ -72,9 +73,10 @@ VulkanRenderer::VulkanRenderer(SDL_Window* window)
 VulkanRenderer::~VulkanRenderer()
 {
     for (size_t i = 0; i < 2; i++) {
-        for (size_t j = 0; j < m_command_pools[i].size(); j++)
-            vkDestroyCommandPool(m_device, m_command_pools[i][j], nullptr);
-
+        for (auto it = m_command_pools[i].begin(); it != m_command_pools[i].end(); ++it) {
+            for (auto jt = it->begin(); jt != it->end(); ++jt)
+                vkDestroyCommandPool(m_device, *jt, nullptr);
+        }
         vkDestroySemaphore(m_device, m_sem_image_available[i], nullptr);
         vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
         vkDestroySemaphore(m_device, m_sem_blit_finished[i], nullptr);
@@ -622,21 +624,26 @@ void VulkanRenderer::create_pipeline_cache()
 
 void VulkanRenderer::create_command_buffers()
 {
-    // For now, only create two command buffers: one for the universal queue family, per frame.
-    // If we add threads or async-compute this will change.
-    // If we create secondary command buffers to support a more complex rendering pipeline,
-    // this should also change.
-
     VkCommandPoolCreateInfo pool_ci {};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    pool_ci.queueFamilyIndex = m_queue_families[static_cast<size_t>(QueueFamily::Universal)];
-    VK_CHECK(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_command_pools[0][0]));
-    VK_CHECK(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_command_pools[1][0]));
+    for (int i = 0; i < 2; i++) {
+        m_command_pools[i][static_cast<size_t>(QueueFamily::Universal)].resize(m_twogame->thread_pool().thread_count());
+        pool_ci.queueFamilyIndex = m_queue_families[static_cast<size_t>(QueueFamily::Universal)];
+        for (size_t j = 0; j < m_twogame->thread_pool().thread_count(); j++) {
+            VK_CHECK(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_command_pools[i][static_cast<size_t>(QueueFamily::Universal)][j]));
+        }
+
+        m_command_pools[i][static_cast<size_t>(QueueFamily::Compute)].resize(m_twogame->thread_pool().thread_count());
+        pool_ci.queueFamilyIndex = m_queue_families[static_cast<size_t>(QueueFamily::Compute)];
+        for (size_t j = 0; pool_ci.queueFamilyIndex != UINT32_MAX && j < m_twogame->thread_pool().thread_count(); j++) {
+            VK_CHECK(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_command_pools[i][static_cast<size_t>(QueueFamily::Compute)][j]));
+        }
+    }
 
     for (int i = 0; i < 2; i++) {
         VkCommandBufferAllocateInfo alloc_info {};
         alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-        alloc_info.commandPool = m_command_pools[i][0];
+        alloc_info.commandPool = m_command_pools[i][static_cast<size_t>(QueueFamily::Universal)][0];
         alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         alloc_info.commandBufferCount = 2;
         VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc_info, &m_command_buffers[i][0]));
