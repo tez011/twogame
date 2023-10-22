@@ -1,10 +1,12 @@
 #include "twogame.h"
-#include "vk.h"
 #include <cassert>
 #include <exception>
 #include <filesystem>
 #include <physfs.h>
 #include <SDL.h>
+#include <spdlog/spdlog.h>
+#include "render.h"
+#include "scene.h"
 
 static bool SDL_WAS_INITTED = false;
 
@@ -12,7 +14,7 @@ Twogame::Twogame(const char* argv0, const char* app_name)
 {
     if (SDL_WAS_INITTED) {
         if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
-            SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "SDL_Init: %s\n", SDL_GetError());
+            spdlog::critical("SDL_Init: {}\n", SDL_GetError());
             std::terminate();
         }
 
@@ -21,15 +23,17 @@ Twogame::Twogame(const char* argv0, const char* app_name)
 
     initialize_filesystem(argv0, app_name);
     if ((m_window = SDL_CreateWindow(app_name, SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE)) == nullptr) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "SDL_CreateWindow: %s\n", SDL_GetError());
+        spdlog::critical("SDL_CreateWindow: {}\n", SDL_GetError());
         std::terminate();
     }
 
-    m_renderer = new twogame::VulkanRenderer(this, m_window);
+    m_renderer = new twogame::Renderer(this, m_window);
+    m_current_scene = new twogame::Scene(this, "/tg/scene.xml");
 }
 
 Twogame::~Twogame()
 {
+    delete m_current_scene;
     delete m_renderer;
     SDL_DestroyWindow(m_window);
     SDL_Quit();
@@ -38,7 +42,7 @@ Twogame::~Twogame()
 void Twogame::initialize_filesystem(const char* argv0, const char* app_name)
 {
     if (PHYSFS_init(argv0) == 0) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "PHYSFS_init: %s", PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+        spdlog::critical("PHYSFS_init: {}", PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
         std::terminate();
     }
 
@@ -48,11 +52,11 @@ void Twogame::initialize_filesystem(const char* argv0, const char* app_name)
 
     (void)app_name;
     if (PHYSFS_mount(rsrc_root, "/tg", 0) == 0) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "mount %s -> /tg/: %s", rsrc_root, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+        spdlog::critical("mount {} -> /tg/: {}", rsrc_root, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
         std::terminate();
     }
     if (PHYSFS_mount(pref_root, "/pref", 1) == 0) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "mount %s -> /pref/: %s", pref_root, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+        spdlog::critical("mount {} -> /pref/: {}", pref_root, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
         std::terminate();
     }
     PHYSFS_setWriteDir(pref_root);
@@ -67,20 +71,20 @@ void Twogame::initialize_filesystem(const char* argv0, const char* app_name)
             const char* fullpath = path.c_str();
             std::string mountpoint = "/tg/" + path.stem().generic_string();
             if (PHYSFS_mount(fullpath, mountpoint.c_str(), 1) == 0) {
-                SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "mount %s -> %s/: %s", fullpath, mountpoint.c_str(), PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+                spdlog::critical("mount {} -> {}/: {}", fullpath, mountpoint.c_str(), PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
                 std::terminate();
             }
-            SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "mount %s -> %s/", fullpath, mountpoint.c_str());
+            spdlog::info("mount {} -> {}/", fullpath, mountpoint.c_str());
         }
     }
     SDL_free(base_path);
 
     char* pref_path = SDL_GetPrefPath("twogame", app_name);
     if (PHYSFS_mount(pref_path, "/pref", 1) == 0) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "mount %s -> /pref/: %s", pref_path, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+        spdlog::critical("mount {} -> /pref/: {}", pref_path, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
         std::terminate();
     }
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "mount %s -> /pref/", pref_path);
+    spdlog::info("mount {} -> /pref/", pref_path);
     PHYSFS_setWriteDir(pref_path);
     SDL_free(pref_path);
 #endif
@@ -111,14 +115,14 @@ void Twogame::start()
 
             int image_index = m_renderer->acquire_image();
             if (image_index < 0) {
-                SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "failed to acquire image before rendering");
+                spdlog::critical("failed to acquire image before rendering");
                 m_active = false;
                 break;
             }
             last_frame_time = frame_time;
             frame_time = SDL_GetTicks64();
 
-            m_renderer->draw();
+            m_renderer->draw(m_current_scene);
             m_renderer->next_frame(image_index);
         }
         m_renderer->wait_idle();

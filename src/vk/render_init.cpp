@@ -1,14 +1,16 @@
 #define VK_ENABLE_BETA_EXTENSIONS
-#include "vk.h"
 #include <algorithm>
 #include <csignal>
 #include <exception>
+#include <set>
+#include <string>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 #include <physfs.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
-#include <set>
-#include <string>
 #include <twogame.h>
+#include "render.h"
 
 #if TWOGAME_DEBUG_BUILD
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;
@@ -23,38 +25,39 @@ constexpr static const char* PIPELINE_CACHE_NAME = "/pref/shader-cache.vk.plc";
 
 namespace twogame {
 
-PFN_vkDestroyDebugUtilsMessengerEXT VulkanRenderer::s_vkDestroyDebugUtilsMessenger = nullptr;
+PFN_vkDestroyDebugUtilsMessengerEXT Renderer::s_vkDestroyDebugUtilsMessenger = nullptr;
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* cb_data, void* user_data)
 {
-    SDL_LogPriority which_level;
+    spdlog::level::level_enum which_level;
     if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT)
-        which_level = SDL_LOG_PRIORITY_ERROR;
+        which_level = spdlog::level::err;
     else if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT)
-        which_level = SDL_LOG_PRIORITY_WARN;
-    else if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT)
-        which_level = (type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) ? SDL_LOG_PRIORITY_INFO : SDL_LOG_PRIORITY_DEBUG;
+        which_level = spdlog::level::warn;
+    else if (severity >= VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT && ((type & VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT) != 0))
+        which_level = spdlog::level::info;
     else
-        which_level = SDL_LOG_PRIORITY_VERBOSE;
+        which_level = spdlog::level::debug;
 
-    SDL_LogMessage(SDL_LOG_CATEGORY_APPLICATION, which_level, "Vulkan %s", cb_data->pMessage);
+    spdlog::log(which_level, "Vulkan {}", cb_data->pMessage);
 
 #ifdef TWOGAME_DEBUG_BUILD
-    if (which_level == SDL_LOG_PRIORITY_ERROR)
+    if (which_level == spdlog::level::err)
         std::raise(SIGABRT);
 #endif
 
     return VK_FALSE;
 }
 
-VulkanRenderer::VulkanRenderer(Twogame* tg, SDL_Window* window)
-    : Renderer(tg, window)
+Renderer::Renderer(Twogame* tg, SDL_Window* window)
+    : m_twogame(tg)
+    , m_window(window)
 {
     create_instance();
     create_debug_messenger();
     if (SDL_Vulkan_CreateSurface(window, m_instance, &m_surface) == SDL_FALSE) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "SDL_Vulkan_CreateSurface: %s\n", SDL_GetError());
+        spdlog::critical("SDL_Vulkan_CreateSurface: {}\n", SDL_GetError());
         std::terminate();
     }
 
@@ -65,14 +68,18 @@ VulkanRenderer::VulkanRenderer(Twogame* tg, SDL_Window* window)
     create_render_pass();
     create_framebuffers();
     create_pipeline_cache();
+    create_descriptor_sets();
     create_command_buffers();
     create_synchronizers();
     create_sampler();
 }
 
-VulkanRenderer::~VulkanRenderer()
+Renderer::~Renderer()
 {
     for (size_t i = 0; i < 2; i++) {
+        for (size_t j = 0; j < DS1_INSTANCES; j++)
+            vmaDestroyBuffer(m_allocator, std::get<0>(m_ds1_buffers[i][j]), std::get<1>(m_ds1_buffers[i][j]));
+
         for (auto it = m_command_pools[i].begin(); it != m_command_pools[i].end(); ++it) {
             for (auto jt = it->begin(); jt != it->end(); ++jt)
                 vkDestroyCommandPool(m_device, *jt, nullptr);
@@ -81,7 +88,13 @@ VulkanRenderer::~VulkanRenderer()
         vkDestroySemaphore(m_device, m_sem_render_finished[i], nullptr);
         vkDestroySemaphore(m_device, m_sem_blit_finished[i], nullptr);
         vkDestroyFence(m_device, m_fence_frame[i], nullptr);
+
+        vkDestroyDescriptorPool(m_device, m_dp01[i], nullptr);
     }
+    vkDestroyCommandPool(m_device, m_command_pool_transient, nullptr);
+    vkDestroyFence(m_device, m_fence_assets_prepared, nullptr);
+
+    delete m_pipeline_factory;
     for (size_t i = 0; i < 2; i++) {
         vfree(m_framebuffers[i]);
         vfree(m_render_att_views[i]);
@@ -90,6 +103,8 @@ VulkanRenderer::~VulkanRenderer()
     }
     for (size_t i = 0; i < m_trash.size(); i++)
         release_freed_items(i);
+    for (size_t i = 0; i < m_descriptor_layouts.size(); i++)
+        vkDestroyDescriptorSetLayout(m_device, m_descriptor_layouts[i], nullptr);
 
     vkDestroySampler(m_device, m_active_sampler, nullptr);
     vkDestroyPipelineCache(m_device, m_pipeline_cache, nullptr);
@@ -103,18 +118,17 @@ VulkanRenderer::~VulkanRenderer()
     vkDestroyInstance(m_instance, nullptr);
 }
 
-void VulkanRenderer::create_instance()
+void Renderer::create_instance()
 {
-    VkResult res;
     unsigned int n;
     std::vector<const char*> instance_extensions;
     if (SDL_Vulkan_GetInstanceExtensions(m_window, &n, nullptr) == SDL_FALSE) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "SDL_Vulkan_GetInstanceExtensions: %s", SDL_GetError());
+        spdlog::critical("SDL_Vulkan_GetInstanceExtensions: {}", SDL_GetError());
         std::terminate();
     }
     instance_extensions.resize(n);
     if (SDL_Vulkan_GetInstanceExtensions(m_window, &n, instance_extensions.data()) == SDL_FALSE) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "SDL_Vulkan_GetInstanceExtensions: %s", SDL_GetError());
+        spdlog::critical("SDL_Vulkan_GetInstanceExtensions: {}", SDL_GetError());
         std::terminate();
     }
     if (ENABLE_VALIDATION_LAYERS)
@@ -122,15 +136,9 @@ void VulkanRenderer::create_instance()
 
     VkInstanceCreateFlags instance_create_flags = 0;
     std::vector<VkExtensionProperties> available_instance_extensions;
-    if ((res = vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr)) != VK_SUCCESS) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "vkEnumerateInstanceExtensionProperties: %d", res);
-        std::terminate();
-    }
+    VK_CHECK(vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr));
     available_instance_extensions.resize(n);
-    if ((res = vkEnumerateInstanceExtensionProperties(nullptr, &n, available_instance_extensions.data())) != VK_SUCCESS) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "vkEnumerateInstanceExtensionProperties: %d", res);
-        std::terminate();
-    }
+    VK_CHECK(vkEnumerateInstanceExtensionProperties(nullptr, &n, available_instance_extensions.data()));
     for (auto& ext : available_instance_extensions) {
         if (strcmp(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME, ext.extensionName) == 0) {
             instance_extensions.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
@@ -153,7 +161,7 @@ void VulkanRenderer::create_instance()
     VK_CHECK(vkCreateInstance(&createinfo, nullptr, &m_instance));
 }
 
-void VulkanRenderer::create_debug_messenger()
+void Renderer::create_debug_messenger()
 {
     if (ENABLE_VALIDATION_LAYERS == false)
         return;
@@ -163,7 +171,7 @@ void VulkanRenderer::create_debug_messenger()
     if (s_vkDestroyDebugUtilsMessenger == nullptr)
         s_vkDestroyDebugUtilsMessenger = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(m_instance, "vkDestroyDebugUtilsMessengerEXT");
     if (vkCreateDebugUtilsMessenger == nullptr || s_vkDestroyDebugUtilsMessenger == nullptr) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "vulkan extension " VK_EXT_DEBUG_UTILS_EXTENSION_NAME " not present");
+        spdlog::critical("vulkan extension " VK_EXT_DEBUG_UTILS_EXTENSION_NAME " not present");
         std::terminate();
     }
 
@@ -194,7 +202,7 @@ static bool evaluate_physical_device(VkPhysicalDevice hwd, VkSurfaceKHR surface,
         }
     }
     if (has_good_queue == false) {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "%s: skipping: no queue family supports graphics, compute, and presentation", device_props.deviceName);
+        spdlog::debug("{}: skipping: no queue family supports graphics, compute, and presentation", device_props.deviceName);
         return false;
     }
 
@@ -215,7 +223,7 @@ static bool evaluate_physical_device(VkPhysicalDevice hwd, VkSurfaceKHR surface,
     }
     if (!required_exts.empty()) {
         for (const auto& missing_ext : required_exts)
-            SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "%s: skipping: missing required extension %s", device_props.deviceName, missing_ext.c_str());
+            spdlog::debug("{}: skipping: missing required extension {}", device_props.deviceName, missing_ext.c_str());
         return false;
     }
 
@@ -232,10 +240,10 @@ static bool evaluate_physical_device(VkPhysicalDevice hwd, VkSurfaceKHR surface,
     available_features.pNext = &available_features11;
     vkGetPhysicalDeviceFeatures2(hwd, &available_features);
 
-#define DEMAND_FEATURE(STRUCTURE, FIELD)                                                                                                \
-    if (STRUCTURE.FIELD == VK_FALSE) {                                                                                                  \
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "%s: skipping: required feature " #FIELD " not available", device_props.deviceName); \
-        return false;                                                                                                                   \
+#define DEMAND_FEATURE(STRUCTURE, FIELD)                                                                   \
+    if (STRUCTURE.FIELD == VK_FALSE) {                                                                     \
+        spdlog::debug("{}: skipping: required feature " #FIELD " not available", device_props.deviceName); \
+        return false;                                                                                      \
     }
     DEMAND_FEATURE(available_features.features, sampleRateShading);
     if (has_portability_subset) {
@@ -247,20 +255,20 @@ static bool evaluate_physical_device(VkPhysicalDevice hwd, VkSurfaceKHR surface,
     uint32_t surface_format_count, surface_present_mode_count;
     vkGetPhysicalDeviceSurfaceFormatsKHR(hwd, surface, &surface_format_count, nullptr);
     if (surface_format_count == 0) {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "%s: skipping: no supported surface formats", device_props.deviceName);
+        spdlog::debug("{}: skipping: no supported surface formats", device_props.deviceName);
         return false;
     }
 
     vkGetPhysicalDeviceSurfacePresentModesKHR(hwd, surface, &surface_present_mode_count, nullptr);
     if (surface_present_mode_count == 0) {
-        SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "%s: skipping: no supported surface present modes", device_props.deviceName);
+        spdlog::debug("{}: skipping: no supported surface present modes", device_props.deviceName);
         return false;
     }
 
     return true;
 }
 
-void VulkanRenderer::pick_physical_device()
+void Renderer::pick_physical_device()
 {
     uint32_t device_count = 0;
     std::vector<VkPhysicalDevice> devices;
@@ -280,7 +288,7 @@ void VulkanRenderer::pick_physical_device()
 }
 
 constexpr static float s_queue_priorities[] = { 1.0f, 0.5f };
-void VulkanRenderer::create_logical_device()
+void Renderer::create_logical_device()
 {
     uint32_t count = 0;
     std::vector<VkExtensionProperties> available_exts;
@@ -289,14 +297,23 @@ void VulkanRenderer::create_logical_device()
     available_exts.resize(count);
     vkEnumerateDeviceExtensionProperties(m_hwd, nullptr, &count, available_exts.data());
 
+    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT graphics_pipeline_library {};
+    graphics_pipeline_library.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT;
+
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable_device_local_memory {};
     pageable_device_local_memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT;
+    pageable_device_local_memory.pNext = &graphics_pipeline_library;
 
     for (auto& ext : available_exts) {
         if (strcmp(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
         if (strcmp(VK_KHR_SWAPCHAIN_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        if (strcmp(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME, ext.extensionName) == 0) {
+            graphics_pipeline_library.graphicsPipelineLibrary = VK_TRUE;
+            extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
+            extensions.push_back(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
+        }
         if (strcmp(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME, ext.extensionName) == 0) {
             extensions.push_back(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
             extensions.push_back(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
@@ -306,7 +323,7 @@ void VulkanRenderer::create_logical_device()
 
     VkPhysicalDeviceProperties properties {};
     vkGetPhysicalDeviceProperties(m_hwd, &properties);
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "selecting device %s", properties.deviceName);
+    spdlog::info("selecting device {}", properties.deviceName);
     memcpy(&m_device_limits, &properties.limits, sizeof(VkPhysicalDeviceLimits));
 
     VkPhysicalDeviceVulkan12Features available_features12 {};
@@ -396,9 +413,11 @@ void VulkanRenderer::create_logical_device()
         vkGetDeviceQueue(m_device, qf_compute, 0, &m_queues[static_cast<size_t>(QueueFamily::Compute)]);
     if (qf_transfer != UINT32_MAX)
         vkGetDeviceQueue(m_device, qf_transfer, 0, &m_queues[static_cast<size_t>(QueueFamily::Transfer)]);
+
+    m_graphics_pipeline_library_hwsupport = graphics_pipeline_library.graphicsPipelineLibrary;
 }
 
-void VulkanRenderer::create_allocator()
+void Renderer::create_allocator()
 {
     VmaAllocatorCreateInfo createinfo {};
     createinfo.flags = 0;
@@ -409,7 +428,7 @@ void VulkanRenderer::create_allocator()
     VK_CHECK(vmaCreateAllocator(&createinfo, &m_allocator));
 }
 
-void VulkanRenderer::create_swapchain(VkSwapchainKHR old_swapchain)
+void Renderer::create_swapchain(VkSwapchainKHR old_swapchain)
 {
     VkSurfaceCapabilitiesKHR capabilities;
     uint32_t n = 0;
@@ -468,9 +487,14 @@ void VulkanRenderer::create_swapchain(VkSwapchainKHR old_swapchain)
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, nullptr);
     m_swapchain_images.resize(image_count);
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, m_swapchain_images.data());
+
+    m_projection = glm::perspective(glm::radians(m_vertical_fov),
+        static_cast<float>(m_swapchain_extent.width) / static_cast<float>(m_swapchain_extent.height),
+        0.1f, 1000.f);
+    m_projection[1][1] *= -1; // ???
 }
 
-void VulkanRenderer::create_render_pass()
+void Renderer::create_render_pass()
 {
     VkRenderPassCreateInfo createinfo {};
     std::array<VkAttachmentDescription, 2> attachments = {};
@@ -528,7 +552,7 @@ void VulkanRenderer::create_render_pass()
     VK_CHECK(vkCreateRenderPass(m_device, &createinfo, nullptr, &m_render_pass[0]));
 }
 
-void VulkanRenderer::create_framebuffers()
+void Renderer::create_framebuffers()
 {
     constexpr size_t n_attachments = static_cast<size_t>(RenderAttachment::MAX_VALUE);
     VkImageCreateInfo i_createinfo {};
@@ -599,11 +623,11 @@ void VulkanRenderer::create_framebuffers()
     }
 }
 
-void VulkanRenderer::create_pipeline_cache()
+void Renderer::create_pipeline_cache()
 {
-    VkPipelineCacheCreateInfo ci {};
+    VkPipelineCacheCreateInfo cache_ci {};
     char* cidata = nullptr;
-    ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    cache_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
 
     PHYSFS_Stat pcs;
     if (PHYSFS_stat(PIPELINE_CACHE_NAME, &pcs) != 0 && pcs.filetype == PHYSFS_FILETYPE_REGULAR && pcs.filesize > 0) {
@@ -612,17 +636,98 @@ void VulkanRenderer::create_pipeline_cache()
 
         auto rc = PHYSFS_readBytes(fh, cidata, pcs.filesize);
         if (rc >= 0) {
-            ci.initialDataSize = rc;
-            ci.pInitialData = cidata;
+            cache_ci.initialDataSize = rc;
+            cache_ci.pInitialData = cidata;
         }
         PHYSFS_close(fh);
     }
 
-    VK_CHECK(vkCreatePipelineCache(m_device, &ci, nullptr, &m_pipeline_cache));
+    VK_CHECK(vkCreatePipelineCache(m_device, &cache_ci, nullptr, &m_pipeline_cache));
     delete[] cidata;
+
+    m_pipeline_factory = vk::PipelineFactory::make_pipeline_factory(this, m_graphics_pipeline_library_hwsupport);
 }
 
-void VulkanRenderer::create_command_buffers()
+void Renderer::create_descriptor_sets()
+{
+    m_push_constants[0] = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4) };
+
+    VkDescriptorSetLayoutBinding internal_bindings[] = {
+        // Use immutable samplers for images here.
+        { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+    };
+    VkDescriptorSetLayoutCreateInfo dsl_ci {};
+    dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_descriptor_layouts[0]));
+    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_descriptor_layouts[2]));
+    dsl_ci.bindingCount = 1;
+    dsl_ci.pBindings = internal_bindings + 0;
+    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_descriptor_layouts[1]));
+
+    auto dsp01sz = std::to_array<VkDescriptorPoolSize>({
+        // descriptor set 0
+        // descriptor set 1
+        { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, DS1_INSTANCES },
+    });
+    VkDescriptorPoolCreateInfo dp01ci {};
+    dp01ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dp01ci.maxSets = 1 + DS1_INSTANCES;
+    dp01ci.poolSizeCount = dsp01sz.size();
+    dp01ci.pPoolSizes = dsp01sz.data();
+    VK_CHECK(vkCreateDescriptorPool(m_device, &dp01ci, nullptr, &m_dp01[0]));
+    VK_CHECK(vkCreateDescriptorPool(m_device, &dp01ci, nullptr, &m_dp01[1]));
+
+    std::array<VkDescriptorSetLayout, DS1_INSTANCES> ds1lp;
+    VkDescriptorSetAllocateInfo dsallocinfo {};
+    dsallocinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    ds1lp.fill(m_descriptor_layouts[1]);
+    for (int i = 0; i < 2; i++) {
+        dsallocinfo.descriptorPool = m_dp01[i];
+        dsallocinfo.descriptorSetCount = 1;
+        dsallocinfo.pSetLayouts = &m_descriptor_layouts[0];
+        VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, &m_ds0[i]));
+
+        dsallocinfo.descriptorSetCount = DS1_INSTANCES;
+        dsallocinfo.pSetLayouts = ds1lp.data();
+        VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, m_ds1[i].data()));
+    }
+
+    VkBufferCreateInfo buffer_ci {};
+    VmaAllocationCreateInfo buffer_ai {};
+    std::vector<VkWriteDescriptorSet> writes;
+    std::list<VkDescriptorBufferInfo> w_buffers;
+    buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    for (int i = 0; i < 2; i++) {
+        VmaAllocation a;
+        VkBuffer b;
+        VmaAllocationInfo ai;
+
+        buffer_ci.size = sizeof(descriptor_storage::uniform_s1i0_t);
+        buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        buffer_ai.usage = VMA_MEMORY_USAGE_AUTO;
+        buffer_ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+        VK_CHECK(vmaCreateBuffer(m_allocator, &buffer_ci, &buffer_ai, &b, &a, &ai));
+        m_ds1_buffers[i][0] = std::make_tuple(b, a, ai.pMappedData);
+
+        auto& dsw = writes.emplace_back();
+        auto& dsb = w_buffers.emplace_back();
+        dsw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        dsw.dstSet = m_ds1[i][0];
+        dsw.dstBinding = 0;
+        dsw.dstArrayElement = 0;
+        dsw.descriptorCount = 1;
+        dsw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        dsw.pBufferInfo = &dsb;
+        dsb.buffer = b;
+        dsb.offset = 0;
+        dsb.range = sizeof(glm::mat4) * 2;
+    }
+
+    vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
+}
+
+void Renderer::create_command_buffers()
 {
     VkCommandPoolCreateInfo pool_ci {};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
@@ -640,35 +745,45 @@ void VulkanRenderer::create_command_buffers()
         }
     }
 
+    pool_ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+    pool_ci.queueFamilyIndex = m_queue_families[static_cast<size_t>(QueueFamily::Universal)];
+    VK_CHECK(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_command_pool_transient));
+
+    VkCommandBufferAllocateInfo alloc_info {};
+    alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     for (int i = 0; i < 2; i++) {
-        VkCommandBufferAllocateInfo alloc_info {};
-        alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
         alloc_info.commandPool = m_command_pools[i][static_cast<size_t>(QueueFamily::Universal)][0];
         alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         alloc_info.commandBufferCount = 2;
         VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc_info, &m_command_buffers[i][0]));
     }
+
+    alloc_info.commandPool = m_command_pool_transient;
+    alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    alloc_info.commandBufferCount = 1;
+    VK_CHECK(vkAllocateCommandBuffers(m_device, &alloc_info, &m_cbuf_asset_prepare));
 }
 
-void VulkanRenderer::create_synchronizers()
+void Renderer::create_synchronizers()
 {
     VkSemaphoreCreateInfo sem_ci {};
     sem_ci.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_image_available[0]));
-    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_image_available[1]));
-    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_render_finished[0]));
-    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_render_finished[1]));
-    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_blit_finished[0]));
-    VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_blit_finished[1]));
+    for (int i = 0; i < 2; i++) {
+        VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_image_available[i]));
+        VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_render_finished[i]));
+        VK_CHECK(vkCreateSemaphore(m_device, &sem_ci, nullptr, &m_sem_blit_finished[i]));
+    }
 
     VkFenceCreateInfo fence_ci {};
     fence_ci.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     fence_ci.flags = VK_FENCE_CREATE_SIGNALED_BIT;
-    VK_CHECK(vkCreateFence(m_device, &fence_ci, nullptr, &m_fence_frame[0]));
-    VK_CHECK(vkCreateFence(m_device, &fence_ci, nullptr, &m_fence_frame[1]));
+    VK_CHECK(vkCreateFence(m_device, &fence_ci, nullptr, &m_fence_assets_prepared));
+    for (int i = 0; i < 2; i++) {
+        VK_CHECK(vkCreateFence(m_device, &fence_ci, nullptr, &m_fence_frame[i]));
+    }
 }
 
-void VulkanRenderer::create_sampler()
+void Renderer::create_sampler()
 {
     VkSamplerCreateInfo ci {};
     ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -688,7 +803,7 @@ void VulkanRenderer::create_sampler()
     VK_CHECK(vkCreateSampler(m_device, &ci, nullptr, &m_active_sampler));
 }
 
-void VulkanRenderer::release_freed_items(int bucket)
+void Renderer::release_freed_items(int bucket)
 {
     decltype(m_trash)::value_type items;
     m_trash[bucket].swap(items);
@@ -727,7 +842,7 @@ void VulkanRenderer::release_freed_items(int bucket)
     }
 }
 
-void VulkanRenderer::recreate_swapchain()
+void Renderer::recreate_swapchain()
 {
     vfree(m_swapchain);
     for (size_t i = 0; i < 2; i++) {
@@ -743,7 +858,7 @@ void VulkanRenderer::recreate_swapchain()
     create_framebuffers();
 }
 
-void VulkanRenderer::write_pipeline_cache()
+void Renderer::write_pipeline_cache()
 {
     static std::mutex pcmtx;
     size_t pcsz;
@@ -760,9 +875,23 @@ void VulkanRenderer::write_pipeline_cache()
     }
 }
 
-void VulkanRenderer::wait_idle()
+void Renderer::wait_idle()
 {
     vkDeviceWaitIdle(m_device);
+}
+
+VkPipelineLayout Renderer::create_pipeline_layout(VkDescriptorSetLayout material_layout) const
+{
+    VkPipelineLayout pl = VK_NULL_HANDLE;
+    VkPipelineLayoutCreateInfo createinfo {};
+    VkDescriptorSetLayout set_layouts[4] = { m_descriptor_layouts[0], m_descriptor_layouts[1], m_descriptor_layouts[2], material_layout };
+    createinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    createinfo.setLayoutCount = 4;
+    createinfo.pSetLayouts = set_layouts;
+    createinfo.pushConstantRangeCount = m_push_constants.size();
+    createinfo.pPushConstantRanges = m_push_constants.data();
+    VK_CHECK(vkCreatePipelineLayout(m_device, &createinfo, nullptr, &pl));
+    return pl;
 }
 
 }

@@ -1,5 +1,5 @@
 #include "util.h"
-#include <SDL_log.h>
+#include <spdlog/spdlog.h>
 
 thread_local static int s_current_thread_id = 0;
 
@@ -60,7 +60,7 @@ ThreadPool::ThreadPool(size_t thread_count)
     else
         m_threads.resize(std::min(thread_count, static_cast<size_t>(std::max(1, concurrency))));
 
-    SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "thread pool: created with %zu threads", m_threads.size());
+    spdlog::info("thread pool: created with {} threads", m_threads.size());
     for (size_t i = 0; i < m_threads.size(); i++) {
         m_threads[i] = std::make_unique<ThreadPool::Thread>(i + 1);
     }
