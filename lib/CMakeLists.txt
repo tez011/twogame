@@ -40,6 +40,9 @@ CPMAddPackage(NAME pugixml
               VERSION 1.13
               GIT_REPOSITORY https://github.com/zeux/pugixml.git
               EXCLUDE_FROM_ALL TRUE)
+CPMAddPackage(NAME spdlog
+              VERSION 1.12.0
+              GIT_REPOSITORY https://github.com/gabime/spdlog.git)
 CPMAddPackage(NAME spirvreflect
               VERSION 1.3.239.0
               GITHUB_REPOSITORY KhronosGroup/SPIRV-Reflect

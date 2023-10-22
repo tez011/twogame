@@ -58,7 +58,7 @@ public:
     ThreadPool(size_t thread_count = 0);
     static int current_thread_id();
     inline size_t thread_count() const { return m_threads.size(); }
-    inline Thread* thread(int n) const { return m_threads[n - 1].get(); }
+    inline Thread* thread(int n) { return m_threads[n - 1].get(); }
     void wait_idle();
 };
 }

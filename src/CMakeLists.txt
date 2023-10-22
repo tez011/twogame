@@ -6,8 +6,16 @@ add_executable(twogame
     "twogame.cpp"
     "util.cpp"
     "xml.cpp"
+    "asset/image.cpp"
+    "asset/mesh.cpp"
+    "asset/shader.cpp"
+    "asset/xml.cpp"
+    "scene/scene.cpp"
     "vk/allocator.cpp"
     "vk/frame.cpp"
+    "vk/parse.cpp"
+    "vk/pipeline.cpp"
+    "vk/pool.cpp"
     "vk/render_init.cpp")
 target_link_libraries(twogame
     EnTT::EnTT
@@ -17,6 +25,7 @@ target_link_libraries(twogame
     pugixml
     SDL2::SDL2
     SDL2::SDL2main
+    spdlog
     spirv-reflect-static
     Vulkan::Vulkan
     VulkanMemoryAllocator)

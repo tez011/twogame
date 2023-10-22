@@ -1,8 +1,10 @@
-#include "vk.h"
+#include <glm/gtc/matrix_transform.hpp>
+#include "render.h"
+#include "scene.h"
 
 namespace twogame {
 
-int32_t VulkanRenderer::acquire_image()
+int32_t Renderer::acquire_image()
 {
     VkResult acquire_image_result;
     VkFence fence = m_fence_frame[m_frame_number % 2];
@@ -22,8 +24,9 @@ int32_t VulkanRenderer::acquire_image()
     }
 }
 
-void VulkanRenderer::draw()
+void Renderer::draw(Scene* scene)
 {
+    VkResult res;
     for (auto it = m_command_pools[m_frame_number % 2].begin(); it != m_command_pools[m_frame_number % 2].end(); ++it) {
         for (auto jt = it->begin(); jt != it->end(); ++jt) {
             if (*jt != VK_NULL_HANDLE)
@@ -32,6 +35,27 @@ void VulkanRenderer::draw()
             // There will be CPU fences in place preventing concurrent access here.
         }
     }
+
+    if ((res = vkWaitForFences(m_device, 1, &m_fence_assets_prepared, VK_FALSE, 0)) == VK_SUCCESS) {
+        vkResetCommandBuffer(m_cbuf_asset_prepare, 0);
+        scene->post_prepare_assets();
+        if (scene->prepare_assets(m_cbuf_asset_prepare)) { // scene should cache a list of assets currently being prepared, to be cleaned up in the above call.
+            VkSubmitInfo apsub {};
+            apsub.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            apsub.waitSemaphoreCount = 0;
+            apsub.commandBufferCount = 1;
+            apsub.pCommandBuffers = &m_cbuf_asset_prepare;
+            apsub.signalSemaphoreCount = 0;
+            vkResetFences(m_device, 1, &m_fence_assets_prepared);
+            VK_CHECK(vkQueueSubmit(m_queues[static_cast<size_t>(QueueFamily::Universal)], 1, &apsub, m_fence_assets_prepared));
+        }
+    } else if (res != VK_TIMEOUT) {
+        std::terminate();
+    }
+
+    auto ps1i0 = static_cast<descriptor_storage::uniform_s1i0_t*>(std::get<2>(m_ds1_buffers[m_frame_number % 2][0]));
+    ps1i0->view = glm::lookAt(glm::vec3(0.f, 250.f, 400.f), glm::vec3(0.f, 100.f, 0.f), glm::vec3(0.f, 1.f, 0.f));
+    ps1i0->proj = m_projection;
 
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::RenderOneStage)];
     VkCommandBufferBeginInfo cbuf_begin {};
@@ -49,6 +73,11 @@ void VulkanRenderer::draw()
     cbuf_render_begin.clearValueCount = 2;
     cbuf_render_begin.pClearValues = clear_color;
 
+    std::array<VkDescriptorSet, 4> descriptor_sets = {
+        m_ds0[m_frame_number % 2],
+        m_ds1[m_frame_number % 2][0],
+        VK_NULL_HANDLE, VK_NULL_HANDLE
+    };
     vkCmdBeginRenderPass(cbuf, &cbuf_render_begin, VK_SUBPASS_CONTENTS_INLINE);
 
     VkViewport viewport {};
@@ -60,6 +89,8 @@ void VulkanRenderer::draw()
     scissor.extent = m_swapchain_extent;
     vkCmdSetViewport(cbuf, 0, 1, &viewport);
     vkCmdSetScissor(cbuf, 0, 1, &scissor);
+
+    scene->draw(cbuf, m_render_pass[0], 0, descriptor_sets);
 
     vkCmdEndRenderPass(cbuf);
     VK_CHECK(vkEndCommandBuffer(cbuf));
@@ -78,7 +109,7 @@ void VulkanRenderer::draw()
     VK_CHECK(vkQueueSubmit(m_queues[static_cast<size_t>(QueueFamily::Universal)], 1, &submit, VK_NULL_HANDLE));
 }
 
-void VulkanRenderer::next_frame(uint32_t image_index)
+void Renderer::next_frame(uint32_t image_index)
 {
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::BlitToSwapchain)];
     VkCommandBufferBeginInfo cbuf_begin {};
