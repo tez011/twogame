@@ -27,7 +27,7 @@ target_link_libraries(twogame
     SDL2::SDL2main
     spdlog
     spirv-reflect-static
-    Vulkan::Vulkan
+    volk
     VulkanMemoryAllocator)
 add_dependencies(twogame shaders)
 

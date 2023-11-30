@@ -158,16 +158,18 @@ void Mesh::bind_buffers(VkCommandBuffer cmd)
 void Mesh::prepare(VkCommandBuffer cmd)
 {
     if (m_staging != VK_NULL_HANDLE) {
-        // copy the staging buffer to the primary one
-        std::terminate();
+        VkBufferCopy region {};
+        region.srcOffset = region.dstOffset = 0;
+        region.size = m_buffer_size;
+        vkCmdCopyBuffer(cmd, m_staging, m_buffer, 1, &region);
     }
 }
 
 void Mesh::post_prepare()
 {
     if (m_staging != VK_NULL_HANDLE) {
-        // destroy the staging buffer
-        std::terminate();
+        vmaDestroyBuffer(m_renderer.allocator(), m_staging, m_staging_mem);
+        m_staging = VK_NULL_HANDLE;
     }
 }
 

@@ -1,4 +1,5 @@
 #pragma once
+#define VK_NO_PROTOTYPES
 #include <array>
 #include <mutex>
 #include <optional>
@@ -8,7 +9,6 @@
 #include <SDL.h>
 #include <spdlog/spdlog.h>
 #include <vk_mem_alloc.h>
-#include <vulkan/vulkan.h>
 #include "vkutil.h"
 
 #ifdef TWOGAME_DEBUG_BUILD
@@ -51,7 +51,8 @@ enum class Types {
 };
 
 template <typename T>
-struct Type { };
+struct Type {
+};
 #define X(T)                                               \
     template <>                                            \
     struct Type<T> {                                       \
@@ -70,14 +71,17 @@ typedef struct {
     glm::mat4 view;
 } uniform_s1i0_t;
 
+typedef struct {
+    VkBuffer buffer;
+    VmaAllocation allocation;
+    VmaAllocationInfo details;
+} buffer;
+
 }
 
 namespace twogame {
 
 class Scene;
-;
-;
-;
 
 class Renderer final {
     friend class vk::PipelineFactory;
@@ -146,13 +150,14 @@ private:
     std::array<std::array<VmaAllocation, static_cast<size_t>(RenderAttachment::MAX_VALUE)>, 2> m_render_att_allocs;
     std::array<std::queue<std::pair<uint64_t, vk_destructible::Types>>, 4> m_trash;
 
-    constexpr static size_t DS1_INSTANCES = 1;
+    constexpr static size_t DS1_INSTANCES = 1, DS2_INSTANCES = 1;
     std::array<VkDescriptorSetLayout, 3> m_descriptor_layouts;
     std::array<VkPushConstantRange, 1> m_push_constants;
-    std::array<VkDescriptorPool, 2> m_dp01;
+    std::array<VkDescriptorPool, 2> m_descriptor_pools;
     std::array<VkDescriptorSet, 2> m_ds0;
     std::array<std::array<VkDescriptorSet, DS1_INSTANCES>, 2> m_ds1;
-    std::array<std::array<std::tuple<VkBuffer, VmaAllocation, void*>, DS1_INSTANCES>, 2> m_ds1_buffers;
+    std::array<std::array<VkDescriptorSet, DS2_INSTANCES>, 2> m_ds2;
+    std::array<std::array<descriptor_storage::buffer, DS1_INSTANCES>, 2> m_ds1_buffers;
 
     std::array<VkSemaphore, 2> m_sem_image_available, m_sem_render_finished, m_sem_blit_finished;
     std::array<VkFence, 2> m_fence_frame;
