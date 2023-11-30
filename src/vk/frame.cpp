@@ -53,9 +53,19 @@ void Renderer::draw(Scene* scene)
         std::terminate();
     }
 
-    auto ps1i0 = static_cast<descriptor_storage::uniform_s1i0_t*>(std::get<2>(m_ds1_buffers[m_frame_number % 2][0]));
+    auto ps1i0 = static_cast<descriptor_storage::uniform_s1i0_t*>(m_ds1_buffers[m_frame_number % 2][0].details.pMappedData);
     ps1i0->view = glm::lookAt(glm::vec3(0.f, 250.f, 400.f), glm::vec3(0.f, 100.f, 0.f), glm::vec3(0.f, 1.f, 0.f));
     ps1i0->proj = m_projection;
+
+    std::array<VkMappedMemoryRange, 1> flush_ranges;
+    for (size_t i = 0; i < flush_ranges.size(); i++) {
+        flush_ranges[i].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        flush_ranges[i].pNext = nullptr;
+    }
+    flush_ranges[0].memory = m_ds1_buffers[m_frame_number % 2][0].details.deviceMemory;
+    flush_ranges[0].offset = m_ds1_buffers[m_frame_number % 2][0].details.offset;
+    flush_ranges[0].size = std::max(m_device_limits.nonCoherentAtomSize, m_ds1_buffers[m_frame_number % 2][0].details.size);
+    vkFlushMappedMemoryRanges(m_device, flush_ranges.size(), flush_ranges.data());
 
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::RenderOneStage)];
     VkCommandBufferBeginInfo cbuf_begin {};
@@ -76,7 +86,8 @@ void Renderer::draw(Scene* scene)
     std::array<VkDescriptorSet, 4> descriptor_sets = {
         m_ds0[m_frame_number % 2],
         m_ds1[m_frame_number % 2][0],
-        VK_NULL_HANDLE, VK_NULL_HANDLE
+        m_ds2[m_frame_number % 2][0],
+        VK_NULL_HANDLE,
     };
     vkCmdBeginRenderPass(cbuf, &cbuf_render_begin, VK_SUBPASS_CONTENTS_INLINE);
 

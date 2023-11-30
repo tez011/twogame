@@ -1,11 +1,11 @@
 #pragma once
+#define VK_NO_PROTOTYPES
 #include <array>
 #include <bitset>
 #include <exception>
 #include <string>
 #include <vector>
 #include <vk_mem_alloc.h>
-#include <vulkan/vulkan.h>
 #include "vkutil.h"
 
 namespace twogame {

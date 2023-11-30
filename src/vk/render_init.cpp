@@ -12,7 +12,7 @@
 #include <twogame.h>
 #include "render.h"
 
-#if TWOGAME_DEBUG_BUILD
+#if TWOGAME_DEBUG_BUILD && !defined(__APPLE__)
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;
 constexpr static const char* INSTANCE_LAYERS[] = { "VK_LAYER_KHRONOS_validation" };
 constexpr static uint32_t INSTANCE_LAYERS_COUNT = 1;
@@ -78,7 +78,7 @@ Renderer::~Renderer()
 {
     for (size_t i = 0; i < 2; i++) {
         for (size_t j = 0; j < DS1_INSTANCES; j++)
-            vmaDestroyBuffer(m_allocator, std::get<0>(m_ds1_buffers[i][j]), std::get<1>(m_ds1_buffers[i][j]));
+            vmaDestroyBuffer(m_allocator, m_ds1_buffers[i][j].buffer, m_ds1_buffers[i][j].allocation);
 
         for (auto it = m_command_pools[i].begin(); it != m_command_pools[i].end(); ++it) {
             for (auto jt = it->begin(); jt != it->end(); ++jt)
@@ -89,7 +89,7 @@ Renderer::~Renderer()
         vkDestroySemaphore(m_device, m_sem_blit_finished[i], nullptr);
         vkDestroyFence(m_device, m_fence_frame[i], nullptr);
 
-        vkDestroyDescriptorPool(m_device, m_dp01[i], nullptr);
+        vkDestroyDescriptorPool(m_device, m_descriptor_pools[i], nullptr);
     }
     vkDestroyCommandPool(m_device, m_command_pool_transient, nullptr);
     vkDestroyFence(m_device, m_fence_assets_prepared, nullptr);
@@ -159,6 +159,7 @@ void Renderer::create_instance()
     createinfo.enabledExtensionCount = instance_extensions.size();
     createinfo.ppEnabledExtensionNames = instance_extensions.data();
     VK_CHECK(vkCreateInstance(&createinfo, nullptr, &m_instance));
+    volkLoadInstance(m_instance);
 }
 
 void Renderer::create_debug_messenger()
@@ -293,6 +294,11 @@ void Renderer::create_logical_device()
     uint32_t count = 0;
     std::vector<VkExtensionProperties> available_exts;
     std::vector<const char*> extensions;
+    if (m_hwd == VK_NULL_HANDLE) {
+        spdlog::critical("no usable physical devices were found");
+        std::terminate();
+    }
+
     vkEnumerateDeviceExtensionProperties(m_hwd, nullptr, &count, nullptr);
     available_exts.resize(count);
     vkEnumerateDeviceExtensionProperties(m_hwd, nullptr, &count, available_exts.data());
@@ -404,6 +410,7 @@ void Renderer::create_logical_device()
     createinfo.ppEnabledExtensionNames = extensions.data();
     createinfo.pEnabledFeatures = nullptr;
     VK_CHECK(vkCreateDevice(m_hwd, &createinfo, nullptr, &m_device));
+    volkLoadDevice(m_device);
 
     m_queue_families[static_cast<size_t>(QueueFamily::Universal)] = qf_primary;
     m_queue_families[static_cast<size_t>(QueueFamily::Compute)] = qf_compute;
@@ -420,11 +427,15 @@ void Renderer::create_logical_device()
 void Renderer::create_allocator()
 {
     VmaAllocatorCreateInfo createinfo {};
+    VmaVulkanFunctions vfn {};
     createinfo.flags = 0;
     createinfo.physicalDevice = m_hwd;
     createinfo.device = m_device;
     createinfo.instance = m_instance;
     createinfo.vulkanApiVersion = API_VERSION;
+    createinfo.pVulkanFunctions = &vfn;
+    vfn.vkGetInstanceProcAddr = vkGetInstanceProcAddr; // provided by volk loader
+    vfn.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VK_CHECK(vmaCreateAllocator(&createinfo, &m_allocator));
 }
 
@@ -668,28 +679,34 @@ void Renderer::create_descriptor_sets()
         // descriptor set 0
         // descriptor set 1
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, DS1_INSTANCES },
+        // descriptor set 2
     });
-    VkDescriptorPoolCreateInfo dp01ci {};
-    dp01ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dp01ci.maxSets = 1 + DS1_INSTANCES;
-    dp01ci.poolSizeCount = dsp01sz.size();
-    dp01ci.pPoolSizes = dsp01sz.data();
-    VK_CHECK(vkCreateDescriptorPool(m_device, &dp01ci, nullptr, &m_dp01[0]));
-    VK_CHECK(vkCreateDescriptorPool(m_device, &dp01ci, nullptr, &m_dp01[1]));
+    VkDescriptorPoolCreateInfo dpl_ci {};
+    dpl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    dpl_ci.maxSets = 1 + DS1_INSTANCES + DS2_INSTANCES,
+    dpl_ci.poolSizeCount = dsp01sz.size();
+    dpl_ci.pPoolSizes = dsp01sz.data();
+    VK_CHECK(vkCreateDescriptorPool(m_device, &dpl_ci, nullptr, &m_descriptor_pools[0]));
+    VK_CHECK(vkCreateDescriptorPool(m_device, &dpl_ci, nullptr, &m_descriptor_pools[1]));
 
-    std::array<VkDescriptorSetLayout, DS1_INSTANCES> ds1lp;
+    std::array<VkDescriptorSetLayout, std::max(DS1_INSTANCES, DS2_INSTANCES)> dslp;
     VkDescriptorSetAllocateInfo dsallocinfo {};
     dsallocinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    ds1lp.fill(m_descriptor_layouts[1]);
     for (int i = 0; i < 2; i++) {
-        dsallocinfo.descriptorPool = m_dp01[i];
+        dsallocinfo.descriptorPool = m_descriptor_pools[i];
         dsallocinfo.descriptorSetCount = 1;
         dsallocinfo.pSetLayouts = &m_descriptor_layouts[0];
         VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, &m_ds0[i]));
 
+        dslp.fill(m_descriptor_layouts[1]);
         dsallocinfo.descriptorSetCount = DS1_INSTANCES;
-        dsallocinfo.pSetLayouts = ds1lp.data();
+        dsallocinfo.pSetLayouts = dslp.data();
         VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, m_ds1[i].data()));
+
+        dslp.fill(m_descriptor_layouts[2]);
+        dsallocinfo.descriptorSetCount = DS2_INSTANCES;
+        dsallocinfo.pSetLayouts = dslp.data(); // possibly redundant
+        VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, m_ds2[i].data()));
     }
 
     VkBufferCreateInfo buffer_ci {};
@@ -698,17 +715,14 @@ void Renderer::create_descriptor_sets()
     std::list<VkDescriptorBufferInfo> w_buffers;
     buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     for (int i = 0; i < 2; i++) {
-        VmaAllocation a;
-        VkBuffer b;
-        VmaAllocationInfo ai;
-
         buffer_ci.size = sizeof(descriptor_storage::uniform_s1i0_t);
         buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
         buffer_ai.usage = VMA_MEMORY_USAGE_AUTO;
         buffer_ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VK_CHECK(vmaCreateBuffer(m_allocator, &buffer_ci, &buffer_ai, &b, &a, &ai));
-        m_ds1_buffers[i][0] = std::make_tuple(b, a, ai.pMappedData);
+        VK_CHECK(vmaCreateBuffer(m_allocator, &buffer_ci, &buffer_ai,
+            &m_ds1_buffers[i][0].buffer, &m_ds1_buffers[i][0].allocation,
+            &m_ds1_buffers[i][0].details));
 
         auto& dsw = writes.emplace_back();
         auto& dsb = w_buffers.emplace_back();
@@ -719,7 +733,7 @@ void Renderer::create_descriptor_sets()
         dsw.descriptorCount = 1;
         dsw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         dsw.pBufferInfo = &dsb;
-        dsb.buffer = b;
+        dsb.buffer = m_ds1_buffers[i][0].buffer;
         dsb.offset = 0;
         dsb.range = sizeof(glm::mat4) * 2;
     }

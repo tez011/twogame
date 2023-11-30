@@ -12,9 +12,13 @@ static bool SDL_WAS_INITTED = false;
 
 Twogame::Twogame(const char* argv0, const char* app_name)
 {
-    if (SDL_WAS_INITTED) {
+    if (SDL_WAS_INITTED == false) {
         if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
-            spdlog::critical("SDL_Init: {}\n", SDL_GetError());
+            spdlog::critical("SDL_Init: {}", SDL_GetError());
+            std::terminate();
+        }
+        if (volkInitialize() != VK_SUCCESS) {
+            spdlog::critical("volkInitialize: no loader found");
             std::terminate();
         }
 

@@ -11,7 +11,7 @@ DescriptorPool::DescriptorPool(const Renderer& r, const VkDescriptorSetLayoutCre
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &layout_info, nullptr, &m_set_layout));
 
     for (uint32_t i = 0; i < layout_info.bindingCount; i++) {
-        m_sizes.emplace_back(layout_info.pBindings[i].descriptorType, layout_info.pBindings[i].descriptorCount * m_max_sets);
+        m_sizes.push_back({ layout_info.pBindings[i].descriptorType, layout_info.pBindings[i].descriptorCount * m_max_sets });
     }
 
     create_pool();

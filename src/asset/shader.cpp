@@ -1,4 +1,5 @@
 #include <memory>
+#include <sstream>
 #include <physfs.h>
 #include <spirv_reflect.h>
 #include "asset.h"
