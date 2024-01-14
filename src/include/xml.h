@@ -59,11 +59,6 @@ namespace assets {
         Mesh(const pugi::xml_node&);
     };
     struct Shader {
-        struct RenderSubpass {
-            X(uint32_t, render_pass_index);
-            X(uint32_t, subpass_index);
-            RenderSubpass(const pugi::xml_node&);
-        };
         struct Stage {
             struct Specialization {
                 X(uint32_t, constant_id);
@@ -76,7 +71,6 @@ namespace assets {
             Stage(const pugi::xml_node&);
         };
         X(std::string_view, name);
-        X(std::vector<RenderSubpass>, render_passes);
         X(std::vector<Stage>, stages);
         Shader(const pugi::xml_node&);
     };

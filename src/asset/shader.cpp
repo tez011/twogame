@@ -8,33 +8,90 @@
 
 using namespace std::literals;
 
+static VkViewport viewport_state_viewport {};
+static VkRect2D viewport_state_scissor {};
+static VkPipelineViewportStateCreateInfo viewport_state = {
+    VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+    nullptr,
+    0,
+    1,
+    &viewport_state_viewport,
+    1,
+    &viewport_state_scissor,
+};
+
+static VkPipelineRasterizationStateCreateInfo rasterization_state = {
+    VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+    nullptr,
+    0,
+    VK_FALSE,
+    VK_FALSE,
+    VK_POLYGON_MODE_FILL,
+    VK_CULL_MODE_BACK_BIT,
+    VK_FRONT_FACE_COUNTER_CLOCKWISE,
+    VK_FALSE, // depthBiasEnable
+    0.f, // depthBiasConstantFactor
+    0.f, // depthBiasClamp
+    0.f, // depthBiasSlopeFactor
+    1.f,
+};
+
+static VkPipelineTessellationStateCreateInfo tessellation_state = {
+    VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO,
+    nullptr,
+    0,
+    3, // patchControlPoints
+};
+
+static VkPipelineDepthStencilStateCreateInfo depth_stencil_state = {
+    VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+    nullptr,
+    0,
+    VK_TRUE, // depthTestEnable
+    VK_TRUE, // depthWriteEnable
+    VK_COMPARE_OP_LESS, // depthCompareOp
+    VK_FALSE, // depthBoundsTestEnable
+    VK_FALSE, // stencilTestEnable,
+    {}, // front (VkStencilOpState)
+    {}, // back (VkStencilOpState)
+    0.f, // minDepthBounds
+    0.f, // maxDepthBounds
+};
+
+static VkPipelineColorBlendAttachmentState color_blend_attachments[] = {
+    {
+        VK_FALSE, // blendEnable
+        VK_BLEND_FACTOR_SRC_ALPHA, // srcColorBlendFactor
+        VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, // dstColorBlendFactor
+        VK_BLEND_OP_ADD, // colorBlendOp
+        VK_BLEND_FACTOR_ONE, // srcAlphaBlendFactor
+        VK_BLEND_FACTOR_ZERO, // dstAlphaBlendFactor
+        VK_BLEND_OP_ADD, // alphaBlendOp
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
+    },
+};
+
+static VkPipelineColorBlendStateCreateInfo color_blend_state = {
+    VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+    nullptr,
+    0,
+    VK_FALSE, // logicOpEnable
+    VK_LOGIC_OP_CLEAR, // logicOp
+    1, // attachmentCount
+    color_blend_attachments + 0, // pAttachments
+    { 0.f, 0.f, 0.f, 0.f }, // blendConstants
+};
+
+static VkDynamicState dynamic_states[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+static VkPipelineDynamicStateCreateInfo dynamic_state {
+    VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+    nullptr,
+    0,
+    2,
+    dynamic_states,
+};
+
 namespace twogame::asset {
-
-#define INPUT_LOCATIONS   \
-    X(Position, position) \
-    X(Normal, normal)     \
-    X(UV0, texcoord0)
-static bool check_input_location(SpvReflectInterfaceVariable* iv)
-{
-#define X(LN, NAME)                                                                                         \
-    if (strcmp(iv->name, "in_" #NAME) == 0 && iv->location == static_cast<size_t>(Shader::VertexInput::LN)) \
-        return true;
-    INPUT_LOCATIONS
-#undef X
-
-    return false;
-}
-
-Shader::VertexInput Shader::input_location(const std::string_view& name)
-{
-#define X(LN, NAME)    \
-    if (name == #NAME) \
-        return VertexInput::LN;
-    INPUT_LOCATIONS
-#undef X
-
-    return VertexInput::MAX_VALUE;
-}
 
 Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
     : AbstractAsset(r)
@@ -89,11 +146,12 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
             spvReflectEnumerateInputVariables(&reflect, &count, inputs.data());
 
             for (auto* iv : inputs) {
-                if (check_input_location(iv))
-                    m_inputs[iv->location] = static_cast<VkFormat>(iv->format);
-                else {
+                vk::VertexInput input;
+                if (strncmp(iv->name, "in_", 3) == 0 && vk::parse(iv->name + 3, input)) {
+                    m_inputs[input] = iv->location;
+                } else {
                     std::ostringstream oss;
-                    oss << "bad input location: " << iv->name << "@" << iv->location;
+                    oss << "unrecognizable input: " << iv->name << "@" << iv->location;
                     throw MalformedException(info.name(), oss.str());
                 }
             }
@@ -139,14 +197,13 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
     m_pipeline_layout = m_renderer.create_pipeline_layout(m_descriptor_pool->layout());
 
     if (m_stages.size() == 1 && m_stages[0].stage == VK_SHADER_STAGE_COMPUTE_BIT) {
-        m_compute_pipeline = m_renderer.pipeline_factory().compute_pipeline(m_stages[0], m_pipeline_layout);
+        VkComputePipelineCreateInfo cci {};
+        cci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        cci.stage = m_stages[0];
+        cci.layout = m_pipeline_layout;
+        VK_CHECK(vkCreateComputePipelines(m_renderer.device(), m_renderer.m_pipeline_cache, 1, &cci, nullptr, &m_compute_pipeline));
     } else {
         m_compute_pipeline = VK_NULL_HANDLE;
-
-        for (auto& rpi : info.render_passes()) {
-            VkRenderPass render_pass = m_renderer.render_pass(rpi.render_pass_index());
-            m_graphics_pipelines[std::make_pair(render_pass, rpi.subpass_index())] = m_renderer.pipeline_factory().raster_and_fragment_state(m_stages, m_pipeline_layout, render_pass, rpi.subpass_index());
-        }
     }
 }
 
@@ -155,7 +212,6 @@ Shader::Shader(Shader&& other) noexcept
     , m_stages(std::move(other.m_stages))
     , m_inputs(std::move(other.m_inputs))
     , m_material_bindings(std::move(other.m_material_bindings))
-    , m_graphics_pipelines(std::move(other.m_graphics_pipelines))
     , m_descriptor_pool(other.m_descriptor_pool)
     , m_pipeline_layout(other.m_pipeline_layout)
     , m_compute_pipeline(other.m_compute_pipeline)
@@ -170,12 +226,67 @@ Shader::~Shader()
     if (m_compute_pipeline != VK_NULL_HANDLE)
         vkDestroyPipeline(m_renderer.device(), m_compute_pipeline, nullptr);
     for (auto it = m_graphics_pipelines.begin(); it != m_graphics_pipelines.end(); ++it)
-        m_renderer.pipeline_factory().destroy_raster_and_fragment_state(it->second);
+        vkDestroyPipeline(m_renderer.device(), it->second, nullptr);
 
     vkDestroyPipelineLayout(m_renderer.device(), m_pipeline_layout, nullptr);
     delete m_descriptor_pool;
     for (auto& stage_info : m_stages)
         vkDestroyShaderModule(m_renderer.device(), stage_info.module, nullptr);
+}
+
+VkPipeline Shader::graphics_pipeline(const asset::Mesh* mesh)
+{
+    uint64_t mpp = mesh->pipeline_parameter();
+    auto pit = m_graphics_pipelines.find(mpp);
+    if (pit != m_graphics_pipelines.end()) {
+        return pit->second;
+    } else {
+        std::vector<VkVertexInputAttributeDescription> vertex_attributes(mesh->input_attributes().size());
+        for (size_t i = 0; i < vertex_attributes.size(); i++) {
+            vertex_attributes[i].location = m_inputs[mesh->input_attributes().at(i).field];
+            vertex_attributes[i].binding = mesh->input_attributes().at(i).binding;
+            vertex_attributes[i].format = mesh->input_attributes().at(i).format;
+            vertex_attributes[i].offset = mesh->input_attributes().at(i).offset;
+        }
+
+        VkPipeline pipeline;
+        VkGraphicsPipelineCreateInfo createinfo {};
+        VkPipelineVertexInputStateCreateInfo vertex_input_state {};
+        VkPipelineInputAssemblyStateCreateInfo input_assembly_state {};
+        VkPipelineMultisampleStateCreateInfo multisample_state {};
+        createinfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        createinfo.stageCount = m_stages.size();
+        createinfo.pStages = m_stages.data();
+        createinfo.pVertexInputState = &vertex_input_state;
+        createinfo.pInputAssemblyState = &input_assembly_state;
+        createinfo.pTessellationState = &tessellation_state;
+        createinfo.pViewportState = &viewport_state;
+        createinfo.pRasterizationState = &rasterization_state;
+        createinfo.pMultisampleState = &multisample_state;
+        createinfo.pDepthStencilState = &depth_stencil_state;
+        createinfo.pColorBlendState = &color_blend_state;
+        createinfo.pDynamicState = &dynamic_state;
+        createinfo.layout = m_pipeline_layout;
+        createinfo.renderPass = m_renderer.m_render_pass[0];
+        createinfo.subpass = 0;
+        vertex_input_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertex_input_state.vertexBindingDescriptionCount = mesh->input_bindings().size();
+        vertex_input_state.pVertexBindingDescriptions = mesh->input_bindings().data();
+        vertex_input_state.vertexAttributeDescriptionCount = mesh->input_attributes().size();
+        vertex_input_state.pVertexAttributeDescriptions = vertex_attributes.data();
+        input_assembly_state.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        input_assembly_state.topology = mesh->primitive_topology();
+        multisample_state.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisample_state.rasterizationSamples = static_cast<VkSampleCountFlagBits>(m_renderer.m_multisample_count),
+        multisample_state.sampleShadingEnable = m_renderer.m_sample_shading > 0 ? VK_TRUE : VK_FALSE;
+        multisample_state.minSampleShading = m_renderer.m_sample_shading;
+        multisample_state.pSampleMask = nullptr;
+        multisample_state.alphaToCoverageEnable = VK_FALSE;
+        multisample_state.alphaToOneEnable = VK_FALSE;
+        VK_CHECK(vkCreateGraphicsPipelines(m_renderer.device(), m_renderer.m_pipeline_cache, 1, &createinfo, nullptr, &pipeline));
+        m_graphics_pipelines[mpp] = pipeline;
+        return pipeline;
+    }
 }
 
 }

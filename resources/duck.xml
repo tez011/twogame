@@ -3,7 +3,7 @@
         <attributes source="/tg/Duck0.bin" range="0 76768" interleaved="false">
             <attribute name="normal" format="R32G32B32_SFLOAT" count="2399" />
             <attribute name="position" format="R32G32B32_SFLOAT" count="2399" />
-            <attribute name="texcoord0" format="R32G32_SFLOAT" count="2399" />
+            <attribute name="uv0" format="R32G32_SFLOAT" count="2399" />
         </attributes>
         <indexes source="/tg/Duck0.bin" range="76768 25272" topology="triangles">
             <attribute format="uint16" count="12636" />
@@ -11,7 +11,6 @@
     </mesh>
     <image name="Duck" usage="sampled" source="/tg/Duck.ktx" />
     <shader name="Duck">
-        <render pass="0" subpass="0" />
         <stage stage="vert" path="/tg/shaders/duck.vert.spv" />
         <stage stage="frag" path="/tg/shaders/duck.frag.spv" />
     </shader>

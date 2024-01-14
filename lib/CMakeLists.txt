@@ -1,19 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-# ---- library options ----
-add_compile_definitions(GLM_FORCE_EXPLICIT_CTOR
-                        $<$<CONFIG:RELEASE>:GLM_FORCE_INLINE>
-                        GLM_FORCE_ALIGNED_GENTYPES
-                        GLM_FORCE_INTRINSICS
-                        GLM_FORCE_DEPTH_ZERO_TO_ONE)
-if(WIN32)
-    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR)
-elseif(APPLE)
-    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_MACOS_MVK)
-else()
-    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_XLIB_KHR)
-endif()
-
+# ---- external dependencies ----
 CPMAddPackage(NAME entt
               VERSION 3.12.2
               GIT_REPOSITORY https://github.com/skypjack/entt.git
@@ -75,3 +62,27 @@ CPMAddPackage(NAME vulkanmemoryallocator
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "VMA_BUILD_DOCUMENTATION OFF"
                       "VMA_BUILD_SAMPLES OFF")
+CPMAddPackage(NAME xxhash
+              VERSION 0.8.2
+              GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
+              DOWNLOAD_ONLY YES)
+
+# ---- library options ----
+add_compile_definitions(GLM_FORCE_EXPLICIT_CTOR
+                        $<$<CONFIG:RELEASE>:GLM_FORCE_INLINE>
+                        GLM_FORCE_ALIGNED_GENTYPES
+                        GLM_FORCE_INTRINSICS
+                        GLM_FORCE_DEPTH_ZERO_TO_ONE)
+if(WIN32)
+    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR)
+elseif(APPLE)
+    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_MACOS_MVK)
+else()
+    set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_XLIB_KHR)
+endif()
+
+# ---- custom targets ----
+if (xxhash_ADDED)
+    add_library(xxhash STATIC EXCLUDE_FROM_ALL ${xxhash_SOURCE_DIR}/xxhash.c)
+    target_include_directories(xxhash PUBLIC $<BUILD_INTERFACE:${xxhash_SOURCE_DIR}>)
+endif()

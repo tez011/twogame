@@ -14,7 +14,6 @@ add_executable(twogame
     "vk/allocator.cpp"
     "vk/frame.cpp"
     "vk/parse.cpp"
-    "vk/pipeline.cpp"
     "vk/pool.cpp"
     "vk/render_init.cpp")
 target_link_libraries(twogame
@@ -28,7 +27,8 @@ target_link_libraries(twogame
     spdlog
     spirv-reflect-static
     volk
-    VulkanMemoryAllocator)
+    VulkanMemoryAllocator
+    xxhash)
 add_dependencies(twogame shaders)
 
 if(MSVC)

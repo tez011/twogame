@@ -94,7 +94,6 @@ Renderer::~Renderer()
     vkDestroyCommandPool(m_device, m_command_pool_transient, nullptr);
     vkDestroyFence(m_device, m_fence_assets_prepared, nullptr);
 
-    delete m_pipeline_factory;
     for (size_t i = 0; i < 2; i++) {
         vfree(m_framebuffers[i]);
         vfree(m_render_att_views[i]);
@@ -303,23 +302,14 @@ void Renderer::create_logical_device()
     available_exts.resize(count);
     vkEnumerateDeviceExtensionProperties(m_hwd, nullptr, &count, available_exts.data());
 
-    VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT graphics_pipeline_library {};
-    graphics_pipeline_library.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT;
-
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable_device_local_memory {};
     pageable_device_local_memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT;
-    pageable_device_local_memory.pNext = &graphics_pipeline_library;
 
     for (auto& ext : available_exts) {
         if (strcmp(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
         if (strcmp(VK_KHR_SWAPCHAIN_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        if (strcmp(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME, ext.extensionName) == 0) {
-            graphics_pipeline_library.graphicsPipelineLibrary = VK_TRUE;
-            extensions.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
-            extensions.push_back(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
-        }
         if (strcmp(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME, ext.extensionName) == 0) {
             extensions.push_back(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
             extensions.push_back(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
@@ -420,8 +410,6 @@ void Renderer::create_logical_device()
         vkGetDeviceQueue(m_device, qf_compute, 0, &m_queues[static_cast<size_t>(QueueFamily::Compute)]);
     if (qf_transfer != UINT32_MAX)
         vkGetDeviceQueue(m_device, qf_transfer, 0, &m_queues[static_cast<size_t>(QueueFamily::Transfer)]);
-
-    m_graphics_pipeline_library_hwsupport = graphics_pipeline_library.graphicsPipelineLibrary;
 }
 
 void Renderer::create_allocator()
@@ -655,8 +643,6 @@ void Renderer::create_pipeline_cache()
 
     VK_CHECK(vkCreatePipelineCache(m_device, &cache_ci, nullptr, &m_pipeline_cache));
     delete[] cidata;
-
-    m_pipeline_factory = vk::PipelineFactory::make_pipeline_factory(this, m_graphics_pipeline_library_hwsupport);
 }
 
 void Renderer::create_descriptor_sets()

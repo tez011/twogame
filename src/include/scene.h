@@ -36,7 +36,7 @@ public:
     size_t prepare_assets(VkCommandBuffer cmd);
     void post_prepare_assets();
 
-    void draw(VkCommandBuffer cmd, VkRenderPass render_pass, uint32_t subpass, const std::array<VkDescriptorSet, 4>& descriptor_sets);
+    void draw(VkCommandBuffer cmd, VkRenderPass render_pass, uint32_t subpass, const std::array<VkDescriptorSet, 3>& descriptor_sets);
 };
 
 }

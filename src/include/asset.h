@@ -104,18 +104,26 @@ public:
 };
 
 class Mesh : public AbstractAsset {
+public:
+    struct VertexInputAttribute {
+        uint32_t binding, offset;
+        vk::VertexInput field;
+        VkFormat format;
+    };
+
 private:
     VkBuffer m_buffer, m_staging;
     VmaAllocation m_buffer_mem, m_staging_mem;
     VkDeviceSize m_buffer_size;
 
-    std::vector<VkVertexInputAttributeDescription> m_attributes;
+    std::vector<VertexInputAttribute> m_attributes;
     std::vector<VkVertexInputBindingDescription> m_bindings;
     std::vector<VkDeviceSize> m_binding_offsets;
+    VkPrimitiveTopology m_primitive_topology;
     VkDeviceSize m_index_offset;
     size_t m_index_count;
     VkIndexType m_index_type;
-    vk::PartialPipeline m_vertex_input_state;
+    uint64_t m_pipeline_parameter;
 
 public:
     Mesh(const xml::assets::Mesh&, const Renderer*);
@@ -123,8 +131,11 @@ public:
     Mesh(Mesh&&) noexcept;
     virtual ~Mesh();
 
-    inline vk::PartialPipeline vertex_input_state() const { return m_vertex_input_state; }
+    inline const std::vector<VertexInputAttribute>& input_attributes() const { return m_attributes; }
+    inline const std::vector<VkVertexInputBindingDescription>& input_bindings() const { return m_bindings; }
+    inline VkPrimitiveTopology primitive_topology() const { return m_primitive_topology; }
     inline size_t index_count() const { return m_index_count; }
+    inline uint64_t pipeline_parameter() const { return m_pipeline_parameter; }
     void bind_buffers(VkCommandBuffer cmd);
 
     virtual Type type() const { return Type::Mesh; }
@@ -135,13 +146,6 @@ public:
 
 class Shader : public AbstractAsset {
 public:
-    enum class VertexInput {
-        Position = 0,
-        Normal,
-        UV0,
-        MAX_VALUE,
-    };
-    static_assert(static_cast<size_t>(VertexInput::MAX_VALUE) < 32);
     struct DescriptorSetSlot {
         uint32_t binding, offset, size, count;
         VkDescriptorType type;
@@ -157,16 +161,14 @@ public:
 
 private:
     std::vector<VkPipelineShaderStageCreateInfo> m_stages;
-    std::array<VkFormat, static_cast<size_t>(VertexInput::MAX_VALUE)> m_inputs;
+    std::map<vk::VertexInput, int> m_inputs;
     std::map<std::string, DescriptorSetSlot> m_material_bindings;
-    std::map<std::pair<VkRenderPass, uint32_t>, vk::PartialPipeline> m_graphics_pipelines;
     vk::DescriptorPool* m_descriptor_pool;
     VkPipelineLayout m_pipeline_layout;
     VkPipeline m_compute_pipeline;
+    std::map<uint64_t, VkPipeline> m_graphics_pipelines;
 
 public:
-    static VertexInput input_location(const std::string_view& name);
-
     Shader(const xml::assets::Shader&, const Renderer*);
     Shader(const Shader&) = delete;
     Shader(Shader&&) noexcept;
@@ -182,7 +184,7 @@ public:
     vk::DescriptorPool* material_descriptor_pool() const { return m_descriptor_pool; }
     VkPipelineLayout pipeline_layout() const { return m_pipeline_layout; }
     VkPipeline compute_pipeline() const { return m_compute_pipeline; }
-    const std::map<std::pair<VkRenderPass, uint32_t>, vk::PartialPipeline>& graphics_pipelines() const { return m_graphics_pipelines; }
+    VkPipeline graphics_pipeline(const asset::Mesh*);
 };
 
 }

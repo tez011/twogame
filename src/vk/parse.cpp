@@ -1,5 +1,5 @@
-#include <spdlog/spdlog.h>
 #include <string_view>
+#include <spdlog/spdlog.h>
 #include "render.h"
 
 namespace twogame::vk {
@@ -170,6 +170,17 @@ bool parse(const std::string_view& name, VkIndexType& out)
     P(VK_INDEX_TYPE_UINT16, "uint16");
     P(VK_INDEX_TYPE_UINT32, "uint32");
     P(VK_INDEX_TYPE_UINT8_EXT, "uint8");
+    return false;
+}
+
+template <>
+bool parse(const std::string_view& name, vk::VertexInput& out)
+{
+    P(vk::VertexInput::Position, "position");
+    P(vk::VertexInput::Normal, "normal");
+    P(vk::VertexInput::Joints, "joints");
+    P(vk::VertexInput::Weights, "weights");
+    P(vk::VertexInput::UV0, "uv0");
     return false;
 }
 

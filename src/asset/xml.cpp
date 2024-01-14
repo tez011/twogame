@@ -112,26 +112,6 @@ Mesh::Mesh(const pugi::xml_node& node)
         throw Exception(node, "indexes");
 }
 
-Shader::RenderSubpass::RenderSubpass(const pugi::xml_node& node)
-    : m_render_pass_index(UINT32_MAX)
-    , m_subpass_index(UINT32_MAX)
-{
-    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
-        if (strcmp(it->name(), "pass") == 0) {
-            if (sscanf(it->value(), "%" PRIu32, &m_render_pass_index) < 1)
-                throw Exception(node, "pass");
-        } else if (strcmp(it->name(), "subpass") == 0) {
-            if (sscanf(it->value(), "%" PRIu32, &m_subpass_index) < 1)
-                throw Exception(node, "subpass");
-        }
-    }
-
-    if (m_render_pass_index == UINT32_MAX)
-        throw Exception(node, "pass");
-    if (m_subpass_index == UINT32_MAX)
-        throw Exception(node, "subpass");
-}
-
 Shader::Stage::Specialization::Specialization(const pugi::xml_node& node)
     : m_constant_id(UINT32_MAX)
 {
@@ -171,15 +151,11 @@ Shader::Shader(const pugi::xml_node& node)
             m_name = it->value();
     }
     for (auto it = node.begin(); it != node.end(); ++it) {
-        if (strcmp(it->name(), "render") == 0)
-            m_render_passes.emplace_back(*it);
         if (strcmp(it->name(), "stage") == 0)
             m_stages.emplace_back(*it);
     }
     if (m_name.empty())
         throw Exception(node, "name");
-    if (m_render_passes.size() == 0)
-        throw Exception(node, "render");
     if (m_stages.size() == 0)
         throw Exception(node, "stage");
 }

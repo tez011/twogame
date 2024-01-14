@@ -2,6 +2,7 @@
 #include "asset.h"
 #include "render.h"
 #include "xml.h"
+#include "xxhash.h"
 
 using namespace std::literals;
 
@@ -65,14 +66,11 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
             m_binding_offsets.push_back(mapped_offset);
         }
         for (const auto& attribute : attributes.attributes()) {
-            VkVertexInputAttributeDescription& a = m_attributes.emplace_back();
-            Shader::VertexInput iloc;
+            VertexInputAttribute& a = m_attributes.emplace_back();
             if (vk::parse<VkFormat>(attribute.format(), a.format) == false)
                 throw MalformedException(info.name(), "bad shader input format: "s + std::string { attribute.format() });
-            if ((iloc = Shader::input_location(attribute.name())) == Shader::VertexInput::MAX_VALUE)
+            if (vk::parse<vk::VertexInput>(attribute.name(), a.field) == false)
                 throw MalformedException(info.name(), "bad shader input location: "s + std::string { attribute.name() });
-            else
-                a.location = static_cast<uint32_t>(iloc);
             if (attributes.interleaved()) {
                 a.binding = m_bindings.back().binding;
                 a.offset = m_bindings.back().stride;
@@ -92,15 +90,12 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
         mapped_offset += (attributes.range().second + 15) & (~15);
     }
 
-    VkPrimitiveTopology topology;
+    m_primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     m_index_count = info.indexes()->attribute()->count();
     if (!vk::parse<VkIndexType>(info.indexes()->attribute()->format(), m_index_type))
         throw MalformedException(info.name(), "invalid index buffer format "s + std::string { info.indexes()->attribute()->format() });
-    if (info.indexes()->topology().empty())
-        topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    else if (!vk::parse<VkPrimitiveTopology>(info.indexes()->topology(), topology))
+    if (!info.indexes()->topology().empty() && !vk::parse<VkPrimitiveTopology>(info.indexes()->topology(), m_primitive_topology))
         throw MalformedException(info.name(), "invalid primitive topology "s + std::string { info.indexes()->topology() });
-    m_vertex_input_state = m_renderer.pipeline_factory().vertex_input_state(m_bindings, m_attributes, topology);
 
     if (last_source != info.indexes()->source()) {
         last_source = info.indexes()->source();
@@ -114,6 +109,14 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
         throw IOException(info.indexes()->source(), PHYSFS_getLastErrorCode());
     if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, info.indexes()->range().second) < static_cast<PHYSFS_sint64>(info.indexes()->range().second))
         throw IOException(info.indexes()->source(), PHYSFS_getLastErrorCode());
+
+    XXH3_state_t* xxh = XXH3_createState();
+    XXH3_64bits_reset(xxh);
+    XXH3_64bits_update(xxh, m_attributes.data(), m_attributes.size() * sizeof(decltype(m_attributes)::value_type));
+    XXH3_64bits_update(xxh, m_bindings.data(), m_bindings.size() * sizeof(decltype(m_bindings)::value_type));
+    XXH3_64bits_update(xxh, &m_primitive_topology, sizeof(m_primitive_topology));
+    m_pipeline_parameter = XXH3_64bits_digest(xxh);
+    XXH3_freeState(xxh);
 
     if (fh)
         PHYSFS_close(fh);
@@ -129,14 +132,13 @@ Mesh::Mesh(Mesh&& other) noexcept
     , m_attributes(std::move(other.m_attributes))
     , m_bindings(std::move(other.m_bindings))
     , m_binding_offsets(std::move(other.m_binding_offsets))
+    , m_primitive_topology(other.m_primitive_topology)
     , m_index_offset(other.m_index_offset)
     , m_index_count(other.m_index_count)
     , m_index_type(other.m_index_type)
-    , m_vertex_input_state(other.m_vertex_input_state)
 {
     other.m_buffer = VK_NULL_HANDLE;
     other.m_staging = VK_NULL_HANDLE;
-    other.m_vertex_input_state = 0;
 }
 
 Mesh::~Mesh()

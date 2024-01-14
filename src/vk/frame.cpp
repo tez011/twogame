@@ -83,11 +83,10 @@ void Renderer::draw(Scene* scene)
     cbuf_render_begin.clearValueCount = 2;
     cbuf_render_begin.pClearValues = clear_color;
 
-    std::array<VkDescriptorSet, 4> descriptor_sets = {
+    std::array<VkDescriptorSet, 3> descriptor_sets = {
         m_ds0[m_frame_number % 2],
         m_ds1[m_frame_number % 2][0],
         m_ds2[m_frame_number % 2][0],
-        VK_NULL_HANDLE,
     };
     vkCmdBeginRenderPass(cbuf, &cbuf_render_begin, VK_SUBPASS_CONTENTS_INLINE);
 

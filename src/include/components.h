@@ -9,7 +9,6 @@ struct geometry {
     std::shared_ptr<asset::Mesh> m_mesh;
     std::shared_ptr<asset::Shader> m_shader;
     VkDescriptorSet m_material;
-    std::map<std::pair<VkRenderPass, uint32_t>, VkPipeline> m_pipelines;
 };
 
 struct translation : glm::vec3 { };

@@ -32,6 +32,10 @@
 
 class Twogame;
 
+namespace twogame::asset {
+class Shader;
+}
+
 namespace twogame::vk_destructible {
 
 #define DESTRUCTIBLE_TYPES \
@@ -84,10 +88,7 @@ namespace twogame {
 class Scene;
 
 class Renderer final {
-    friend class vk::PipelineFactory;
-    friend class vk::BasicPipelineFactory;
-    friend class vk::GPLPipelineFactory;
-
+    friend class asset::Shader;
 private:
     constexpr static uint32_t API_VERSION = VK_API_VERSION_1_2;
     static PFN_vkDestroyDebugUtilsMessengerEXT s_vkDestroyDebugUtilsMessenger;
@@ -142,7 +143,6 @@ private:
     float m_requested_anisotropy = 0;
     float m_vertical_fov = 45.f;
 
-    vk::PipelineFactory* m_pipeline_factory;
     std::array<VkRenderPass, 1> m_render_pass;
     std::array<std::array<VkFramebuffer, 1>, 2> m_framebuffers;
     std::array<std::array<VkImage, static_cast<size_t>(RenderAttachment::MAX_VALUE)>, 2> m_render_atts;
@@ -215,19 +215,9 @@ public:
     const VkPhysicalDevice& hwd() const { return m_hwd; }
     const VkDevice& device() const { return m_device; }
     const VmaAllocator& allocator() const { return m_allocator; }
-    const VkRenderPass& render_pass(size_t i) const { return m_render_pass[i]; }
     const VkSampler& active_sampler() const { return m_active_sampler; }
-    vk::PipelineFactory& pipeline_factory() const { return *m_pipeline_factory; }
 
     VkPipelineLayout create_pipeline_layout(VkDescriptorSetLayout material_layout) const;
 };
-
-}
-
-namespace twogame::vk {
-
-template <typename T>
-bool parse(const std::string_view&, T&);
-size_t format_width(VkFormat);
 
 }

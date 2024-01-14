@@ -125,11 +125,8 @@ Scene::Scene(Twogame* tg, std::string_view path)
                 continue;
             }
 
-            std::map<std::pair<VkRenderPass, uint32_t>, VkPipeline> pipelines;
-            for (auto it = shader_it->second->graphics_pipelines().begin(); it != shader_it->second->graphics_pipelines().end(); ++it)
-                pipelines[it->first] = tg->renderer()->pipeline_factory().graphics_pipeline(mesh_it->second->vertex_input_state(), it->second);
-
-            m_registry.emplace<e_components::geometry>(entity, mesh_it->second, shader_it->second, material_it->second, pipelines);
+            (void)shader_it->second->graphics_pipeline(mesh_it->second.get());
+            m_registry.emplace<e_components::geometry>(entity, mesh_it->second, shader_it->second, material_it->second);
         }
     }
 }
@@ -194,16 +191,17 @@ void Scene::post_prepare_assets()
     }
 }
 
-void Scene::draw(VkCommandBuffer cmd, VkRenderPass render_pass, uint32_t subpass, const std::array<VkDescriptorSet, 4>& o_descriptor_sets)
+void Scene::draw(VkCommandBuffer cmd, VkRenderPass render_pass, uint32_t subpass, const std::array<VkDescriptorSet, 3>& in_descriptor_sets)
 {
-    auto descriptor_sets = o_descriptor_sets;
     auto view = m_registry.view<e_components::geometry>();
+    std::array<VkDescriptorSet, 4> descriptor_sets;
+    std::copy(in_descriptor_sets.begin(), in_descriptor_sets.end(), descriptor_sets.begin());
 
     for (entt::entity e : view) {
         auto& g = view.get<e_components::geometry>(e);
         glm::mat4 modelmat(1.f);
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.m_pipelines[std::make_pair(render_pass, subpass)]);
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.m_shader->graphics_pipeline(g.m_mesh.get()));
 
         descriptor_sets[3] = g.m_material;
         vkCmdPushConstants(cmd, g.m_shader->pipeline_layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &modelmat);
