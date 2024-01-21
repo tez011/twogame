@@ -7,6 +7,8 @@ add_executable(twogame
     "util.cpp"
     "xml.cpp"
     "asset/image.cpp"
+    "asset/manager.cpp"
+    "asset/material.cpp"
     "asset/mesh.cpp"
     "asset/shader.cpp"
     "asset/xml.cpp"

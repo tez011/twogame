@@ -7,8 +7,7 @@ namespace twogame::e_components {
 
 struct geometry {
     std::shared_ptr<asset::Mesh> m_mesh;
-    std::shared_ptr<asset::Shader> m_shader;
-    VkDescriptorSet m_material;
+    std::shared_ptr<asset::Material> m_material;
 };
 
 struct translation : glm::vec3 { };

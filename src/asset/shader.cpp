@@ -169,6 +169,7 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
 
             for (uint32_t j = 0; j < sets[i]->binding_count; j++) {
                 VkDescriptorSetLayoutBinding& l_binding = material_descriptor_layout.emplace_back();
+                SpvReflectTypeDescription* type_description = sets[i]->bindings[j]->type_description;
                 l_binding.binding = sets[i]->bindings[j]->binding;
                 l_binding.descriptorType = static_cast<VkDescriptorType>(sets[i]->bindings[j]->descriptor_type);
                 l_binding.stageFlags = static_cast<VkShaderStageFlags>(reflect.shader_stage);
@@ -176,13 +177,25 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
                 for (uint32_t k = 0; k < sets[i]->bindings[j]->array.dims_count; k++)
                     l_binding.descriptorCount *= sets[i]->bindings[j]->array.dims[k];
 
-                SpvReflectTypeDescription* type_description = sets[i]->bindings[j]->type_description;
-                if (type_description->type_flags & SPV_REFLECT_TYPE_FLAG_EXTERNAL_IMAGE)
+                if (type_description->type_flags & SPV_REFLECT_TYPE_FLAG_EXTERNAL_IMAGE) {
                     m_material_bindings.emplace(std::piecewise_construct,
                         std::forward_as_tuple(sets[i]->bindings[j]->name),
-                        std::forward_as_tuple(l_binding.binding, l_binding.descriptorType, l_binding.descriptorCount, 0, 0));
-                else {
-                    spdlog::critical("unknown material slot encountered. Engine developer, that's on you!");
+                        std::forward_as_tuple(l_binding.binding, l_binding.descriptorType, FieldType(), l_binding.descriptorCount, 0));
+                } else if (type_description->type_flags & SPV_REFLECT_TYPE_FLAG_EXTERNAL_BLOCK) {
+                    if (l_binding.descriptorType == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER) {
+                        m_buffer_pools.emplace(std::piecewise_construct, std::forward_as_tuple(l_binding.binding),
+                            std::forward_as_tuple(m_renderer, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sets[i]->bindings[j]->block.padded_size, 0x4000));
+                    } else if (l_binding.descriptorType == VK_DESCRIPTOR_TYPE_STORAGE_BUFFER) {
+                        m_buffer_pools.emplace(std::piecewise_construct, std::forward_as_tuple(l_binding.binding),
+                            std::forward_as_tuple(m_renderer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, sets[i]->bindings[j]->block.padded_size, 0x1000));
+                    }
+                    for (uint32_t k = 0; k < sets[i]->bindings[j]->block.member_count; k++) {
+                        auto& member = sets[i]->bindings[j]->block.members[k];
+                        m_material_bindings.emplace(std::piecewise_construct, std::forward_as_tuple(member.name),
+                            std::forward_as_tuple(l_binding.binding, l_binding.descriptorType, FieldType(member.type_description), l_binding.descriptorCount, member.offset));
+                    }
+                } else {
+                    spdlog::critical("unknown material slot encountered");
                     std::terminate();
                 }
             }
@@ -234,7 +247,7 @@ Shader::~Shader()
         vkDestroyShaderModule(m_renderer.device(), stage_info.module, nullptr);
 }
 
-VkPipeline Shader::graphics_pipeline(const asset::Mesh* mesh)
+VkPipeline Shader::graphics_pipeline(const asset::Mesh* mesh) const
 {
     uint64_t mpp = mesh->pipeline_parameter();
     auto pit = m_graphics_pipelines.find(mpp);
@@ -243,7 +256,11 @@ VkPipeline Shader::graphics_pipeline(const asset::Mesh* mesh)
     } else {
         std::vector<VkVertexInputAttributeDescription> vertex_attributes(mesh->input_attributes().size());
         for (size_t i = 0; i < vertex_attributes.size(); i++) {
-            vertex_attributes[i].location = m_inputs[mesh->input_attributes().at(i).field];
+            auto location_it = m_inputs.find(mesh->input_attributes().at(i).field);
+            if (location_it == m_inputs.end()) // mesh has an attribute that this shader doesn't process; just ignore it.
+                continue;
+
+            vertex_attributes[i].location = location_it->second;
             vertex_attributes[i].binding = mesh->input_attributes().at(i).binding;
             vertex_attributes[i].format = mesh->input_attributes().at(i).format;
             vertex_attributes[i].offset = mesh->input_attributes().at(i).offset;
@@ -287,6 +304,132 @@ VkPipeline Shader::graphics_pipeline(const asset::Mesh* mesh)
         m_graphics_pipelines[mpp] = pipeline;
         return pipeline;
     }
+}
+
+enum FieldType_ScalarType {
+    FT_VOID = 0,
+    FT_BOOL,
+    FT_INT32,
+    FT_INT64,
+    FT_UINT32,
+    FT_UINT64,
+    FT_FLOAT32,
+    FT_FLOAT64,
+};
+enum FieldType_Dim {
+    FTD_SCALAR = 0,
+    FTD_VEC2,
+    FTD_VEC3,
+    FTD_VEC4,
+    FTD_MAT2,
+    FTD_MAT2x3,
+    FTD_MAT2x4,
+    FTD_MAT3x2,
+    FTD_MAT3,
+    FTD_MAT3x4,
+    FTD_MAT4x2,
+    FTD_MAT4x3,
+    FTD_MAT4,
+};
+
+Shader::FieldType::FieldType(SpvReflectTypeDescription* td)
+    : rep(0)
+{
+    if (td->type_flags & SPV_REFLECT_TYPE_FLAG_FLOAT) {
+        if (td->traits.numeric.scalar.width == 64)
+            f.st = FT_FLOAT64;
+        else
+            f.st = FT_FLOAT32;
+    } else if (td->type_flags & SPV_REFLECT_TYPE_FLAG_INT) {
+        if (td->traits.numeric.scalar.signedness) {
+            if (td->traits.numeric.scalar.width == 64)
+                f.st = FT_INT64;
+            else
+                f.st = FT_INT32;
+        } else {
+            if (td->traits.numeric.scalar.width == 64)
+                f.st = FT_UINT64;
+            else
+                f.st = FT_UINT32;
+        }
+    } else if (td->type_flags & SPV_REFLECT_TYPE_FLAG_BOOL)
+        f.st = FT_BOOL;
+    else
+        f.st = FT_VOID;
+
+    // bounds checking in component_count is already done by the glsl validator
+    if (td->type_flags & SPV_REFLECT_TYPE_FLAG_VECTOR)
+        f.dim = FTD_VEC2 + (td->traits.numeric.vector.component_count - 2);
+    else if (td->type_flags & SPV_REFLECT_TYPE_FLAG_MATRIX)
+        f.dim = FTD_MAT2 + ((td->traits.numeric.matrix.column_count - 2) * 3 + (td->traits.numeric.matrix.row_count - 2));
+    else
+        f.dim = FTD_SCALAR;
+}
+
+static size_t expected_tokens(int dim)
+{
+    switch (dim) {
+    case FTD_SCALAR:
+        return 1;
+    case FTD_VEC2:
+    case FTD_VEC3:
+    case FTD_VEC4:
+        return dim + 1;
+    case FTD_MAT2:
+    case FTD_MAT2x3:
+    case FTD_MAT2x4:
+        return (dim - 2) * 2;
+    case FTD_MAT3x2:
+    case FTD_MAT3:
+    case FTD_MAT3x4:
+        return (dim - 5) * 3;
+    case FTD_MAT4x2:
+    case FTD_MAT4x3:
+    case FTD_MAT4:
+        return (dim - 8) * 4;
+    default:
+        return std::numeric_limits<size_t>::max();
+    }
+}
+
+bool Shader::FieldType::parse(const std::string_view& text, void* _out)
+{
+    if (f.st == FT_VOID)
+        return true;
+
+    std::vector<std::string_view> tokens;
+    xml::priv::split(tokens, text, " \n\t");
+    if (tokens.size() < expected_tokens(f.dim))
+        return false;
+
+#define X(F, T, P)                                           \
+    if (f.st == (F)) {                                       \
+        auto out = reinterpret_cast<T*>(_out);               \
+        for (size_t i = 0; i < tokens.size(); i++) {         \
+            if (sscanf(tokens[i].data(), "%" P, out++) != 1) \
+                return false;                                \
+        }                                                    \
+    }
+
+    if (f.st == FT_BOOL) {
+        auto out = reinterpret_cast<uint32_t*>(_out);
+        for (auto it = tokens.begin(); it != tokens.end(); ++it) {
+            if ((*it)[0] == 't')
+                *out++ = 1;
+            else if ((*it)[0] == 'f')
+                *out++ = 0;
+            else
+                return false;
+        }
+    }
+    X(FT_INT32, int32_t, PRIi32);
+    X(FT_INT64, int64_t, PRIi64);
+    X(FT_UINT32, uint32_t, PRIu32);
+    X(FT_UINT64, uint64_t, PRIu64);
+    X(FT_FLOAT32, float, "f");
+    X(FT_FLOAT64, double, "lf");
+#undef X
+    return true;
 }
 
 }

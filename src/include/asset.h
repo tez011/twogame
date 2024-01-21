@@ -3,10 +3,20 @@
 #include <array>
 #include <bitset>
 #include <exception>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include <vk_mem_alloc.h>
 #include "vkutil.h"
+
+template <typename... Bases>
+struct overload : Bases... {
+    using is_transparent = void;
+    using Bases::operator()...;
+};
+
+struct SpvReflectTypeDescription;
 
 namespace twogame {
 class Renderer;
@@ -14,13 +24,16 @@ class Renderer;
 
 namespace twogame::xml::assets {
 struct Image;
+struct Material;
 struct Mesh;
 struct Shader;
 }
 
 namespace twogame::asset {
 
+class AssetManager;
 enum class Type {
+    Material,
     Mesh,
     Image,
     Shader,
@@ -145,16 +158,37 @@ public:
 };
 
 class Shader : public AbstractAsset {
+    friend class Material;
+
 public:
+    class FieldType {
+    private:
+        union {
+            struct {
+                unsigned dim : 4; // scalar, vec{2,3,4}, mat{2,3,4}{2,3,4}
+                unsigned st : 4; // void, bool, int32, int64, uint32, uint64, float32, float64
+            } f;
+            uint32_t rep;
+        };
+
+    public:
+        FieldType()
+            : rep(0)
+        {
+        }
+        FieldType(SpvReflectTypeDescription*);
+        bool parse(const std::string_view& text, void* out);
+    };
     struct DescriptorSetSlot {
-        uint32_t binding, offset, size, count;
-        VkDescriptorType type;
-        DescriptorSetSlot(uint32_t binding, VkDescriptorType type, uint32_t count, uint32_t offset, uint32_t size)
+        uint32_t binding, offset, count;
+        FieldType field_type;
+        VkDescriptorType descriptor_type;
+        DescriptorSetSlot(uint32_t binding, VkDescriptorType descriptor_type, FieldType field_type, uint32_t count, uint32_t offset)
             : binding(binding)
             , offset(offset)
-            , size(size)
             , count(count)
-            , type(type)
+            , field_type(field_type)
+            , descriptor_type(descriptor_type)
         {
         }
     };
@@ -166,7 +200,8 @@ private:
     vk::DescriptorPool* m_descriptor_pool;
     VkPipelineLayout m_pipeline_layout;
     VkPipeline m_compute_pipeline;
-    std::map<uint64_t, VkPipeline> m_graphics_pipelines;
+    std::map<uint32_t, vk::BufferPool> m_buffer_pools;
+    mutable std::map<uint64_t, VkPipeline> m_graphics_pipelines;
 
 public:
     Shader(const xml::assets::Shader&, const Renderer*);
@@ -179,12 +214,48 @@ public:
     virtual void post_prepare() { }
     virtual bool prepared() const { return true; }
 
-    const std::vector<VkPipelineShaderStageCreateInfo>& stages() const { return m_stages; }
-    const std::map<std::string, DescriptorSetSlot>& material_bindings() const { return m_material_bindings; }
-    vk::DescriptorPool* material_descriptor_pool() const { return m_descriptor_pool; }
     VkPipelineLayout pipeline_layout() const { return m_pipeline_layout; }
     VkPipeline compute_pipeline() const { return m_compute_pipeline; }
-    VkPipeline graphics_pipeline(const asset::Mesh*);
+    VkPipeline graphics_pipeline(const asset::Mesh*) const;
+};
+
+class Material {
+private:
+    std::shared_ptr<asset::Shader> m_shader;
+    std::vector<std::pair<uint32_t, size_t>> m_buffers;
+    std::vector<VkWriteDescriptorSet> m_descriptor_writes;
+    VkDescriptorSet m_descriptor_set;
+
+public:
+    Material(const xml::assets::Material&, const AssetManager&);
+    Material(const Material&);
+    Material(Material&&) noexcept;
+    ~Material();
+
+    const asset::Shader* shader() const { return m_shader.get(); }
+    VkDescriptorSet descriptor() const { return m_descriptor_set; }
+};
+
+class AssetManager {
+    template <typename T>
+    class lookup : public std::unordered_map<std::string, T, overload<std::hash<std::string>, std::hash<std::string_view>>, std::equal_to<>> { };
+
+private:
+    std::deque<asset::AbstractAsset*> m_assets_preparing;
+    lookup<std::shared_ptr<asset::Image>> m_images;
+    lookup<std::shared_ptr<asset::Material>> m_materials;
+    lookup<std::shared_ptr<asset::Mesh>> m_meshes;
+    lookup<std::shared_ptr<asset::Shader>> m_shaders;
+
+public:
+    bool import_assets(std::string_view path, const Renderer*);
+    size_t prepare(VkCommandBuffer cmd);
+    void post_prepare();
+
+    const auto& images() const { return m_images; }
+    const auto& materials() const { return m_materials; }
+    const auto& meshes() const { return m_meshes; }
+    const auto& shaders() const { return m_shaders; }
 };
 
 }

@@ -89,6 +89,7 @@ class Scene;
 
 class Renderer final {
     friend class asset::Shader;
+
 private:
     constexpr static uint32_t API_VERSION = VK_API_VERSION_1_2;
     static PFN_vkDestroyDebugUtilsMessengerEXT s_vkDestroyDebugUtilsMessenger;
@@ -216,6 +217,7 @@ public:
     const VkDevice& device() const { return m_device; }
     const VmaAllocator& allocator() const { return m_allocator; }
     const VkSampler& active_sampler() const { return m_active_sampler; }
+    const VkPhysicalDeviceLimits& limits() const { return m_device_limits; }
 
     VkPipelineLayout create_pipeline_layout(VkDescriptorSetLayout material_layout) const;
 };

@@ -31,6 +31,14 @@ namespace assets {
         X(std::string_view, source);
         Image(const pugi::xml_node&);
     };
+    struct Material {
+        using MaterialProps = std::vector<std::pair<std::string, std::string_view>>;
+        X(std::string_view, name);
+        X(std::string_view, shader);
+        X(bool, unique);
+        X(MaterialProps, props);
+        Material(const pugi::xml_node&, bool asset_context);
+    };
     struct Mesh {
         using IntPair = std::pair<size_t, size_t>;
         struct Attributes {
@@ -78,6 +86,7 @@ namespace assets {
 
 struct Assets {
     X(std::vector<assets::Image>, images);
+    X(std::vector<assets::Material>, materials);
     X(std::vector<assets::Mesh>, meshes);
     X(std::vector<assets::Shader>, shaders);
     Assets(const pugi::xml_node&);
@@ -86,18 +95,10 @@ struct Assets {
 };
 
 struct Scene {
-    struct Material {
-        using MaterialProps = std::vector<std::pair<std::string, std::string_view>>;
-        X(std::string_view, name);
-        X(std::string_view, shader);
-        X(MaterialProps, props);
-        Material(const pugi::xml_node&);
-    };
     struct Entity {
         struct Geometry {
             X(std::string_view, mesh);
-            X(std::string_view, shader);
-            X(std::string_view, material);
+            X(std::optional<xml::assets::Material>, material);
             Geometry(const pugi::xml_node&);
         };
         struct Rigidbody {
@@ -111,7 +112,6 @@ struct Scene {
         Entity(const pugi::xml_node&);
     };
     X(std::vector<std::string_view>, assets);
-    X(std::vector<Material>, materials);
     X(std::vector<Entity>, entities);
     Scene(const pugi::xml_node&);
 

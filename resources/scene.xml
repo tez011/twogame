@@ -1,10 +1,9 @@
 <scene>
     <assets path="/tg/duck.xml" />
-    <material name="Duck" shader="Duck">
-        <binding name="tex_sampler">Duck</binding>
-    </material>
     <entity>
-        <geometry mesh="Duck" shader="Duck" material="Duck" />
+        <geometry mesh="Duck">
+            <material name="Duck" />
+        </geometry>
         <rigidbody physics="off">
             <transform translation="0 0 0" />
         </rigidbody>

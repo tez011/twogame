@@ -1,5 +1,7 @@
 #include "xml.h"
+#include <algorithm>
 #include <cinttypes>
+#include <queue>
 
 namespace twogame::xml::assets {
 
@@ -20,6 +22,62 @@ Image::Image(const pugi::xml_node& node)
         throw Exception(node, "usage");
     if (m_source.empty())
         throw Exception(node, "source");
+}
+
+Material::Material(const pugi::xml_node& node, bool asset_context)
+    : m_unique(false)
+{
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "name") == 0)
+            m_name = it->value();
+        if (strcmp(it->name(), "shader") == 0)
+            m_shader = it->value();
+        if (strcmp(it->name(), "unique") == 0) {
+            if (asset_context)
+                throw Exception(node, "unique");
+            if (it->value() && it->value()[0] != 'f' && it->value()[0] != 'F')
+                m_unique = true;
+        }
+    }
+
+    std::queue<std::pair<std::string, pugi::xml_node>> Q;
+    Q.push({ "", node });
+
+    while (Q.empty() == false) {
+        std::string prefix = std::move(Q.front().first);
+        pugi::xml_node root = Q.front().second;
+        Q.pop();
+
+        for (auto it = root.begin(); it != root.end(); ++it) {
+            const char* name = nullptr;
+            for (auto jt = it->attributes_begin(); jt != it->attributes_end(); ++jt) {
+                if (strcmp(jt->name(), "name") == 0)
+                    name = jt->value();
+            }
+            if (name == nullptr)
+                throw Exception(*it, "name");
+            if (it->text().get()[0])
+                m_props.emplace_back(prefix + name, it->text().get());
+            if (std::any_of(it->begin(), it->end(), [](const pugi::xml_node& j) {
+                    return j.type() == pugi::node_element;
+                })) {
+                Q.push({ prefix + name + "/", *it });
+            }
+        }
+    }
+
+    if (asset_context) {
+        if (m_name.empty())
+            throw Exception(node, "name");
+        if (m_shader.empty())
+            throw Exception(node, "shader");
+    } else {
+        if (m_props.size() > 0 && m_shader.empty())
+            throw Exception(node, "shader");
+        if (m_name.empty() && m_shader.empty()) {
+            throw Exception(node, "name");
+        }
+    }
 }
 
 Mesh::Attributes::Attribute::Attribute(const pugi::xml_node& node)
@@ -173,6 +231,8 @@ Assets::Assets(const pugi::xml_node& node)
 
         if (strcmp(type, "image") == 0)
             m_images.emplace_back(*it);
+        else if (strcmp(type, "material") == 0)
+            m_materials.emplace_back(*it, true);
         else if (strcmp(type, "mesh") == 0)
             m_meshes.emplace_back(*it);
         else if (strcmp(type, "shader") == 0)

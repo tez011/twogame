@@ -14,4 +14,14 @@
         <stage stage="vert" path="/tg/shaders/duck.vert.spv" />
         <stage stage="frag" path="/tg/shaders/duck.frag.spv" />
     </shader>
+    <shader name="RubberDuck">
+        <stage stage="vert" path="/tg/shaders/rubberduck.vert.spv" />
+        <stage stage="frag" path="/tg/shaders/rubberduck.frag.spv" />
+    </shader>
+    <material name="Duck" shader="Duck">
+        <binding name="tex_sampler">Duck</binding>
+    </material>
+    <material name="RubberDuck" shader="RubberDuck">
+        <binding name="base_color">0.196 0.804 0.196</binding>
+    </material>
 </assets>

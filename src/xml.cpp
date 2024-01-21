@@ -1,6 +1,4 @@
 #include "xml.h"
-#include <algorithm>
-#include <queue>
 #include <sstream>
 #include <physfs.h>
 
@@ -13,60 +11,21 @@ Exception::Exception(const pugi::xml_node& node, std::string_view prop)
     m_what = oss.str();
 }
 
-Scene::Material::Material(const pugi::xml_node& node)
-{
-    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
-        if (strcmp(it->name(), "name") == 0)
-            m_name = it->value();
-        if (strcmp(it->name(), "shader") == 0)
-            m_shader = it->value();
-    }
-
-    std::queue<std::pair<std::string, pugi::xml_node>> Q;
-    Q.push({ "", node });
-
-    while (Q.empty() == false) {
-        std::string prefix = std::move(Q.front().first);
-        pugi::xml_node root = Q.front().second;
-        Q.pop();
-
-        for (auto it = root.begin(); it != root.end(); ++it) {
-            const char* name = nullptr;
-            for (auto jt = it->attributes_begin(); jt != it->attributes_end(); ++jt) {
-                if (strcmp(jt->name(), "name") == 0)
-                    name = jt->value();
-            }
-            if (name == nullptr)
-                throw Exception(*it, "name");
-            if (it->text().get()[0])
-                m_props.emplace_back(prefix + name, it->text().get());
-            if (std::any_of(it->begin(), it->end(), [](const pugi::xml_node& j) {
-                    return j.type() == pugi::node_element;
-                })) {
-                Q.push({ prefix + name + "/", *it });
-            }
-        }
-    }
-
-    if (m_name.empty())
-        throw Exception(node, "name");
-    if (m_shader.empty())
-        throw Exception(node, "shader");
-}
-
 Scene::Entity::Geometry::Geometry(const pugi::xml_node& node)
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "mesh") == 0)
             m_mesh = it->value();
-        if (strcmp(it->name(), "shader") == 0)
-            m_shader = it->value();
+    }
+    for (auto it = node.begin(); it != node.end(); ++it) {
         if (strcmp(it->name(), "material") == 0)
-            m_material = it->value();
+            m_material.emplace(*it, false);
     }
 
     if (m_mesh.empty())
         throw Exception(node, "mesh");
+    if (!m_material)
+        throw Exception(node, "material");
 }
 
 Scene::Entity::Rigidbody::Rigidbody(const pugi::xml_node& node)
@@ -113,8 +72,6 @@ Scene::Scene(const pugi::xml_node& node)
     for (auto it = node.begin(); it != node.end(); ++it) {
         if (strcmp(it->name(), "assets") == 0)
             m_assets.emplace_back(it->attributes_begin()->value());
-        if (strcmp(it->name(), "material") == 0)
-            m_materials.emplace_back(*it);
         else if (strcmp(it->name(), "entity") == 0)
             m_entities.emplace_back(*it);
     }
