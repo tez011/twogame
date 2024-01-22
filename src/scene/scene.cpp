@@ -38,7 +38,7 @@ Scene::Scene(Twogame* tg, std::string_view path)
                 }
             }
         } else if (stat.filetype == PHYSFS_FILETYPE_REGULAR) {
-            if (!m_assets.import_assets(asset_path, tg->renderer())) {
+            if (!m_assets.import_assets(asset_path, m_twogame->renderer())) {
                 spdlog::error("failed to import assets at {}", asset_path);
             }
         }

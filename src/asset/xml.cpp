@@ -126,27 +126,31 @@ Mesh::Attributes::Attributes(const pugi::xml_node& node)
 }
 
 Mesh::Indexes::Indexes(const pugi::xml_node& node)
+    : m_offset(0)
+    , m_count(0)
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "source") == 0)
             m_source = it->value();
-        else if (strcmp(it->name(), "range") == 0) {
-            if (sscanf(it->value(), "%zu %zu", &m_range.first, &m_range.second) < 2)
-                throw Exception(node, "range");
-        } else if (strcmp(it->name(), "topology") == 0)
+        else if (strcmp(it->name(), "format") == 0)
+            m_format = it->value();
+        else if (strcmp(it->name(), "topology") == 0)
             m_topology = it->value();
-    }
-    for (auto it = node.begin(); it != node.end(); ++it) {
-        if (strcmp(it->name(), "attribute") == 0)
-            m_attribute.emplace(*it);
+        else if (strcmp(it->name(), "offset") == 0) {
+            if (sscanf(it->value(), "%zu", &m_offset) < 1)
+                throw Exception(node, "offset");
+        } else if (strcmp(it->name(), "count") == 0) {
+            if (sscanf(it->value(), "%zu", &m_count) < 1)
+                throw Exception(node, "count");
+        }
     }
 
     if (m_source.empty())
         throw Exception(node, "source");
-    if (m_range.second == 0)
-        throw Exception(node, "range");
-    if (m_attribute.has_value() == false)
-        throw Exception(node, "attributes");
+    if (m_format.empty())
+        throw Exception(node, "format");
+    if (m_count == 0)
+        throw Exception(node, "count");
 }
 
 Mesh::Mesh(const pugi::xml_node& node)

@@ -27,6 +27,7 @@ enum class VertexInput {
 template <typename T>
 bool parse(const std::string_view&, T&);
 size_t format_width(VkFormat);
+size_t format_width(VkIndexType);
 
 class BufferPool {
     VmaAllocator m_allocator;

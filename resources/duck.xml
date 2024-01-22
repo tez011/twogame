@@ -5,9 +5,7 @@
             <attribute name="position" format="R32G32B32_SFLOAT" count="2399" />
             <attribute name="uv0" format="R32G32_SFLOAT" count="2399" />
         </attributes>
-        <indexes source="/tg/Duck0.bin" range="76768 25272" topology="triangles">
-            <attribute format="uint16" count="12636" />
-        </indexes>
+        <indexes source="/tg/Duck0.bin" format="uint16" topology="triangles" offset="76768" count="12636" />
     </mesh>
     <image name="Duck" usage="sampled" source="/tg/Duck.ktx" />
     <shader name="Duck">

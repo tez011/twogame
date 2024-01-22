@@ -9,8 +9,8 @@
 #include <physfs.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
-#include <twogame.h>
 #include "render.h"
+#include "twogame.h"
 
 #if TWOGAME_DEBUG_BUILD && !defined(__APPLE__)
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;
@@ -486,6 +486,7 @@ void Renderer::create_swapchain(VkSwapchainKHR old_swapchain)
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, nullptr);
     m_swapchain_images.resize(image_count);
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, m_swapchain_images.data());
+    spdlog::debug("obtained {} swapchain images", image_count);
 
     m_projection = glm::perspective(glm::radians(m_vertical_fov),
         static_cast<float>(m_swapchain_extent.width) / static_cast<float>(m_swapchain_extent.height),

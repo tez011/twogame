@@ -55,10 +55,11 @@ namespace assets {
             Attributes(const pugi::xml_node&);
         };
         struct Indexes {
-            X(std::optional<Attributes::Attribute>, attribute);
-            X(std::string_view, topology);
             X(std::string_view, source);
-            X(IntPair, range);
+            X(std::string_view, format);
+            X(std::string_view, topology);
+            X(size_t, offset);
+            X(size_t, count);
             Indexes(const pugi::xml_node&);
         };
         X(std::string_view, name);

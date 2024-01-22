@@ -197,4 +197,18 @@ size_t format_width(VkFormat fmt)
 #undef X
 }
 
+size_t format_width(VkIndexType fmt)
+{
+    switch (fmt) {
+    case VK_INDEX_TYPE_UINT16:
+        return 2;
+    case VK_INDEX_TYPE_UINT32:
+        return 4;
+    case VK_INDEX_TYPE_UINT8_EXT:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 }

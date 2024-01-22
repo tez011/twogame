@@ -11,11 +11,16 @@ namespace twogame::asset {
 Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
     : AbstractAsset(r)
     , m_buffer_size(0)
+    , m_index_count(info.indexes()->count())
 {
+    if (!vk::parse<VkIndexType>(info.indexes()->format(), m_index_type))
+        throw MalformedException(info.name(), "invalid index buffer format "s + std::string { info.indexes()->format() });
+
+    VkDeviceSize index_buffer_size = info.indexes()->count() * vk::format_width(m_index_type);
     for (const auto& attributes : info.attributes()) {
         m_buffer_size += (attributes.range().second + 15) & (~15);
     }
-    m_buffer_size += (info.indexes()->range().second + 15) & (~15);
+    m_buffer_size += (index_buffer_size + 15) & (~15);
 
     const VkPhysicalDeviceMemoryProperties* mem_props;
     vmaGetMemoryProperties(m_renderer.allocator(), &mem_props);
@@ -91,9 +96,6 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
     }
 
     m_primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    m_index_count = info.indexes()->attribute()->count();
-    if (!vk::parse<VkIndexType>(info.indexes()->attribute()->format(), m_index_type))
-        throw MalformedException(info.name(), "invalid index buffer format "s + std::string { info.indexes()->attribute()->format() });
     if (!info.indexes()->topology().empty() && !vk::parse<VkPrimitiveTopology>(info.indexes()->topology(), m_primitive_topology))
         throw MalformedException(info.name(), "invalid primitive topology "s + std::string { info.indexes()->topology() });
 
@@ -105,9 +107,9 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
             throw IOException(info.indexes()->source(), PHYSFS_getLastErrorCode());
     }
     m_index_offset = mapped_offset;
-    if (PHYSFS_seek(fh, info.indexes()->range().first) == 0)
+    if (PHYSFS_seek(fh, info.indexes()->offset()) == 0)
         throw IOException(info.indexes()->source(), PHYSFS_getLastErrorCode());
-    if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, info.indexes()->range().second) < static_cast<PHYSFS_sint64>(info.indexes()->range().second))
+    if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, index_buffer_size) < static_cast<PHYSFS_sint64>(index_buffer_size))
         throw IOException(info.indexes()->source(), PHYSFS_getLastErrorCode());
 
     XXH3_state_t* xxh = XXH3_createState();
