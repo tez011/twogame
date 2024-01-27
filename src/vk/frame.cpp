@@ -54,7 +54,7 @@ void Renderer::draw(Scene* scene)
     }
 
     auto ps1i0 = static_cast<descriptor_storage::uniform_s1i0_t*>(m_ds1_buffers[m_frame_number % 2][0].details.pMappedData);
-    ps1i0->view = glm::lookAt(glm::vec3(0.f, 250.f, 400.f), glm::vec3(0.f, 100.f, 0.f), glm::vec3(0.f, 1.f, 0.f));
+    ps1i0->view = scene->camera_view();
     ps1i0->proj = m_projection;
 
     std::array<VkMappedMemoryRange, 1> flush_ranges;

@@ -116,6 +116,7 @@ void Twogame::start()
             }
 
             // logic(frame_time - last_frame_time)
+            m_current_scene->update_transforms();
 
             int image_index = m_renderer->acquire_image();
             if (image_index < 0) {

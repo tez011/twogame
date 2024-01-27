@@ -6,9 +6,10 @@ CPMAddPackage(NAME entt
               GIT_REPOSITORY https://github.com/skypjack/entt.git
               EXCLUDE_FROM_ALL TRUE)
 CPMAddPackage(NAME glm
-              VERSION 0.9.9
+              VERSION 1.0.0
               GIT_REPOSITORY https://github.com/g-truc/glm.git
-              GIT_TAG 47585fde0c49fa77a2bf2fb1d2ead06999fd4b6e)
+              GIT_TAG 1.0.0
+              OPTIONS "GLM_ENABLE_CXX_20 ON")
 CPMAddPackage(NAME ktx
               VERSION 4.3.0-2cf053c193593f11c932ad742798ee1b101e50ee
               GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git

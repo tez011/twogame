@@ -40,6 +40,7 @@ else(MSVC)
         $<$<CONFIG:DEBUG>:-O0>
         $<$<CONFIG:DEBUG>:-ggdb>
         $<$<CONFIG:RELEASE>:-O3>
+        -Wno-poison-system-directories
     )
 endif()
 add_compile_definitions(

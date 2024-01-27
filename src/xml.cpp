@@ -59,11 +59,20 @@ Scene::Entity::Rigidbody::Rigidbody(const pugi::xml_node& node)
 
 Scene::Entity::Entity(const pugi::xml_node& node)
 {
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "name") == 0)
+            m_name = it->value();
+        else if (strcmp(it->name(), "parent") == 0)
+            m_parent = it->value();
+    }
+
     for (auto it = node.begin(); it != node.end(); ++it) {
-        if (strcmp(it->name(), "geometry") == 0)
-            m_geometry.emplace(*it);
+        if (strcmp(it->name(), "camera") == 0)
+            m_components.emplace_back<Camera>(*it);
+        else if (strcmp(it->name(), "geometry") == 0)
+            m_components.emplace_back<Geometry>(*it);
         else if (strcmp(it->name(), "rigidbody") == 0)
-            m_rigidbody.emplace(*it);
+            m_components.emplace_back<Rigidbody>(*it);
     }
 }
 

@@ -1,9 +1,10 @@
 #pragma once
 #include <optional>
 #include <string_view>
+#include <variant>
 #include <vector>
+#include <glm/ext/quaternion_float.hpp>
 #include <glm/glm.hpp>
-#include <glm/gtx/quaternion.hpp>
 #include <pugixml.hpp>
 #include <spdlog/spdlog.h>
 
@@ -97,6 +98,9 @@ struct Assets {
 
 struct Scene {
     struct Entity {
+        struct Camera {
+            Camera(const pugi::xml_node&) { }
+        };
         struct Geometry {
             X(std::string_view, mesh);
             X(std::optional<xml::assets::Material>, material);
@@ -108,8 +112,11 @@ struct Scene {
             X(glm::quat, orientation);
             Rigidbody(const pugi::xml_node&);
         };
-        X(std::optional<Geometry>, geometry);
-        X(std::optional<Rigidbody>, rigidbody);
+        using EntityComponent = std::variant<Camera, Geometry, Rigidbody>;
+
+        X(std::string_view, name);
+        X(std::string_view, parent);
+        X(std::vector<EntityComponent>, components);
         Entity(const pugi::xml_node&);
     };
     X(std::vector<std::string_view>, assets);
