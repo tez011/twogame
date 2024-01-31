@@ -1,10 +1,10 @@
 <scene>
     <!-- Since we're using glTF models, we're using their coordinate system:
          right handed, Y is up. So +X is right, +Z is towards the camera. -->
-    <assets path="/tg/duck.xml" />
+    <assets path="/tg/triblend.xml" />
     <entity>
-        <geometry mesh="Duck">
-            <material name="Duck" />
+        <geometry mesh="triangle">
+            <material name="morph-basic" />
         </geometry>
         <rigidbody physics="off">
             <transform translation="0 0 0" />
@@ -13,7 +13,7 @@
     <entity>
         <camera />
         <rigidbody physics="off">
-            <transform translation="0 250 -400" orientation="0 0.983954 0.178425 0" />
+            <transform translation="0 0 5" />
         </rigidbody>
     </entity>
 </scene>

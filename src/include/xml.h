@@ -55,6 +55,16 @@ namespace assets {
             X(bool, interleaved);
             Attributes(const pugi::xml_node&);
         };
+        struct Displacements {
+            struct Displacement {
+                X(float, weight);
+                Displacement(const pugi::xml_node&);
+            };
+            X(std::string_view, source);
+            X(IntPair, range);
+            X(std::vector<Displacement>, displacements);
+            Displacements(const pugi::xml_node&);
+        };
         struct Indexes {
             X(std::string_view, source);
             X(std::string_view, format);
@@ -65,6 +75,7 @@ namespace assets {
         };
         X(std::string_view, name);
         X(std::vector<Attributes>, attributes);
+        X(std::optional<Displacements>, displacements);
         X(std::optional<Indexes>, indexes);
         Mesh(const pugi::xml_node&);
     };

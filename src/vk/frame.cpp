@@ -57,15 +57,15 @@ void Renderer::draw(Scene* scene)
     ps1i0->view = scene->camera_view();
     ps1i0->proj = m_projection;
 
-    std::array<VkMappedMemoryRange, 1> flush_ranges;
-    for (size_t i = 0; i < flush_ranges.size(); i++) {
-        flush_ranges[i].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        flush_ranges[i].pNext = nullptr;
+    std::array<VkMappedMemoryRange, 1> flushes;
+    for (size_t i = 0; i < flushes.size(); i++) {
+        flushes[i].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        flushes[i].pNext = nullptr;
     }
-    flush_ranges[0].memory = m_ds1_buffers[m_frame_number % 2][0].details.deviceMemory;
-    flush_ranges[0].offset = m_ds1_buffers[m_frame_number % 2][0].details.offset;
-    flush_ranges[0].size = std::max(m_device_limits.nonCoherentAtomSize, m_ds1_buffers[m_frame_number % 2][0].details.size);
-    vkFlushMappedMemoryRanges(m_device, flush_ranges.size(), flush_ranges.data());
+    flushes[0].memory = m_ds1_buffers[m_frame_number % 2][0].details.deviceMemory;
+    flushes[0].offset = m_ds1_buffers[m_frame_number % 2][0].details.offset;
+    flushes[0].size = std::max(m_device_limits.nonCoherentAtomSize, m_ds1_buffers[m_frame_number % 2][0].details.size);
+    vkFlushMappedMemoryRanges(m_device, flushes.size(), flushes.data());
 
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::RenderOneStage)];
     VkCommandBufferBeginInfo cbuf_begin {};
@@ -83,10 +83,9 @@ void Renderer::draw(Scene* scene)
     cbuf_render_begin.clearValueCount = 2;
     cbuf_render_begin.pClearValues = clear_color;
 
-    std::array<VkDescriptorSet, 3> descriptor_sets = {
+    std::array<VkDescriptorSet, 2> descriptor_sets = {
         m_ds0[m_frame_number % 2],
         m_ds1[m_frame_number % 2][0],
-        m_ds2[m_frame_number % 2][0],
     };
     vkCmdBeginRenderPass(cbuf, &cbuf_render_begin, VK_SUBPASS_CONTENTS_INLINE);
 
@@ -100,7 +99,7 @@ void Renderer::draw(Scene* scene)
     vkCmdSetViewport(cbuf, 0, 1, &viewport);
     vkCmdSetScissor(cbuf, 0, 1, &scissor);
 
-    scene->draw(cbuf, m_render_pass[0], 0, descriptor_sets);
+    scene->draw(cbuf, m_render_pass[0], 0, m_frame_number, descriptor_sets);
 
     vkCmdEndRenderPass(cbuf);
     VK_CHECK(vkEndCommandBuffer(cbuf));

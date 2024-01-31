@@ -5,7 +5,7 @@
 namespace twogame::vk {
 
 BufferPool::BufferPool(const Renderer& r, VkBufferUsageFlags usage, size_t unit_size, size_t count)
-    : m_allocator(r.allocator())
+    : m_renderer(r)
     , m_count(count)
     , m_usage(usage)
 {
@@ -21,7 +21,7 @@ BufferPool::BufferPool(const Renderer& r, VkBufferUsageFlags usage, size_t unit_
 BufferPool::~BufferPool()
 {
     for (auto it = m_buffers.begin(); it != m_buffers.end(); ++it) {
-        vmaDestroyBuffer(m_allocator, std::get<0>(*it), std::get<1>(*it));
+        vmaDestroyBuffer(m_renderer.allocator(), it->buffer, it->allocation);
     }
 }
 
@@ -37,16 +37,13 @@ void BufferPool::extend()
     alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
     alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
-    VkBuffer out_buffer;
-    VmaAllocation out_allocation;
-    VmaAllocationInfo allocinfo;
-    VK_CHECK(vmaCreateBuffer(m_allocator, &buffer_ci, &alloc_ci, &out_buffer, &out_allocation, &allocinfo));
-    m_buffers.emplace_back(out_buffer, out_allocation, reinterpret_cast<uintptr_t>(allocinfo.pMappedData));
+    auto& out = m_buffers.emplace_back();
+    VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &buffer_ci, &alloc_ci, &out.buffer, &out.allocation, &out.details));
     m_bits.resize(m_bits.size() + m_count);
     m_bits_it = m_bits.end() - m_count;
 }
 
-size_t BufferPool::allocate()
+BufferPool::index_t BufferPool::allocate()
 {
     if (m_bits_it == m_bits.end())
         m_bits_it = m_bits.begin();
@@ -56,26 +53,39 @@ size_t BufferPool::allocate()
             extend();
         }
     }
-    return std::distance(m_bits.begin(), m_bits_it++);
+    return static_cast<BufferPool::index_t>(std::distance(m_bits.begin(), m_bits_it++));
 }
 
-void BufferPool::free(size_t i)
+void BufferPool::free(BufferPool::index_t i)
 {
     m_bits[i] = false;
     m_bits_it = m_bits.begin() + i;
 }
 
-void BufferPool::buffer_handle(size_t index, VkDescriptorBufferInfo& out) const
+void BufferPool::buffer_handle(BufferPool::index_t index, VkDescriptorBufferInfo& out) const
 {
-    out.buffer = std::get<0>(m_buffers[index / m_count]);
+    out.buffer = m_buffers[index / m_count].buffer;
     out.offset = m_unit_size * (index % m_count);
     out.range = m_unit_size;
 }
 
-void* BufferPool::buffer_memory(size_t index, size_t extra_offset) const
+void* BufferPool::buffer_memory(BufferPool::index_t index, size_t extra_offset) const
 {
-    uintptr_t address = std::get<2>(m_buffers[index / m_count]) + (m_unit_size * (index % m_count));
-    return reinterpret_cast<void*>(address + extra_offset);
+    auto address = reinterpret_cast<uintptr_t>(m_buffers[index / m_count].details.pMappedData);
+    return reinterpret_cast<void*>(address + (m_unit_size * (index % m_count)) + extra_offset);
+}
+
+void BufferPool::flush(BufferPool::index_t* indexes, size_t count) const
+{
+    std::vector<VkMappedMemoryRange> flushes(count);
+    for (size_t i = 0; i < count; i++) {
+        flushes[i].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+        flushes[i].pNext = nullptr;
+        flushes[i].memory = m_buffers[i / m_count].details.deviceMemory;
+        flushes[i].offset = m_unit_size * (i % m_count);
+        flushes[i].size = std::max(m_renderer.limits().nonCoherentAtomSize, m_unit_size);
+    }
+    vkFlushMappedMemoryRanges(m_renderer.device(), count, flushes.data());
 }
 
 DescriptorPool::DescriptorPool(const Renderer& r, const VkDescriptorSetLayoutCreateInfo& layout_info, uint32_t max_sets)

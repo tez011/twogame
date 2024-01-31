@@ -3,9 +3,10 @@
 #include <deque>
 #include <memory>
 #include <unordered_map>
-#include <asset.h>
 #include <entt/entt.hpp>
 #include <glm/glm.hpp>
+#include "asset.h"
+#include "components.h"
 
 class Twogame;
 
@@ -18,6 +19,8 @@ class Scene {
     std::map<entt::hashed_string::hash_type, entt::entity> m_named_entities;
     entt::registry m_registry;
 
+    void write_perobject_descriptors(entt::entity, e_components::geometry&);
+
 public:
     Scene(Twogame* tg, std::string_view path);
 
@@ -25,7 +28,7 @@ public:
     inline size_t prepare_assets(VkCommandBuffer cmd) { return m_assets.prepare(cmd); }
     inline void post_prepare_assets() { return m_assets.post_prepare(); }
 
-    void draw(VkCommandBuffer cmd, VkRenderPass render_pass, uint32_t subpass, const std::array<VkDescriptorSet, 3>& descriptor_sets);
+    void draw(VkCommandBuffer cmd, VkRenderPass, uint32_t subpass, uint64_t frame_number, const std::array<VkDescriptorSet, 2>& descriptor_sets);
     void update_transforms();
 };
 

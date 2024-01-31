@@ -1,0 +1,21 @@
+<assets>
+    <mesh name="triangle">
+        <indexes source="/tg/simpleMorphGeometry.bin" format="uint16" offset="0" count="3" />
+        <attributes source="/tg/simpleMorphGeometry.bin" range="8 36" interleaved="false">
+            <attribute name="position" format="R32G32B32_SFLOAT" count="3" />
+        </attributes>
+        <displacements source="/tg/simpleMorphGeometry.bin" range="44 96">
+            <!-- I manually added padding here so that the displacements are vec4's. -->
+            <!-- We expect all (N=two) positions, then all (N) normals if normals are present in attributes. -->
+            <displacement weight="1.0" />
+            <displacement weight="-0.5" />
+        </displacements>
+    </mesh>
+    <shader name="morph">
+        <stage stage="vert" path="/tg/shaders/morph.vert.spv" />
+        <stage stage="frag" path="/tg/shaders/morph.frag.spv" />
+    </shader>
+    <material name="morph-basic" shader="morph">
+        <binding name="base_color">0.8 0.1 0.1</binding>
+    </material>
+</assets>

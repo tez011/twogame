@@ -125,6 +125,40 @@ Mesh::Attributes::Attributes(const pugi::xml_node& node)
         throw Exception(node, "attributes");
 }
 
+Mesh::Displacements::Displacement::Displacement(const pugi::xml_node& node)
+    : m_weight(0)
+{
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "weight") == 0) {
+            if (sscanf(it->value(), "%f", &m_weight) < 1)
+                throw Exception(node, "weight");
+        }
+    }
+}
+
+Mesh::Displacements::Displacements(const pugi::xml_node& node)
+{
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "source") == 0)
+            m_source = it->value();
+        else if (strcmp(it->name(), "range") == 0) {
+            if (sscanf(it->value(), "%zu %zu", &m_range.first, &m_range.second) < 2)
+                throw Exception(node, "range");
+        }
+    }
+    for (auto it = node.begin(); it != node.end(); ++it) {
+        if (strcmp(it->name(), "displacement") == 0)
+            m_displacements.emplace_back(*it);
+    }
+
+    if (m_source.empty())
+        throw Exception(node, "source");
+    if (m_range.second == 0)
+        throw Exception(node, "range");
+    if (m_displacements.size() == 0)
+        throw Exception(node, "displacements");
+}
+
 Mesh::Indexes::Indexes(const pugi::xml_node& node)
     : m_offset(0)
     , m_count(0)
@@ -162,6 +196,8 @@ Mesh::Mesh(const pugi::xml_node& node)
     for (auto it = node.begin(); it != node.end(); ++it) {
         if (strcmp(it->name(), "attributes") == 0)
             m_attributes.emplace_back(*it);
+        else if (strcmp(it->name(), "displacements") == 0)
+            m_displacements.emplace(*it);
         else if (strcmp(it->name(), "indexes") == 0)
             m_indexes.emplace(*it);
     }

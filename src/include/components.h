@@ -10,6 +10,8 @@ struct camera { };
 struct geometry {
     std::shared_ptr<asset::Mesh> m_mesh;
     std::shared_ptr<asset::Material> m_material;
+    std::array<VkDescriptorSet, 2> m_descriptors;
+    std::array<uint32_t, 2> m_descriptor_buffers;
 };
 struct hierarchy {
     entt::entity m_parent { entt::null };

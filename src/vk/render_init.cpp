@@ -65,13 +65,13 @@ Renderer::Renderer(Twogame* tg, SDL_Window* window)
     create_logical_device();
     create_allocator();
     create_swapchain(VK_NULL_HANDLE);
+    create_sampler();
     create_render_pass();
     create_framebuffers();
     create_pipeline_cache();
     create_descriptor_sets();
     create_command_buffers();
     create_synchronizers();
-    create_sampler();
 }
 
 Renderer::~Renderer()
@@ -89,8 +89,12 @@ Renderer::~Renderer()
         vkDestroySemaphore(m_device, m_sem_blit_finished[i], nullptr);
         vkDestroyFence(m_device, m_fence_frame[i], nullptr);
 
-        vkDestroyDescriptorPool(m_device, m_descriptor_pools[i], nullptr);
+        vkDestroyDescriptorPool(m_device, m_ds01_pool[i], nullptr);
     }
+    for (size_t i = 0; i < m_ds2_buffer_pool.size(); i++)
+        delete m_ds2_buffer_pool[i];
+    delete m_ds2_pool;
+
     vkDestroyCommandPool(m_device, m_command_pool_transient, nullptr);
     vkDestroyFence(m_device, m_fence_assets_prepared, nullptr);
 
@@ -102,10 +106,11 @@ Renderer::~Renderer()
     }
     for (size_t i = 0; i < m_trash.size(); i++)
         release_freed_items(i);
-    for (size_t i = 0; i < m_descriptor_layouts.size(); i++)
-        vkDestroyDescriptorSetLayout(m_device, m_descriptor_layouts[i], nullptr);
+    vkDestroyDescriptorSetLayout(m_device, m_ds0_layout, nullptr);
+    vkDestroyDescriptorSetLayout(m_device, m_ds1_layout, nullptr);
 
     vkDestroySampler(m_device, m_active_sampler, nullptr);
+    vkDestroySampler(m_device, m_morph_sampler, nullptr);
     vkDestroyPipelineCache(m_device, m_pipeline_cache, nullptr);
     vkDestroyRenderPass(m_device, m_render_pass[0], nullptr);
     vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
@@ -245,6 +250,7 @@ static bool evaluate_physical_device(VkPhysicalDevice hwd, VkSurfaceKHR surface,
         spdlog::debug("{}: skipping: required feature " #FIELD " not available", device_props.deviceName); \
         return false;                                                                                      \
     }
+    DEMAND_FEATURE(available_features.features, depthClamp);
     DEMAND_FEATURE(available_features.features, sampleRateShading);
     if (has_portability_subset) {
         DEMAND_FEATURE(portability_features, constantAlphaColorBlendFactors);
@@ -262,6 +268,12 @@ static bool evaluate_physical_device(VkPhysicalDevice hwd, VkSurfaceKHR surface,
     vkGetPhysicalDeviceSurfacePresentModesKHR(hwd, surface, &surface_present_mode_count, nullptr);
     if (surface_present_mode_count == 0) {
         spdlog::debug("{}: skipping: no supported surface present modes", device_props.deviceName);
+        return false;
+    }
+
+    VkImageFormatProperties ifmt;
+    if (vkGetPhysicalDeviceImageFormatProperties(hwd, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_TYPE_1D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+        spdlog::debug("{}: skipping: image format used for morph target displacements is not supported", device_props.deviceName);
         return false;
     }
 
@@ -304,42 +316,35 @@ void Renderer::create_logical_device()
 
     VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable_device_local_memory {};
     pageable_device_local_memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT;
+    VkPhysicalDeviceRobustness2FeaturesEXT robustness2 {};
+    robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+    robustness2.pNext = &pageable_device_local_memory;
 
     for (auto& ext : available_exts) {
         if (strcmp(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
         if (strcmp(VK_KHR_SWAPCHAIN_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
+        if (strcmp(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, ext.extensionName) == 0)
+            extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
         if (strcmp(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME, ext.extensionName) == 0) {
             extensions.push_back(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
             extensions.push_back(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
-            pageable_device_local_memory.pageableDeviceLocalMemory = VK_TRUE;
         }
     }
 
-    VkPhysicalDeviceProperties properties {};
-    vkGetPhysicalDeviceProperties(m_hwd, &properties);
-    spdlog::info("selecting device {}", properties.deviceName);
-    memcpy(&m_device_limits, &properties.limits, sizeof(VkPhysicalDeviceLimits));
-
-    VkPhysicalDeviceVulkan12Features available_features12 {};
-    available_features12.sType = m_device_features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    m_device_features12.pNext = &pageable_device_local_memory;
-    VkPhysicalDeviceVulkan11Features available_features11 {};
-    available_features11.sType = m_device_features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-    available_features11.pNext = &available_features12;
+    VkPhysicalDeviceProperties2 properties {};
+    properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    vkGetPhysicalDeviceProperties2(m_hwd, &properties);
+    spdlog::info("selecting device {}", properties.properties.deviceName);
+    memcpy(&m_device_limits, &properties.properties.limits, sizeof(VkPhysicalDeviceLimits));
+    m_device_features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    m_device_features12.pNext = &robustness2;
+    m_device_features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     m_device_features11.pNext = &m_device_features12;
-    VkPhysicalDeviceFeatures2 available_features {};
-    available_features.sType = m_device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    available_features.pNext = &available_features11;
+    m_device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     m_device_features.pNext = &m_device_features11;
-    vkGetPhysicalDeviceFeatures2(m_hwd, &available_features);
-
-    m_device_features.features.depthClamp = true;
-    if (available_features.features.samplerAnisotropy)
-        m_device_features.features.samplerAnisotropy = true;
-    // Enable features in features{,11,12} if they're on in
-    // available_features{,11,12}.
+    vkGetPhysicalDeviceFeatures2(m_hwd, &m_device_features);
 
     std::array<VkDeviceQueueCreateInfo, 3> queue_createinfos {};
     std::vector<VkQueueFamilyProperties> qf_properties;
@@ -651,49 +656,48 @@ void Renderer::create_descriptor_sets()
     m_push_constants[0] = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4) };
 
     VkDescriptorSetLayoutBinding internal_bindings[] = {
-        // Use immutable samplers for images here.
         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+        { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT, &m_morph_sampler },
+        { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
     };
     VkDescriptorSetLayoutCreateInfo dsl_ci {};
     dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_descriptor_layouts[0]));
-    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_descriptor_layouts[2]));
+    dsl_ci.bindingCount = 0;
+    dsl_ci.pBindings = internal_bindings;
+    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_ds0_layout));
+    dsl_ci.pBindings += dsl_ci.bindingCount;
     dsl_ci.bindingCount = 1;
-    dsl_ci.pBindings = internal_bindings + 0;
-    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_descriptor_layouts[1]));
+    VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_ds1_layout));
+    dsl_ci.pBindings += dsl_ci.bindingCount;
+    dsl_ci.bindingCount = 2;
+    m_ds2_pool = new vk::DescriptorPool(*this, dsl_ci);
 
     auto dsp01sz = std::to_array<VkDescriptorPoolSize>({
         // descriptor set 0
         // descriptor set 1
         { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, DS1_INSTANCES },
-        // descriptor set 2
     });
     VkDescriptorPoolCreateInfo dpl_ci {};
     dpl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    dpl_ci.maxSets = 1 + DS1_INSTANCES + DS2_INSTANCES,
+    dpl_ci.maxSets = 1 + DS1_INSTANCES;
     dpl_ci.poolSizeCount = dsp01sz.size();
     dpl_ci.pPoolSizes = dsp01sz.data();
-    VK_CHECK(vkCreateDescriptorPool(m_device, &dpl_ci, nullptr, &m_descriptor_pools[0]));
-    VK_CHECK(vkCreateDescriptorPool(m_device, &dpl_ci, nullptr, &m_descriptor_pools[1]));
+    VK_CHECK(vkCreateDescriptorPool(m_device, &dpl_ci, nullptr, &m_ds01_pool[0]));
+    VK_CHECK(vkCreateDescriptorPool(m_device, &dpl_ci, nullptr, &m_ds01_pool[1]));
 
-    std::array<VkDescriptorSetLayout, std::max(DS1_INSTANCES, DS2_INSTANCES)> dslp;
+    std::array<VkDescriptorSetLayout, DS1_INSTANCES> dslp;
     VkDescriptorSetAllocateInfo dsallocinfo {};
     dsallocinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     for (int i = 0; i < 2; i++) {
-        dsallocinfo.descriptorPool = m_descriptor_pools[i];
+        dsallocinfo.descriptorPool = m_ds01_pool[i];
         dsallocinfo.descriptorSetCount = 1;
-        dsallocinfo.pSetLayouts = &m_descriptor_layouts[0];
+        dsallocinfo.pSetLayouts = &m_ds0_layout;
         VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, &m_ds0[i]));
 
-        dslp.fill(m_descriptor_layouts[1]);
+        dslp.fill(m_ds1_layout);
         dsallocinfo.descriptorSetCount = DS1_INSTANCES;
         dsallocinfo.pSetLayouts = dslp.data();
         VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, m_ds1[i].data()));
-
-        dslp.fill(m_descriptor_layouts[2]);
-        dsallocinfo.descriptorSetCount = DS2_INSTANCES;
-        dsallocinfo.pSetLayouts = dslp.data(); // possibly redundant
-        VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, m_ds2[i].data()));
     }
 
     VkBufferCreateInfo buffer_ci {};
@@ -726,6 +730,8 @@ void Renderer::create_descriptor_sets()
     }
 
     vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
+
+    m_ds2_buffer_pool[0] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 64 * sizeof(float), 1024);
 }
 
 void Renderer::create_command_buffers()
@@ -802,6 +808,12 @@ void Renderer::create_sampler()
     if (m_active_sampler != VK_NULL_HANDLE)
         vfree(m_active_sampler);
     VK_CHECK(vkCreateSampler(m_device, &ci, nullptr, &m_active_sampler));
+
+    ci.magFilter = ci.minFilter = VK_FILTER_NEAREST;
+    ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
+    ci.anisotropyEnable = VK_FALSE;
+    if (m_morph_sampler == VK_NULL_HANDLE)
+        VK_CHECK(vkCreateSampler(m_device, &ci, nullptr, &m_morph_sampler));
 }
 
 void Renderer::release_freed_items(int bucket)
@@ -881,11 +893,20 @@ void Renderer::wait_idle()
     vkDeviceWaitIdle(m_device);
 }
 
+bool Renderer::null_descriptor_enabled() const
+{
+    const VkBaseOutStructure* s = reinterpret_cast<const VkBaseOutStructure*>(&m_device_features);
+    while (s->sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT)
+        s = reinterpret_cast<const VkBaseOutStructure*>(s->pNext);
+
+    return reinterpret_cast<const VkPhysicalDeviceRobustness2FeaturesEXT*>(s)->nullDescriptor;
+}
+
 VkPipelineLayout Renderer::create_pipeline_layout(VkDescriptorSetLayout material_layout) const
 {
     VkPipelineLayout pl = VK_NULL_HANDLE;
     VkPipelineLayoutCreateInfo createinfo {};
-    VkDescriptorSetLayout set_layouts[4] = { m_descriptor_layouts[0], m_descriptor_layouts[1], m_descriptor_layouts[2], material_layout };
+    VkDescriptorSetLayout set_layouts[4] = { m_ds0_layout, m_ds1_layout, m_ds2_pool->layout(), material_layout };
     createinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     createinfo.setLayoutCount = 4;
     createinfo.pSetLayouts = set_layouts;
@@ -893,6 +914,48 @@ VkPipelineLayout Renderer::create_pipeline_layout(VkDescriptorSetLayout material
     createinfo.pPushConstantRanges = m_push_constants.data();
     VK_CHECK(vkCreatePipelineLayout(m_device, &createinfo, nullptr, &pl));
     return pl;
+}
+
+void Renderer::create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, 2>& buffers)
+{
+    m_ds2_pool->allocate(sets.data(), sets.size());
+    buffers[0] = m_ds2_buffer_pool[0]->allocate();
+    buffers[1] = m_ds2_buffer_pool[0]->allocate();
+
+    std::array<VkWriteDescriptorSet, 2> writes;
+    std::array<VkDescriptorBufferInfo, 2> wbuffers;
+    writes[0] = {
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        nullptr,
+        sets[0],
+        1,
+        0, 1,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        nullptr,
+        &wbuffers[0],
+        nullptr
+    };
+    writes[1] = {
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        nullptr,
+        sets[1],
+        1,
+        0, 1,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        nullptr,
+        &wbuffers[1],
+        nullptr
+    };
+    m_ds2_buffer_pool[0]->buffer_handle(buffers[0], wbuffers[0]);
+    m_ds2_buffer_pool[0]->buffer_handle(buffers[1], wbuffers[1]);
+    vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
+}
+
+void Renderer::free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, 2>& buffers)
+{
+    m_ds2_buffer_pool[0]->free(buffers[0]);
+    m_ds2_buffer_pool[0]->free(buffers[1]);
+    m_ds2_pool->free(sets.data(), sets.size());
 }
 
 }

@@ -147,12 +147,14 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
 
             for (auto* iv : inputs) {
                 vk::VertexInput input;
-                if (strncmp(iv->name, "in_", 3) == 0 && vk::parse(iv->name + 3, input)) {
-                    m_inputs[input] = iv->location;
-                } else {
-                    std::ostringstream oss;
-                    oss << "unrecognizable input: " << iv->name << "@" << iv->location;
-                    throw MalformedException(info.name(), oss.str());
+                if (strncmp(iv->name, "in_", 3) == 0) {
+                    if (vk::parse(iv->name + 3, input)) {
+                        m_inputs[input] = iv->location;
+                    } else {
+                        std::ostringstream oss;
+                        oss << "unrecognizable input: " << iv->name << "@" << iv->location;
+                        throw MalformedException(info.name(), oss.str());
+                    }
                 }
             }
         }
@@ -206,7 +208,7 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
     dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dsl_ci.bindingCount = material_descriptor_layout.size();
     dsl_ci.pBindings = material_descriptor_layout.data();
-    m_descriptor_pool = new vk::DescriptorPool(m_renderer, dsl_ci);
+    m_descriptor_pool = new vk::DescriptorPool(m_renderer, dsl_ci, 128);
     m_pipeline_layout = m_renderer.create_pipeline_layout(m_descriptor_pool->layout());
 
     if (m_stages.size() == 1 && m_stages[0].stage == VK_SHADER_STAGE_COMPUTE_BIT) {

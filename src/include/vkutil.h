@@ -29,9 +29,15 @@ bool parse(const std::string_view&, T&);
 size_t format_width(VkFormat);
 size_t format_width(VkIndexType);
 
+typedef struct {
+    VkBuffer buffer;
+    VmaAllocation allocation;
+    VmaAllocationInfo details;
+} buffer;
+
 class BufferPool {
-    VmaAllocator m_allocator;
-    std::vector<std::tuple<VkBuffer, VmaAllocation, uintptr_t>> m_buffers;
+    const Renderer& m_renderer;
+    std::vector<buffer> m_buffers;
     std::vector<bool> m_bits;
     std::vector<bool>::iterator m_bits_it;
     VkDeviceSize m_unit_size, m_count;
@@ -40,15 +46,17 @@ class BufferPool {
     void extend();
 
 public:
+    using index_t = uint32_t;
     BufferPool(const Renderer&, VkBufferUsageFlags usage, size_t unit_size, size_t count = 0x4000);
     ~BufferPool();
 
-    size_t allocate();
-    void free(size_t);
+    index_t allocate();
+    void free(index_t);
 
     VkDeviceSize unit_size() const { return m_unit_size; }
-    void buffer_handle(size_t index, VkDescriptorBufferInfo& out) const;
-    void* buffer_memory(size_t index, size_t extra_offset = 0) const;
+    void buffer_handle(index_t index, VkDescriptorBufferInfo& out) const;
+    void* buffer_memory(index_t index, size_t extra_offset = 0) const;
+    void flush(index_t* indexes, size_t count = 1) const;
 };
 
 class DescriptorPool {
@@ -64,7 +72,7 @@ private:
     void extend();
 
 public:
-    DescriptorPool(const Renderer&, const VkDescriptorSetLayoutCreateInfo& layout_info, uint32_t max_sets = 200);
+    DescriptorPool(const Renderer&, const VkDescriptorSetLayoutCreateInfo& layout_info, uint32_t max_sets = 1024);
     ~DescriptorPool();
 
     inline const VkDescriptorSetLayout& layout() const { return m_set_layout; }

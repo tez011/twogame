@@ -129,11 +129,16 @@ private:
     VmaAllocation m_buffer_mem, m_staging_mem;
     VkDeviceSize m_buffer_size;
 
+    VkImage m_displacement_image;
+    VkImageView m_displacement_position, m_displacement_normal;
+    VmaAllocation m_displacement_mem;
+    VkBufferImageCopy m_displacement_prep;
+    std::vector<float> m_displacement_initial_weights;
+
     std::vector<VertexInputAttribute> m_attributes;
     std::vector<VkVertexInputBindingDescription> m_bindings;
     std::vector<VkDeviceSize> m_binding_offsets;
     VkPrimitiveTopology m_primitive_topology;
-    VkDeviceSize m_index_offset;
     size_t m_index_count;
     VkIndexType m_index_type;
     uint64_t m_pipeline_parameter;
@@ -150,6 +155,10 @@ public:
     inline size_t index_count() const { return m_index_count; }
     inline uint64_t pipeline_parameter() const { return m_pipeline_parameter; }
     void bind_buffers(VkCommandBuffer cmd);
+
+    inline VkImageView position_displacement() const { return m_displacement_position; }
+    inline VkImageView normal_displacement() const { return m_displacement_normal; }
+    inline const std::vector<float>& displacement_initial_weights() const { return m_displacement_initial_weights; }
 
     virtual Type type() const { return Type::Mesh; }
     virtual void prepare(VkCommandBuffer cmd);

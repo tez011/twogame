@@ -128,11 +128,6 @@ static ktx_error_code_e ktx_mip_iterate(int miplevel, int face, int width, int h
     return KTX_SUCCESS;
 }
 
-static VkImageUsageFlags parse_usage(std::string_view u)
-{
-    return VK_IMAGE_USAGE_SAMPLED_BIT; // TODO
-}
-
 namespace twogame::asset {
 
 Image::Image(const xml::assets::Image& info, const Renderer* r)
@@ -175,7 +170,7 @@ Image::Image(const xml::assets::Image& info, const Renderer* r)
     i_createinfo.mipLevels = ktx->numLevels;
     i_createinfo.samples = VK_SAMPLE_COUNT_1_BIT;
     i_createinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
-    i_createinfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | parse_usage(info.usage());
+    i_createinfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     i_createinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     i_createinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (ktx->isArray) {
