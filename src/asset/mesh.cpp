@@ -9,7 +9,7 @@ using namespace std::literals;
 namespace twogame::asset {
 
 Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
-    : AbstractAsset(r)
+    : m_renderer(*r)
     , m_displacement_prep({})
     , m_index_count(info.indexes()->count())
 {
@@ -146,7 +146,6 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
         dvci.image = m_displacement_image;
         dvci.viewType = VK_IMAGE_VIEW_TYPE_1D_ARRAY;
         dvci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-        dvci.components.a = VK_COMPONENT_SWIZZLE_ZERO;
         dvci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         dvci.subresourceRange.baseMipLevel = 0;
         dvci.subresourceRange.levelCount = 1;
@@ -169,6 +168,8 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
     m_primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     if (!info.indexes()->topology().empty() && !vk::parse<VkPrimitiveTopology>(info.indexes()->topology(), m_primitive_topology))
         throw MalformedException(info.name(), "invalid primitive topology "s + std::string { info.indexes()->topology() });
+    for (auto it = info.animations().begin(); it != info.animations().end(); ++it)
+        m_animations[std::string { it->name() }] = std::make_shared<Animation>(*it, this);
 
     XXH3_state_t* xxh = XXH3_createState();
     XXH3_64bits_reset(xxh);
@@ -180,7 +181,7 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
 }
 
 Mesh::Mesh(Mesh&& other) noexcept
-    : AbstractAsset(&other.m_renderer)
+    : m_renderer(other.m_renderer)
     , m_buffer(other.m_buffer)
     , m_staging(other.m_staging)
     , m_buffer_mem(other.m_buffer_mem)
@@ -270,6 +271,109 @@ bool Mesh::prepared() const
     if (m_displacement_image != VK_NULL_HANDLE && m_displacement_prep.imageExtent.width != 0)
         return false;
     return m_staging == VK_NULL_HANDLE;
+}
+
+Animation::Animation(const xml::assets::Animation& info, Mesh* mesh)
+{
+    PHYSFS_File* fh = PHYSFS_openRead(info.source().data());
+    if (fh == nullptr)
+        throw IOException(info.source(), PHYSFS_getLastErrorCode());
+
+    m_inputs.resize(info.keyframes());
+    m_channels.reserve(info.outputs().size());
+    if (PHYSFS_seek(fh, info.input_offset()) == 0)
+        throw IOException(info.source(), PHYSFS_getLastErrorCode());
+    if (PHYSFS_readBytes(fh, m_inputs.data(), m_inputs.size() * sizeof(float)) < static_cast<PHYSFS_sint64>(m_inputs.size() * sizeof(float)))
+        throw IOException(info.source(), PHYSFS_getLastErrorCode());
+
+    for (auto it = info.outputs().begin(); it != info.outputs().end(); ++it) {
+        Channel& c = m_channels.emplace_back();
+        c.m_bone = it->bone();
+        c.m_step_interpolate = it->step_interpolate();
+        if (it->target() == "translation") {
+            c.m_target = ChannelTarget::Translation;
+            c.m_data.resize(info.keyframes() * 3);
+        } else if (it->target() == "orientation") {
+            c.m_target = ChannelTarget::Orientation;
+            c.m_data.resize(info.keyframes() * 4);
+        } else if (it->target() == "displacements") {
+            if (mesh == nullptr)
+                throw MalformedException(info.name(), "animation with displacement weights must be associated with a mesh");
+            c.m_target = ChannelTarget::DisplaceWeights;
+            c.m_data.resize(info.keyframes() * mesh->displacement_initial_weights().size());
+        }
+        if (PHYSFS_seek(fh, it->offset()) == 0)
+            throw IOException(info.source(), PHYSFS_getLastErrorCode());
+        if (PHYSFS_readBytes(fh, c.m_data.data(), c.m_data.size() * sizeof(float)) < static_cast<PHYSFS_sint64>(c.m_data.size() * sizeof(float)))
+            throw IOException(info.source(), PHYSFS_getLastErrorCode());
+    }
+}
+
+Animation::Iterator Animation::interpolate(float t) const
+{
+    return Iterator(this, t);
+}
+
+bool Animation::finished(const Iterator& it) const
+{
+    return it.m_it == m_channels.end();
+}
+
+Animation::Iterator::Iterator(const Animation* animation, float t)
+    : m_animation(animation)
+{
+    size_t begin = 0, end = animation->m_inputs.size() - 1, res = -1;
+    while (begin <= end) {
+        size_t mid = (begin + end) / 2;
+        if (animation->m_inputs[mid] <= t) {
+            res = mid;
+            begin = mid + 1;
+        } else {
+            end = mid - 1;
+        }
+    }
+
+    float t0 = animation->m_inputs[res], t1 = animation->m_inputs[res + 1];
+    m_it = animation->m_channels.begin();
+    m_index = res;
+    m_iv = (t - t0) / (t1 - t0);
+}
+
+Animation::Iterator& Animation::Iterator::operator++()
+{
+    ++m_it;
+    return *this;
+}
+
+void Animation::Iterator::get(size_t count, float* out) const
+{
+    size_t dim;
+    switch (m_it->m_target) {
+    case ChannelTarget::Translation:
+        dim = 3;
+        break;
+    case ChannelTarget::Orientation:
+        dim = 4;
+        break;
+    default:
+        dim = m_it->m_data.size() / m_animation->m_inputs.size();
+        break;
+    }
+#ifdef TWOGAME_DEBUG_BUILD
+    if (count < dim)
+        spdlog::error("buffer provided to Animation::Iterator::get was {} big; needed {}", count, dim);
+#endif
+
+    const float *x0 = m_it->m_data.data() + (m_index * dim),
+                *x1 = m_it->m_data.data() + ((m_index + 1) * dim);
+    if (m_it->m_step_interpolate) {
+        memcpy(out, x0, std::min(count, dim) * sizeof(float));
+    } else if (m_it->m_target == ChannelTarget::Orientation) {
+        assert(false); // slerp/nlerp
+    } else {
+        for (size_t i = 0; i < std::min(count, dim); i++)
+            out[i] = x0[i] + m_iv * (x1[i] - x0[i]);
+    }
 }
 
 }

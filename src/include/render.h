@@ -145,14 +145,14 @@ private:
     std::array<std::array<VmaAllocation, static_cast<size_t>(RenderAttachment::MAX_VALUE)>, 2> m_render_att_allocs;
     std::array<std::queue<std::pair<uint64_t, vk_destructible::Types>>, 4> m_trash;
 
-    constexpr static size_t DS1_INSTANCES = 1;
+    constexpr static size_t DS1_INSTANCES = 1, DS2_BUFFERS = 1;
     VkDescriptorSetLayout m_ds0_layout, m_ds1_layout;
     std::array<VkPushConstantRange, 1> m_push_constants;
     std::array<VkDescriptorPool, 2> m_ds01_pool;
     std::array<VkDescriptorSet, 2> m_ds0;
     std::array<std::array<VkDescriptorSet, DS1_INSTANCES>, 2> m_ds1;
     std::array<std::array<vk::buffer, DS1_INSTANCES>, 2> m_ds1_buffers;
-    std::array<vk::BufferPool*, 1> m_ds2_buffer_pool;
+    std::array<vk::BufferPool*, DS2_BUFFERS> m_ds2_buffer_pool;
     vk::DescriptorPool* m_ds2_pool;
 
     std::array<VkSemaphore, 2> m_sem_image_available, m_sem_render_finished, m_sem_blit_finished;
@@ -209,6 +209,7 @@ public:
     void draw(Scene* scene);
     void next_frame(uint32_t image_index);
     void wait_idle();
+    inline uint64_t current_frame() const { return m_frame_number; }
 
     const VkPhysicalDevice& hwd() const { return m_hwd; }
     const VkDevice& device() const { return m_device; }

@@ -11,14 +11,16 @@ bool AssetManager::import_assets(std::string_view path, const Renderer* renderer
         return false;
 
     try {
-        for (auto& s : assetdoc->shaders())
+        for (const auto& s : assetdoc->shaders())
             m_shaders[std::string { s.name() }] = std::make_shared<asset::Shader>(s, renderer);
-        for (auto& i : assetdoc->images())
+        for (const auto& i : assetdoc->images())
             m_images[std::string { i.name() }] = std::make_shared<asset::Image>(i, renderer);
-        for (auto& m : assetdoc->meshes())
+        for (const auto& m : assetdoc->meshes())
             m_meshes[std::string { m.name() }] = std::make_shared<asset::Mesh>(m, renderer);
+        for (const auto& a : assetdoc->animations())
+            m_animations[std::string { a.name() }] = std::make_shared<asset::Animation>(a, nullptr);
 
-        for (auto& m : assetdoc->materials()) {
+        for (const auto& m : assetdoc->materials()) {
             auto shader = m_shaders.find(m.shader());
             if (shader == m_shaders.end()) {
                 spdlog::error("failed to load material {}: shader {} not found", m.name(), m.shader());

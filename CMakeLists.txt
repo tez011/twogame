@@ -13,7 +13,7 @@ message("CMake build type: ${CMAKE_BUILD_TYPE}")
 file(MAKE_DIRECTORY ${CMAKE_SOURCE_DIR}/prefs)
 
 # ---- Global compiler options ----
-if (MSVC)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
     foreach (flag_var
              CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
              CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
@@ -26,9 +26,8 @@ if (MSVC)
         /wd4267
         $<$<CONFIG:DEBUG>:/Od>
         $<$<CONFIG:DEBUG>:/Zi>
-        $<$<CONFIG:RELEASE>:/O2>
-    )
-else(MSVC)
+        $<$<CONFIG:RELEASE>:/O2>)
+elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "GNU")
     foreach (flag_var
              CMAKE_C_FLAGS CMAKE_C_FLAGS_DEBUG CMAKE_C_FLAGS_RELEASE
              CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
@@ -39,8 +38,7 @@ else(MSVC)
     add_compile_options(
         $<$<CONFIG:DEBUG>:-O0>
         $<$<CONFIG:DEBUG>:-ggdb>
-        $<$<CONFIG:RELEASE>:-O3>
-    )
+        $<$<CONFIG:RELEASE>:-O3>)
 endif()
 add_compile_definitions(
     $<$<CONFIG:DEBUG>:TWOGAME_DEBUG_BUILD>

@@ -23,6 +23,17 @@ struct hierarchy {
 struct translation : glm::vec3 { };
 struct orientation : glm::quat { };
 struct transform : glm::mat4 { };
-struct dirty_transform { };
+struct transform_dirty { };
+
+struct morph_animation {
+    std::shared_ptr<asset::Animation> m_animation, m_next_animation;
+    uint64_t m_start_time;
+    float m_multiplier;
+};
+struct morph_weights {
+    std::vector<float> m_weights;
+};
+struct morph_weights_dirty_0 { };
+struct morph_weights_dirty_1 { };
 
 }

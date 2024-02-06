@@ -56,7 +56,7 @@ public:
     VkDeviceSize unit_size() const { return m_unit_size; }
     void buffer_handle(index_t index, VkDescriptorBufferInfo& out) const;
     void* buffer_memory(index_t index, size_t extra_offset = 0) const;
-    void flush(index_t* indexes, size_t count = 1) const;
+    void enqueue_flush(index_t index, VkMappedMemoryRange& out) const;
 };
 
 class DescriptorPool {

@@ -75,17 +75,13 @@ void* BufferPool::buffer_memory(BufferPool::index_t index, size_t extra_offset) 
     return reinterpret_cast<void*>(address + (m_unit_size * (index % m_count)) + extra_offset);
 }
 
-void BufferPool::flush(BufferPool::index_t* indexes, size_t count) const
+void BufferPool::enqueue_flush(BufferPool::index_t index, VkMappedMemoryRange& out) const
 {
-    std::vector<VkMappedMemoryRange> flushes(count);
-    for (size_t i = 0; i < count; i++) {
-        flushes[i].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        flushes[i].pNext = nullptr;
-        flushes[i].memory = m_buffers[i / m_count].details.deviceMemory;
-        flushes[i].offset = m_unit_size * (i % m_count);
-        flushes[i].size = std::max(m_renderer.limits().nonCoherentAtomSize, m_unit_size);
-    }
-    vkFlushMappedMemoryRanges(m_renderer.device(), count, flushes.data());
+    out.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
+    out.pNext = nullptr;
+    out.memory = m_buffers[index / m_count].details.deviceMemory;
+    out.offset = m_unit_size * (index % m_count);
+    out.size = std::max(m_renderer.limits().nonCoherentAtomSize, m_unit_size);
 }
 
 DescriptorPool::DescriptorPool(const Renderer& r, const VkDescriptorSetLayoutCreateInfo& layout_info, uint32_t max_sets)

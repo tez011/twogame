@@ -131,7 +131,7 @@ static ktx_error_code_e ktx_mip_iterate(int miplevel, int face, int width, int h
 namespace twogame::asset {
 
 Image::Image(const xml::assets::Image& info, const Renderer* r)
-    : AbstractAsset(r)
+    : m_renderer(*r)
 {
     PHYSFS_File* fh = PHYSFS_openRead(info.source().data());
     if (!fh)
@@ -229,7 +229,7 @@ Image::Image(const xml::assets::Image& info, const Renderer* r)
 }
 
 Image::Image(Image&& other) noexcept
-    : AbstractAsset(&other.m_renderer)
+    : m_renderer(other.m_renderer)
     , m_storage(other.m_storage)
     , m_image(other.m_image)
     , m_view(other.m_view)

@@ -23,6 +23,7 @@ class Renderer;
 }
 
 namespace twogame::xml::assets {
+struct Animation;
 struct Image;
 struct Material;
 struct Mesh;
@@ -31,7 +32,6 @@ struct Shader;
 
 namespace twogame::asset {
 
-class AssetManager;
 enum class Type {
     Material,
     Mesh,
@@ -39,19 +39,13 @@ enum class Type {
     Shader,
     MAX_VALUE
 };
+template <typename T>
+class lookup : public std::unordered_map<std::string, T, overload<std::hash<std::string>, std::hash<std::string_view>>, std::equal_to<>> { };
+class AssetManager;
+class Animation;
 
-class AbstractAsset {
-protected:
-    const Renderer& m_renderer;
-
+class IPreparable {
 public:
-    AbstractAsset(const Renderer* r)
-        : m_renderer(*r)
-    {
-    }
-
-    virtual Type type() const = 0;
-
     //! Issue commands in this method to prepare the asset for use. For example, place the asset in device-local memory here.
     virtual void prepare(VkCommandBuffer cmd) = 0;
 
@@ -92,8 +86,9 @@ public:
     std::string_view description() const { return m_what; }
 };
 
-class Image : public AbstractAsset {
+class Image : public IPreparable {
 private:
+    const Renderer& m_renderer;
     VkBuffer m_storage;
     VkImage m_image;
     VkImageView m_view;
@@ -110,13 +105,12 @@ public:
     const VkImage& image_handle() const { return m_image; }
     const VkImageView& image_view() const { return m_view; }
 
-    virtual Type type() const { return Type::Image; }
     virtual void prepare(VkCommandBuffer cmd);
     virtual void post_prepare();
     virtual bool prepared() const;
 };
 
-class Mesh : public AbstractAsset {
+class Mesh : public IPreparable {
 public:
     struct VertexInputAttribute {
         uint32_t binding, offset;
@@ -125,6 +119,7 @@ public:
     };
 
 private:
+    const Renderer& m_renderer;
     VkBuffer m_buffer, m_staging;
     VmaAllocation m_buffer_mem, m_staging_mem;
     VkDeviceSize m_buffer_size;
@@ -143,6 +138,8 @@ private:
     VkIndexType m_index_type;
     uint64_t m_pipeline_parameter;
 
+    lookup<std::shared_ptr<Animation>> m_animations;
+
 public:
     Mesh(const xml::assets::Mesh&, const Renderer*);
     Mesh(const Mesh&) = delete;
@@ -159,14 +156,14 @@ public:
     inline VkImageView position_displacement() const { return m_displacement_position; }
     inline VkImageView normal_displacement() const { return m_displacement_normal; }
     inline const std::vector<float>& displacement_initial_weights() const { return m_displacement_initial_weights; }
+    inline const auto& animations() const { return m_animations; }
 
-    virtual Type type() const { return Type::Mesh; }
     virtual void prepare(VkCommandBuffer cmd);
     virtual void post_prepare();
     virtual bool prepared() const;
 };
 
-class Shader : public AbstractAsset {
+class Shader {
     friend class Material;
 
 public:
@@ -203,6 +200,7 @@ public:
     };
 
 private:
+    const Renderer& m_renderer;
     std::vector<VkPipelineShaderStageCreateInfo> m_stages;
     std::map<vk::VertexInput, int> m_inputs;
     std::map<std::string, DescriptorSetSlot> m_material_bindings;
@@ -217,11 +215,6 @@ public:
     Shader(const Shader&) = delete;
     Shader(Shader&&) noexcept;
     virtual ~Shader();
-
-    virtual Type type() const { return Type::Shader; }
-    virtual void prepare(VkCommandBuffer cmd) { }
-    virtual void post_prepare() { }
-    virtual bool prepared() const { return true; }
 
     VkPipelineLayout pipeline_layout() const { return m_pipeline_layout; }
     VkPipeline compute_pipeline() const { return m_compute_pipeline; }
@@ -245,16 +238,58 @@ public:
     VkDescriptorSet descriptor() const { return m_descriptor_set; }
 };
 
-class AssetManager {
-    template <typename T>
-    class lookup : public std::unordered_map<std::string, T, overload<std::hash<std::string>, std::hash<std::string_view>>, std::equal_to<>> { };
+class Animation {
+public:
+    enum class ChannelTarget : uint16_t {
+        Translation,
+        Orientation,
+        DisplaceWeights,
+        MAX_VALUE,
+    };
 
 private:
-    std::deque<asset::AbstractAsset*> m_assets_preparing;
+    struct Channel {
+        std::vector<float> m_data;
+        uint32_t m_bone;
+        ChannelTarget m_target;
+        bool m_step_interpolate;
+    };
+    std::vector<float> m_inputs;
+    std::vector<Channel> m_channels;
+
+public:
+    Animation(const xml::assets::Animation&, Mesh* mesh);
+    float duration() const { return m_inputs[m_inputs.size() - 1]; }
+
+    class Iterator {
+        friend class Animation;
+        const Animation* m_animation;
+        std::vector<Channel>::const_iterator m_it;
+        size_t m_index;
+        float m_iv;
+
+        Iterator(const Animation*, float t);
+
+    public:
+        Iterator& operator++();
+
+        inline ChannelTarget target() const { return m_it->m_target; }
+        inline uint32_t bone() const { return m_it->m_bone; }
+        void get(size_t count, float* out) const;
+    };
+
+    Iterator interpolate(float t) const;
+    bool finished(const Iterator&) const;
+};
+
+class AssetManager {
+private:
+    std::deque<asset::IPreparable*> m_assets_preparing;
     lookup<std::shared_ptr<asset::Image>> m_images;
     lookup<std::shared_ptr<asset::Material>> m_materials;
     lookup<std::shared_ptr<asset::Mesh>> m_meshes;
     lookup<std::shared_ptr<asset::Shader>> m_shaders;
+    lookup<std::shared_ptr<asset::Animation>> m_animations;
 
 public:
     bool import_assets(std::string_view path, const Renderer*);
@@ -265,6 +300,7 @@ public:
     const auto& materials() const { return m_materials; }
     const auto& meshes() const { return m_meshes; }
     const auto& shaders() const { return m_shaders; }
+    const auto& animations() const { return m_animations; }
 };
 
 }

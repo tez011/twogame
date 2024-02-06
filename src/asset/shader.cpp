@@ -94,7 +94,7 @@ static VkPipelineDynamicStateCreateInfo dynamic_state {
 namespace twogame::asset {
 
 Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
-    : AbstractAsset(r)
+    : m_renderer(*r)
 {
     VkResult res;
     std::vector<PHYSFS_File*> inputs;
@@ -223,7 +223,7 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
 }
 
 Shader::Shader(Shader&& other) noexcept
-    : AbstractAsset(&other.m_renderer)
+    : m_renderer(other.m_renderer)
     , m_stages(std::move(other.m_stages))
     , m_inputs(std::move(other.m_inputs))
     , m_material_bindings(std::move(other.m_material_bindings))

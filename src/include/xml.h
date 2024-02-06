@@ -17,6 +17,7 @@ private:              \
 public:               \
     const TYPE& NAME() const { return m_##NAME; }
 
+typedef std::pair<size_t, size_t> IntPair;
 class Exception : public std::exception {
     std::string m_what;
 
@@ -26,6 +27,21 @@ public:
 };
 
 namespace assets {
+    struct Animation {
+        struct Output {
+            X(std::string_view, target);
+            X(size_t, offset);
+            X(uint32_t, bone);
+            X(bool, step_interpolate);
+            Output(const pugi::xml_node&);
+        };
+        X(std::string_view, name);
+        X(std::string_view, source);
+        X(size_t, input_offset);
+        X(size_t, keyframes);
+        X(std::vector<Output>, outputs);
+        Animation(const pugi::xml_node&);
+    };
     struct Image {
         X(std::string_view, name);
         X(std::string_view, usage);
@@ -41,7 +57,6 @@ namespace assets {
         Material(const pugi::xml_node&, bool asset_context);
     };
     struct Mesh {
-        using IntPair = std::pair<size_t, size_t>;
         struct Attributes {
             struct Attribute {
                 X(std::string_view, name);
@@ -77,6 +92,7 @@ namespace assets {
         X(std::vector<Attributes>, attributes);
         X(std::optional<Displacements>, displacements);
         X(std::optional<Indexes>, indexes);
+        X(std::vector<Animation>, animations);
         Mesh(const pugi::xml_node&);
     };
     struct Shader {
@@ -98,6 +114,7 @@ namespace assets {
 }
 
 struct Assets {
+    X(std::vector<assets::Animation>, animations);
     X(std::vector<assets::Image>, images);
     X(std::vector<assets::Material>, materials);
     X(std::vector<assets::Mesh>, meshes);
@@ -123,7 +140,11 @@ struct Scene {
             X(glm::quat, orientation);
             Rigidbody(const pugi::xml_node&);
         };
-        using EntityComponent = std::variant<Camera, Geometry, Rigidbody>;
+        struct BlendShapeAnimation {
+            X(std::string_view, initial_animation);
+            BlendShapeAnimation(const pugi::xml_node&);
+        };
+        using EntityComponent = std::variant<Camera, Geometry, Rigidbody, BlendShapeAnimation>;
 
         X(std::string_view, name);
         X(std::string_view, parent);

@@ -91,7 +91,7 @@ Renderer::~Renderer()
 
         vkDestroyDescriptorPool(m_device, m_ds01_pool[i], nullptr);
     }
-    for (size_t i = 0; i < m_ds2_buffer_pool.size(); i++)
+    for (size_t i = 0; i < DS2_BUFFERS; i++)
         delete m_ds2_buffer_pool[i];
     delete m_ds2_pool;
 

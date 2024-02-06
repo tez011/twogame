@@ -114,22 +114,23 @@ void Twogame::start()
                         SDL_WaitEvent(&evt);
                 }
             }
-
-            // logic(frame_time - last_frame_time)
-            m_current_scene->update_transforms();
-
-            int image_index = m_renderer->acquire_image();
-            if (image_index < 0) {
-                spdlog::critical("failed to acquire image before rendering");
-                m_active = false;
-                break;
-            }
-            last_frame_time = frame_time;
-            frame_time = SDL_GetTicks64();
-
-            m_renderer->draw(m_current_scene);
-            m_renderer->next_frame(image_index);
         }
+
+        m_current_scene->animate(frame_time, frame_time - last_frame_time);
+        m_current_scene->update_transforms();
+        m_current_scene->update_perobject_descriptors();
+
+        int image_index = m_renderer->acquire_image();
+        if (image_index < 0) {
+            spdlog::critical("failed to acquire image before rendering");
+            m_active = false;
+            break;
+        }
+        last_frame_time = frame_time;
+        frame_time = SDL_GetTicks64();
+
+        m_renderer->draw(m_current_scene);
+        m_renderer->next_frame(image_index);
         m_renderer->wait_idle();
     }
 }

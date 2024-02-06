@@ -21,7 +21,13 @@ static void free_perobject_descriptors(Renderer* renderer, entt::registry& regis
 
 static void push_dirty_transform(entt::registry& r, entt::entity e)
 {
-    r.emplace_or_replace<dirty_transform>(e);
+    r.emplace_or_replace<transform_dirty>(e);
+}
+
+static void push_dirty_morph_weights(entt::registry& r, entt::entity e)
+{
+    r.emplace_or_replace<morph_weights_dirty_0>(e);
+    r.emplace_or_replace<morph_weights_dirty_1>(e);
 }
 
 }
@@ -64,6 +70,7 @@ Scene::Scene(Twogame* tg, std::string_view path)
     m_registry.on_update<e_components::hierarchy>().connect<&e_components::push_dirty_transform>();
     m_registry.on_update<e_components::orientation>().connect<&e_components::push_dirty_transform>();
     m_registry.on_update<e_components::orientation>().connect<&e_components::push_dirty_transform>();
+    m_registry.on_update<e_components::morph_weights>().connect<&e_components::push_dirty_morph_weights>();
     m_registry.on_destroy<e_components::geometry>().connect<&e_components::free_perobject_descriptors>(m_twogame->renderer());
 
     std::vector<entt::entity> scene_entities(scenedoc->entities().size());
@@ -78,48 +85,74 @@ Scene::Scene(Twogame* tg, std::string_view path)
         if (einfo.name().empty() == false)
             m_named_entities[entt::hashed_string(einfo.name().data(), einfo.name().size()).value()] = scene_entities[i];
 
+        // process the geometry first, as other components may depend on mesh information
+        auto gcomp = std::find_if(einfo.components().begin(), einfo.components().end(),
+            [](const xml::Scene::Entity::EntityComponent& it) {
+                return std::holds_alternative<xml::Scene::Entity::Geometry>(it);
+            });
+        if (gcomp != einfo.components().end()) {
+            auto ecomp = std::get<xml::Scene::Entity::Geometry>(*gcomp);
+            auto mesh_it = m_assets.meshes().find(ecomp.mesh());
+            if (mesh_it == m_assets.meshes().end()) {
+                spdlog::error("unknown mesh '{}'", ecomp.mesh());
+                return;
+            }
+
+            std::shared_ptr<asset::Material> material;
+            if (ecomp.material()->name().empty()) {
+                auto shader_it = m_assets.shaders().find(ecomp.material()->shader());
+                if (shader_it == m_assets.shaders().end()) {
+                    spdlog::error("unknown shader '{}'", ecomp.material()->shader());
+                    return;
+                }
+
+                material = std::make_shared<asset::Material>(ecomp.material().value(), m_assets);
+            } else {
+                auto material_it = m_assets.materials().find(ecomp.material()->name());
+                if (material_it == m_assets.materials().end()) {
+                    spdlog::error("unknown material '{}'", ecomp.material()->name());
+                    return;
+                }
+                if (ecomp.material()->unique())
+                    material = std::make_shared<asset::Material>(*material_it->second.get());
+                else
+                    material = material_it->second;
+            }
+
+            auto& geometry = m_registry.emplace<e_components::geometry>(e, mesh_it->second, material);
+            (void)material->shader()->graphics_pipeline(mesh_it->second.get());
+            m_twogame->renderer()->create_perobject_descriptors(geometry.m_descriptors, geometry.m_descriptor_buffers); // Here we allocate buffers for per-object data
+            write_perobject_descriptors(e, geometry); // Here we write buffers and images for per-object-prototype data
+        }
+
         for (auto it = einfo.components().begin(); it != einfo.components().end(); ++it) {
             std::visit([&](auto&& ecomp) {
                 using C = std::decay_t<decltype(ecomp)>;
                 using E = xml::Scene::Entity;
                 if constexpr (std::is_same_v<C, E::Camera>) {
                     m_registry.emplace<e_components::camera>(e);
-                } else if constexpr (std::is_same_v<C, E::Geometry>) {
-                    auto mesh_it = m_assets.meshes().find(ecomp.mesh());
-                    if (mesh_it == m_assets.meshes().end()) {
-                        spdlog::error("unknown mesh '{}'", ecomp.mesh());
-                        return;
-                    }
-
-                    std::shared_ptr<asset::Material> material;
-                    if (ecomp.material()->name().empty()) {
-                        auto shader_it = m_assets.shaders().find(ecomp.material()->shader());
-                        if (shader_it == m_assets.shaders().end()) {
-                            spdlog::error("unknown shader '{}'", ecomp.material()->shader());
-                            return;
-                        }
-
-                        material = std::make_shared<asset::Material>(ecomp.material().value(), m_assets);
-                    } else {
-                        auto material_it = m_assets.materials().find(ecomp.material()->name());
-                        if (material_it == m_assets.materials().end()) {
-                            spdlog::error("unknown material '{}'", ecomp.material()->name());
-                            return;
-                        }
-                        if (ecomp.material()->unique())
-                            material = std::make_shared<asset::Material>(*material_it->second.get());
-                        else
-                            material = material_it->second;
-                    }
-
-                    auto& geometry = m_registry.emplace<e_components::geometry>(e, mesh_it->second, material);
-                    (void)material->shader()->graphics_pipeline(mesh_it->second.get());
-                    m_twogame->renderer()->create_perobject_descriptors(geometry.m_descriptors, geometry.m_descriptor_buffers); // Here we allocate buffers for per-object data
-                    write_perobject_descriptors(e, geometry); // Here we write buffers and images for per-object-prototype data
                 } else if constexpr (std::is_same_v<C, E::Rigidbody>) {
                     m_registry.replace<e_components::translation>(e, ecomp.translation());
                     m_registry.replace<e_components::orientation>(e, glm::normalize(ecomp.orientation()));
-                } else if constexpr (!std::is_same_v<C, std::monostate>) {
+                } else if constexpr (std::is_same_v<C, E::BlendShapeAnimation>) {
+                    if (m_registry.all_of<e_components::geometry>(e)) {
+                        auto& g = m_registry.get<e_components::geometry>(e);
+                        auto anim_it = g.m_mesh->animations().find(ecomp.initial_animation());
+                        if (anim_it == g.m_mesh->animations().end())
+                            anim_it = m_assets.animations().find(ecomp.initial_animation());
+                        if (anim_it == m_assets.animations().end()) {
+                            spdlog::error("unknown animation '{}'", ecomp.initial_animation());
+                            return;
+                        }
+
+                        m_registry.emplace<e_components::morph_animation>(e, anim_it->second, anim_it->second, 0ULL, 1.f);
+                        m_registry.emplace<e_components::morph_weights>(e, g.m_mesh->displacement_initial_weights());
+                        m_registry.emplace<e_components::morph_weights_dirty_0>(e);
+                        m_registry.emplace<e_components::morph_weights_dirty_1>(e);
+                    } else {
+                        spdlog::warn("skipping application of blend shape animation to entity without geometry");
+                    }
+                } else if constexpr (!std::is_same_v<C, E::Geometry> && !std::is_same_v<C, std::monostate>) {
                     static_assert(variant_false_v<C>, "entity xml parser: non-exhaustive visitor");
                 }
             },
@@ -148,6 +181,79 @@ Scene::Scene(Twogame* tg, std::string_view path)
     }
 }
 
+void Scene::animate(uint64_t frame_time, uint64_t delta_time)
+{
+    // first transition animations that are expired
+    for (entt::entity e : m_registry.view<e_components::morph_animation>()) {
+        const auto& a = m_registry.get<e_components::morph_animation>(e);
+        if ((a.m_start_time + static_cast<uint64_t>(1000.f * a.m_animation->duration())) <= frame_time) {
+            m_registry.patch<e_components::morph_animation>(e, [](auto& aa) {
+                aa.m_start_time += static_cast<uint64_t>(1000.f * aa.m_animation->duration());
+                aa.m_animation = aa.m_next_animation;
+            });
+        }
+    }
+
+    auto morphs = m_registry.view<e_components::morph_animation, e_components::morph_weights>();
+    for (entt::entity e : morphs) {
+        const auto& a = morphs.get<e_components::morph_animation>(e);
+        if (!a.m_animation)
+            continue;
+
+        float t = (frame_time - a.m_start_time) * a.m_multiplier / 1000.f;
+        for (auto it = a.m_animation->interpolate(t); !a.m_animation->finished(it); ++it) {
+            if (it.target() == asset::Animation::ChannelTarget::DisplaceWeights) {
+                m_registry.patch<e_components::morph_weights>(e, [&it](auto& w) { it.get(w.m_weights.size(), w.m_weights.data()); });
+                break;
+            }
+        }
+    }
+}
+
+void Scene::update_transforms()
+{
+    m_registry.sort<e_components::transform_dirty>([this](entt::entity lhs, entt::entity rhs) {
+        entt::entity lp = lhs, rp = rhs;
+        do {
+            lp = m_registry.get<e_components::hierarchy>(lp).m_parent;
+            rp = m_registry.get<e_components::hierarchy>(rp).m_parent;
+            if (lp == entt::null && rp != entt::null)
+                return true;
+            else if (lp != entt::null && rp == entt::null)
+                return false;
+        } while (lp != entt::null && rp != entt::null);
+        return lhs < rhs;
+    });
+
+    auto view = m_registry.view<e_components::transform, e_components::transform_dirty, e_components::hierarchy>();
+    for (entt::entity e : view) {
+        entt::entity p = view.get<e_components::hierarchy>(e).m_parent;
+        glm::mat4 local_xfm = glm::translate(glm::mat4(1.f), m_registry.get<e_components::translation>(e)) * glm::mat4_cast(m_registry.get<e_components::orientation>(e));
+        if (p == entt::null)
+            m_registry.replace<e_components::transform>(e, local_xfm);
+        else
+            m_registry.replace<e_components::transform>(e, view.get<e_components::transform>(p) * local_xfm);
+    }
+    m_registry.clear<e_components::transform_dirty>();
+
+    auto cameras = m_registry.view<e_components::camera>();
+    if (cameras.begin() != cameras.end()) {
+        m_camera_view = glm::inverse(m_registry.get<e_components::transform>(*cameras.begin()));
+    }
+}
+
+void Scene::update_perobject_descriptors()
+{
+    switch (m_twogame->renderer()->current_frame() % 2) {
+    case 0:
+        return _update_perobject_descriptors<e_components::morph_weights_dirty_0>();
+    case 1:
+        return _update_perobject_descriptors<e_components::morph_weights_dirty_1>();
+    default:
+        assert(false);
+    }
+}
+
 void Scene::draw(VkCommandBuffer cmd, VkRenderPass render_pass, uint32_t subpass, uint64_t frame_number, const std::array<VkDescriptorSet, 2>& in_descriptor_sets)
 {
     auto view = m_registry.view<e_components::geometry, e_components::transform>();
@@ -169,36 +275,6 @@ void Scene::draw(VkCommandBuffer cmd, VkRenderPass render_pass, uint32_t subpass
 
         g.m_mesh->bind_buffers(cmd);
         vkCmdDrawIndexed(cmd, g.m_mesh->index_count(), 1, 0, 0, 0);
-    }
-}
-
-void Scene::update_transforms()
-{
-    m_registry.sort<e_components::dirty_transform>([this](entt::entity lhs, entt::entity rhs) {
-        entt::entity lp = lhs, rp = rhs;
-        do {
-            lp = m_registry.get<e_components::hierarchy>(lp).m_parent;
-            rp = m_registry.get<e_components::hierarchy>(rp).m_parent;
-            if (lp == entt::null && rp != entt::null)
-                return true;
-            else if (lp != entt::null && rp == entt::null)
-                return false;
-        } while (lp != entt::null && rp != entt::null);
-        return lhs < rhs;
-    });
-    for (entt::entity e : m_registry.view<e_components::dirty_transform>()) {
-        entt::entity p = m_registry.get<e_components::hierarchy>(e).m_parent;
-        glm::mat4 local_xfm = glm::translate(glm::mat4(1.f), m_registry.get<e_components::translation>(e)) * glm::mat4_cast(m_registry.get<e_components::orientation>(e));
-        if (p == entt::null)
-            m_registry.replace<e_components::transform>(e, local_xfm);
-        else
-            m_registry.replace<e_components::transform>(e, m_registry.get<e_components::transform>(p) * local_xfm);
-    }
-    m_registry.clear<e_components::dirty_transform>();
-
-    auto cameras = m_registry.view<e_components::camera>();
-    if (cameras.begin() != cameras.end()) {
-        m_camera_view = glm::inverse(m_registry.get<e_components::transform>(*cameras.begin()));
     }
 }
 
@@ -225,14 +301,28 @@ void Scene::write_perobject_descriptors(entt::entity e, e_components::geometry& 
             jt->dstSet = *it;
         vkUpdateDescriptorSets(m_twogame->renderer()->device(), writes.size(), writes.data(), 0, nullptr);
     }
+}
 
-    memcpy(m_twogame->renderer()->perobject_buffer_pool(0)->buffer_memory(g.m_descriptor_buffers[0]),
-        g.m_mesh->displacement_initial_weights().data(),
-        g.m_mesh->displacement_initial_weights().size() * sizeof(float));
-    memcpy(m_twogame->renderer()->perobject_buffer_pool(0)->buffer_memory(g.m_descriptor_buffers[1]),
-        g.m_mesh->displacement_initial_weights().data(),
-        g.m_mesh->displacement_initial_weights().size() * sizeof(float));
-    m_twogame->renderer()->perobject_buffer_pool(0)->flush(g.m_descriptor_buffers.data() + 0, 2);
+template <typename MWD>
+void Scene::_update_perobject_descriptors()
+{
+    using MWDi = entt::ident<e_components::morph_weights_dirty_0, e_components::morph_weights_dirty_1>;
+    static_assert(std::is_same_v<MWD, e_components::morph_weights_dirty_0> || std::is_same_v<MWD, e_components::morph_weights_dirty_1>);
+
+    std::vector<VkMappedMemoryRange> flushes;
+    auto morphs = m_registry.view<e_components::morph_weights, MWD, e_components::geometry>();
+    flushes.reserve(morphs.size_hint());
+    for (entt::entity e : morphs) {
+        auto& g = morphs.template get<e_components::geometry>(e);
+        memcpy(m_twogame->renderer()->perobject_buffer_pool(0)->buffer_memory(g.m_descriptor_buffers[0 + MWDi::value<MWD>]),
+            morphs.template get<e_components::morph_weights>(e).m_weights.data(),
+            morphs.template get<e_components::morph_weights>(e).m_weights.size() * sizeof(float));
+        m_twogame->renderer()->perobject_buffer_pool(0)->enqueue_flush(g.m_descriptor_buffers[0 + MWDi::value<MWD>], flushes.emplace_back());
+    }
+    if (flushes.empty() == false)
+        vkFlushMappedMemoryRanges(m_twogame->renderer()->device(), flushes.size(), flushes.data());
+
+    m_registry.clear<MWD>();
 }
 
 }

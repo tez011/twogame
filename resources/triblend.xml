@@ -8,8 +8,12 @@
             <!-- I manually added padding here so that the displacements are vec4's. -->
             <!-- We expect all (N=two) positions, then all (N) normals if normals are present in attributes. -->
             <displacement weight="1.0" />
-            <displacement weight="-0.5" />
+            <displacement weight="0.5" />
         </displacements>
+        <animation name="morphing" source="/tg/simpleMorphAnimation.bin" keyframes="5">
+            <input offset="0" />
+            <output target="displacements" offset="20" />
+        </animation>
     </mesh>
     <shader name="morph">
         <stage stage="vert" path="/tg/shaders/morph.vert.spv" />

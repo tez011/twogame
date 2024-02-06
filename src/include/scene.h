@@ -20,6 +20,8 @@ class Scene {
     entt::registry m_registry;
 
     void write_perobject_descriptors(entt::entity, e_components::geometry&);
+    template <typename T>
+    void _update_perobject_descriptors();
 
 public:
     Scene(Twogame* tg, std::string_view path);
@@ -28,8 +30,10 @@ public:
     inline size_t prepare_assets(VkCommandBuffer cmd) { return m_assets.prepare(cmd); }
     inline void post_prepare_assets() { return m_assets.post_prepare(); }
 
-    void draw(VkCommandBuffer cmd, VkRenderPass, uint32_t subpass, uint64_t frame_number, const std::array<VkDescriptorSet, 2>& descriptor_sets);
+    void animate(uint64_t frame_time, uint64_t delta_time);
     void update_transforms();
+    void update_perobject_descriptors();
+    void draw(VkCommandBuffer cmd, VkRenderPass, uint32_t subpass, uint64_t frame_number, const std::array<VkDescriptorSet, 2>& descriptor_sets);
 };
 
 }

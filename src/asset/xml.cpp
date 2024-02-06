@@ -5,6 +5,72 @@
 
 namespace twogame::xml::assets {
 
+Animation::Output::Output(const pugi::xml_node& node)
+    : m_offset(std::numeric_limits<size_t>::max())
+    , m_bone(std::numeric_limits<uint32_t>::max())
+    , m_step_interpolate(false)
+{
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "target") == 0)
+            m_target = it->value();
+        else if (strcmp(it->name(), "step") == 0)
+            m_step_interpolate = priv::parse_boolean(it->value());
+        else if (strcmp(it->name(), "offset") == 0) {
+            if (sscanf(it->value(), "%zu", &m_offset) < 1)
+                throw Exception(node, "offset");
+        } else if (strcmp(it->name(), "bone") == 0) {
+            if (sscanf(it->value(), "%" PRIu32, &m_bone) < 1)
+                throw Exception(node, "bone");
+        }
+    }
+
+    if (m_target.empty())
+        throw Exception(node, "target");
+    if (m_offset == std::numeric_limits<size_t>::max())
+        throw Exception(node, "offset");
+    if (m_target != "displacements" && m_bone == std::numeric_limits<uint32_t>::max())
+        throw Exception(node, "bone");
+}
+
+Animation::Animation(const pugi::xml_node& node)
+    : m_input_offset(std::numeric_limits<size_t>::max())
+    , m_keyframes(0)
+{
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "name") == 0)
+            m_name = it->value();
+        else if (strcmp(it->name(), "source") == 0)
+            m_source = it->value();
+        else if (strcmp(it->name(), "keyframes") == 0) {
+            if (sscanf(it->value(), "%zu", &m_keyframes) < 1)
+                throw Exception(node, "keyframes");
+        }
+    }
+    for (auto it = node.begin(); it != node.end(); ++it) {
+        if (strcmp(it->name(), "input") == 0) {
+            for (auto jt = it->attributes_begin(); jt != it->attributes_end(); ++jt) {
+                if (strcmp(jt->name(), "offset") == 0) {
+                    if (sscanf(jt->value(), "%zu", &m_input_offset) < 1)
+                        throw Exception(*it, "offset");
+                }
+            }
+        } else if (strcmp(it->name(), "output") == 0) {
+            m_outputs.emplace_back(*it);
+        }
+    }
+
+    if (m_name.empty())
+        throw Exception(node, "name");
+    if (m_source.empty())
+        throw Exception(node, "source");
+    if (m_input_offset == std::numeric_limits<size_t>::max())
+        throw Exception(node, "input-offset");
+    if (m_keyframes == 0)
+        throw Exception(node, "keyframes");
+    if (m_outputs.empty())
+        throw Exception(node, "outputs");
+}
+
 Image::Image(const pugi::xml_node& node)
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
@@ -200,6 +266,8 @@ Mesh::Mesh(const pugi::xml_node& node)
             m_displacements.emplace(*it);
         else if (strcmp(it->name(), "indexes") == 0)
             m_indexes.emplace(*it);
+        else if (strcmp(it->name(), "animation") == 0)
+            m_animations.emplace_back(*it);
     }
 
     if (m_name.empty())
@@ -264,12 +332,14 @@ namespace twogame::xml {
 
 Assets::Assets(const pugi::xml_node& node)
 {
+    bool name_optional = false;
     for (auto it = node.begin(); it != node.end(); ++it) {
         auto type = it->name(), name = it->attribute("name").value();
-        if (name[0] == 0)
-            throw Exception(node, "name");
 
-        if (strcmp(type, "image") == 0)
+        if (strcmp(type, "animations") == 0) {
+            m_animations.emplace_back(*it);
+            name_optional = true;
+        } else if (strcmp(type, "image") == 0)
             m_images.emplace_back(*it);
         else if (strcmp(type, "material") == 0)
             m_materials.emplace_back(*it, true);
@@ -279,6 +349,9 @@ Assets::Assets(const pugi::xml_node& node)
             m_shaders.emplace_back(*it);
         else
             throw Exception(node, type);
+
+        if (name[0] == 0 && !name_optional)
+            throw Exception(node, "name");
     }
 }
 
