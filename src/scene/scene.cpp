@@ -309,18 +309,13 @@ void Scene::_update_perobject_descriptors()
     using MWDi = entt::ident<e_components::morph_weights_dirty_0, e_components::morph_weights_dirty_1>;
     static_assert(std::is_same_v<MWD, e_components::morph_weights_dirty_0> || std::is_same_v<MWD, e_components::morph_weights_dirty_1>);
 
-    std::vector<VkMappedMemoryRange> flushes;
     auto morphs = m_registry.view<e_components::morph_weights, MWD, e_components::geometry>();
-    flushes.reserve(morphs.size_hint());
     for (entt::entity e : morphs) {
         auto& g = morphs.template get<e_components::geometry>(e);
         memcpy(m_twogame->renderer()->perobject_buffer_pool(0)->buffer_memory(g.m_descriptor_buffers[0 + MWDi::value<MWD>]),
             morphs.template get<e_components::morph_weights>(e).m_weights.data(),
             morphs.template get<e_components::morph_weights>(e).m_weights.size() * sizeof(float));
-        m_twogame->renderer()->perobject_buffer_pool(0)->enqueue_flush(g.m_descriptor_buffers[0 + MWDi::value<MWD>], flushes.emplace_back());
     }
-    if (flushes.empty() == false)
-        vkFlushMappedMemoryRanges(m_twogame->renderer()->device(), flushes.size(), flushes.data());
 
     m_registry.clear<MWD>();
 }

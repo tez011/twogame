@@ -709,7 +709,7 @@ void Renderer::create_descriptor_sets()
         buffer_ci.size = sizeof(descriptor_storage::uniform_s1i0_t);
         buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
         buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        buffer_ai.usage = VMA_MEMORY_USAGE_AUTO;
+        buffer_ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
         buffer_ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
         VK_CHECK(vmaCreateBuffer(m_allocator, &buffer_ci, &buffer_ai,
             &m_ds1_buffers[i][0].buffer, &m_ds1_buffers[i][0].allocation,

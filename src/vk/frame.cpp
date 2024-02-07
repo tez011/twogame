@@ -57,16 +57,6 @@ void Renderer::draw(Scene* scene)
     ps1i0->view = scene->camera_view();
     ps1i0->proj = m_projection;
 
-    std::array<VkMappedMemoryRange, 1> flushes;
-    for (size_t i = 0; i < flushes.size(); i++) {
-        flushes[i].sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-        flushes[i].pNext = nullptr;
-    }
-    flushes[0].memory = m_ds1_buffers[m_frame_number % 2][0].details.deviceMemory;
-    flushes[0].offset = m_ds1_buffers[m_frame_number % 2][0].details.offset;
-    flushes[0].size = std::max(m_device_limits.nonCoherentAtomSize, m_ds1_buffers[m_frame_number % 2][0].details.size);
-    vkFlushMappedMemoryRanges(m_device, flushes.size(), flushes.data());
-
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::RenderOneStage)];
     VkCommandBufferBeginInfo cbuf_begin {};
     cbuf_begin.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;

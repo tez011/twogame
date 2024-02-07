@@ -34,7 +34,7 @@ void BufferPool::extend()
     buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo alloc_ci {};
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
     auto& out = m_buffers.emplace_back();
@@ -73,15 +73,6 @@ void* BufferPool::buffer_memory(BufferPool::index_t index, size_t extra_offset) 
 {
     auto address = reinterpret_cast<uintptr_t>(m_buffers[index / m_count].details.pMappedData);
     return reinterpret_cast<void*>(address + (m_unit_size * (index % m_count)) + extra_offset);
-}
-
-void BufferPool::enqueue_flush(BufferPool::index_t index, VkMappedMemoryRange& out) const
-{
-    out.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
-    out.pNext = nullptr;
-    out.memory = m_buffers[index / m_count].details.deviceMemory;
-    out.offset = m_unit_size * (index % m_count);
-    out.size = std::max(m_renderer.limits().nonCoherentAtomSize, m_unit_size);
 }
 
 DescriptorPool::DescriptorPool(const Renderer& r, const VkDescriptorSetLayoutCreateInfo& layout_info, uint32_t max_sets)
