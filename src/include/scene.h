@@ -4,7 +4,6 @@
 #include <memory>
 #include <unordered_map>
 #include <entt/entt.hpp>
-#include <glm/glm.hpp>
 #include "asset.h"
 #include "components.h"
 
@@ -14,7 +13,7 @@ namespace twogame {
 
 class Scene {
     Twogame* m_twogame;
-    glm::mat4 m_camera_view;
+    mat4s m_camera_view;
     asset::AssetManager m_assets;
     std::map<entt::hashed_string::hash_type, entt::entity> m_named_entities;
     entt::registry m_registry;
@@ -26,7 +25,7 @@ class Scene {
 public:
     Scene(Twogame* tg, std::string_view path);
 
-    inline const glm::mat4& camera_view() const { return m_camera_view; }
+    inline const mat4s& camera_view() const { return m_camera_view; }
     inline size_t prepare_assets(VkCommandBuffer cmd) { return m_assets.prepare(cmd); }
     inline void post_prepare_assets() { return m_assets.post_prepare(); }
 

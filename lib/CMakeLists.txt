@@ -1,15 +1,16 @@
 cmake_minimum_required(VERSION 3.21)
 
 # ---- external dependencies ----
+CPMAddPackage(NAME cglm
+              VERSION 0.9.2
+              GIT_REPOSITORY https://github.com/recp/cglm.git
+              EXCLUDE_FROM_ALL TRUE
+              OPTIONS "CGLM_SHARED OFF"
+                      "CGLM_STATIC ON")
 CPMAddPackage(NAME entt
               VERSION 3.12.2
               GIT_REPOSITORY https://github.com/skypjack/entt.git
               EXCLUDE_FROM_ALL TRUE)
-CPMAddPackage(NAME glm
-              VERSION 1.0.0
-              GIT_REPOSITORY https://github.com/g-truc/glm.git
-              GIT_TAG 1.0.0
-              OPTIONS "GLM_ENABLE_CXX_20 ON")
 CPMAddPackage(NAME ktx
               VERSION 4.3.0-2cf053c193593f11c932ad742798ee1b101e50ee
               GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
@@ -53,9 +54,9 @@ CPMAddPackage(NAME spirvreflect
                       "SPIRV_REFLECT_EXAMPLES OFF"
                       "SPIRV_REFLECT_STATIC_LIB ON")
 CPMAddPackage(NAME volk
-              VERSION 1.3.270
+              VERSION 1.3.239
               GIT_REPOSITORY https://github.com/zeux/volk.git
-              GIT_TAG 1.3.270)
+              GIT_TAG sdk-1.3.239.0)
 CPMAddPackage(NAME vulkanmemoryallocator
               VERSION 1.3.270
               GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -69,11 +70,7 @@ CPMAddPackage(NAME xxhash
               DOWNLOAD_ONLY YES)
 
 # ---- library options ----
-add_compile_definitions(GLM_FORCE_EXPLICIT_CTOR
-                        $<$<CONFIG:RELEASE>:GLM_FORCE_INLINE>
-                        GLM_FORCE_ALIGNED_GENTYPES
-                        GLM_FORCE_INTRINSICS
-                        GLM_FORCE_DEPTH_ZERO_TO_ONE)
+add_compile_definitions($<$<CONFIG:DEBUG>:CGLM_DEFINE_PRINTS>)
 if(WIN32)
     set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR)
 elseif(APPLE)

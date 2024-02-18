@@ -1,7 +1,6 @@
 #pragma once
+#include <cglm/struct.h>
 #include <entt/entt.hpp>
-#include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
 #include "asset.h"
 
 namespace twogame::e_components {
@@ -20,9 +19,9 @@ struct hierarchy {
     entt::entity m_next { entt::null };
 };
 
-struct translation : glm::vec3 { };
-struct orientation : glm::quat { };
-struct transform : glm::mat4 { };
+typedef vec3s translation;
+typedef versors orientation;
+typedef mat4s transform;
 struct transform_dirty { };
 
 struct morph_animation {

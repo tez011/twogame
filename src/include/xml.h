@@ -3,8 +3,7 @@
 #include <string_view>
 #include <variant>
 #include <vector>
-#include <glm/ext/quaternion_float.hpp>
-#include <glm/glm.hpp>
+#include <cglm/struct.h>
 #include <pugixml.hpp>
 #include <spdlog/spdlog.h>
 
@@ -136,8 +135,8 @@ struct Scene {
         };
         struct Rigidbody {
             X(bool, physics);
-            X(glm::vec3, translation);
-            X(glm::quat, orientation);
+            X(vec3s, translation);
+            X(versors, orientation);
             Rigidbody(const pugi::xml_node&);
         };
         struct BlendShapeAnimation {

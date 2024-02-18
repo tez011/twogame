@@ -14,7 +14,7 @@
     <entity>
         <camera />
         <rigidbody physics="off">
-            <transform translation="0 0 5" />
+            <transform translation="0 0 10" />
         </rigidbody>
     </entity>
 </scene>

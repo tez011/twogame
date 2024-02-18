@@ -4,8 +4,8 @@
 #include <exception>
 #include <set>
 #include <string>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
+#include <cglm/cglm.h>
+#include <cglm/clipspace/persp_lh_zo.h>
 #include <physfs.h>
 #include <SDL.h>
 #include <SDL_vulkan.h>
@@ -288,15 +288,25 @@ void Renderer::pick_physical_device()
     devices.resize(device_count);
     vkEnumeratePhysicalDevices(m_instance, &device_count, devices.data());
 
+    VkPhysicalDevice dGPU = VK_NULL_HANDLE, iGPU = VK_NULL_HANDLE;
     for (auto& device : devices) {
         VkPhysicalDeviceProperties device_props;
         vkGetPhysicalDeviceProperties(device, &device_props);
         if (evaluate_physical_device(device, m_surface, device_props)) {
             m_hwd = device;
-            if (device_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)
-                return;
+            if (device_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
+                dGPU = device;
+            } else if (device_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
+                iGPU = device;
+            }
         }
     }
+
+    // m_hwd is the last device that is barely usable; dGPU is the first discrete GPU; iGPU is the first integrated GPU.
+    if (dGPU != VK_NULL_HANDLE)
+        m_hwd = dGPU;
+    else if (iGPU != VK_NULL_HANDLE)
+        m_hwd = iGPU;
 }
 
 constexpr static float s_queue_priorities[] = { 1.0f, 0.5f };
@@ -464,6 +474,7 @@ void Renderer::create_swapchain(VkSwapchainKHR old_swapchain)
         m_swapchain_extent = capabilities.currentExtent;
     }
 
+    float aspect = static_cast<float>(m_swapchain_extent.width) / static_cast<float>(m_swapchain_extent.height);
     uint32_t image_count = capabilities.minImageCount + 2;
     if (capabilities.maxImageCount > 0)
         image_count = std::min(image_count, capabilities.maxImageCount);
@@ -493,10 +504,12 @@ void Renderer::create_swapchain(VkSwapchainKHR old_swapchain)
     vkGetSwapchainImagesKHR(m_device, m_swapchain, &image_count, m_swapchain_images.data());
     spdlog::debug("obtained {} swapchain images", image_count);
 
-    m_projection = glm::perspective(glm::radians(m_vertical_fov),
-        static_cast<float>(m_swapchain_extent.width) / static_cast<float>(m_swapchain_extent.height),
-        0.1f, 1000.f);
-    m_projection[1][1] *= -1; // ???
+    glm_mat4_zero(m_projection);
+    m_projection[0][0] = m_cot_vertical_fov / aspect;
+    m_projection[1][1] = -m_cot_vertical_fov;
+    m_projection[2][2] = -1.0f;
+    m_projection[2][3] = -1.0f;
+    m_projection[3][2] = -0.1f;
 }
 
 void Renderer::create_render_pass()
@@ -653,7 +666,7 @@ void Renderer::create_pipeline_cache()
 
 void Renderer::create_descriptor_sets()
 {
-    m_push_constants[0] = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4) };
+    m_push_constants[0] = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4) };
 
     VkDescriptorSetLayoutBinding internal_bindings[] = {
         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
@@ -726,7 +739,7 @@ void Renderer::create_descriptor_sets()
         dsw.pBufferInfo = &dsb;
         dsb.buffer = m_ds1_buffers[i][0].buffer;
         dsb.offset = 0;
-        dsb.range = sizeof(glm::mat4) * 2;
+        dsb.range = sizeof(mat4) * 2;
     }
 
     vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);

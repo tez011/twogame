@@ -79,8 +79,8 @@ Scene::Scene(Twogame* tg, std::string_view path)
         const auto& e = scene_entities[i];
         const auto& einfo = scenedoc->entities().at(i);
         m_registry.emplace<e_components::hierarchy>(e);
-        m_registry.emplace<e_components::translation>(e, glm::vec3(0.f, 0.f, 0.f));
-        m_registry.emplace<e_components::orientation>(e, glm::quat(1.f, 0.f, 0.f, 0.f));
+        m_registry.emplace<e_components::translation>(e, 0.f, 0.f, 0.f);
+        m_registry.emplace<e_components::orientation>(e, 0.f, 0.f, 0.f, 1.f);
         m_registry.emplace<e_components::transform>(e);
         if (einfo.name().empty() == false)
             m_named_entities[entt::hashed_string(einfo.name().data(), einfo.name().size()).value()] = scene_entities[i];
@@ -133,7 +133,7 @@ Scene::Scene(Twogame* tg, std::string_view path)
                     m_registry.emplace<e_components::camera>(e);
                 } else if constexpr (std::is_same_v<C, E::Rigidbody>) {
                     m_registry.replace<e_components::translation>(e, ecomp.translation());
-                    m_registry.replace<e_components::orientation>(e, glm::normalize(ecomp.orientation()));
+                    m_registry.replace<e_components::orientation>(e, glms_quat_normalize(ecomp.orientation()));
                 } else if constexpr (std::is_same_v<C, E::BlendShapeAnimation>) {
                     if (m_registry.all_of<e_components::geometry>(e)) {
                         auto& g = m_registry.get<e_components::geometry>(e);
@@ -228,17 +228,20 @@ void Scene::update_transforms()
     auto view = m_registry.view<e_components::transform, e_components::transform_dirty, e_components::hierarchy>();
     for (entt::entity e : view) {
         entt::entity p = view.get<e_components::hierarchy>(e).m_parent;
-        glm::mat4 local_xfm = glm::translate(glm::mat4(1.f), m_registry.get<e_components::translation>(e)) * glm::mat4_cast(m_registry.get<e_components::orientation>(e));
+
+        mat4s local_xfm = glms_mat4_identity();
+        local_xfm = glms_translate(local_xfm, m_registry.get<e_components::translation>(e));
+        local_xfm = glms_mat4_mul(local_xfm, glms_quat_mat4(m_registry.get<e_components::orientation>(e)));
         if (p == entt::null)
             m_registry.replace<e_components::transform>(e, local_xfm);
         else
-            m_registry.replace<e_components::transform>(e, view.get<e_components::transform>(p) * local_xfm);
+            m_registry.replace<e_components::transform>(e, glms_mat4_mul(view.get<e_components::transform>(p), local_xfm));
     }
     m_registry.clear<e_components::transform_dirty>();
 
     auto cameras = m_registry.view<e_components::camera>();
     if (cameras.begin() != cameras.end()) {
-        m_camera_view = glm::inverse(m_registry.get<e_components::transform>(*cameras.begin()));
+        m_camera_view = glms_mat4_inv_fast(m_registry.get<e_components::transform>(*cameras.begin()));
     }
 }
 
@@ -262,13 +265,13 @@ void Scene::draw(VkCommandBuffer cmd, VkRenderPass render_pass, uint32_t subpass
 
     for (entt::entity e : view) {
         auto& g = view.get<e_components::geometry>(e);
-        glm::mat4& m = view.get<e_components::transform>(e);
+        mat4s& m = view.get<e_components::transform>(e);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.m_material->shader()->graphics_pipeline(g.m_mesh.get()));
 
         descriptor_sets[2] = g.m_descriptors[frame_number % 2];
         descriptor_sets[3] = g.m_material->descriptor();
-        vkCmdPushConstants(cmd, g.m_material->shader()->pipeline_layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4), &m);
+        vkCmdPushConstants(cmd, g.m_material->shader()->pipeline_layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4s), &m);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.m_material->shader()->pipeline_layout(),
             0, descriptor_sets.size(), descriptor_sets.data(),
             0, nullptr);

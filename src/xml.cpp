@@ -29,8 +29,8 @@ Scene::Entity::Geometry::Geometry(const pugi::xml_node& node)
 }
 
 Scene::Entity::Rigidbody::Rigidbody(const pugi::xml_node& node)
-    : m_translation(0.f)
-    , m_orientation(1.f, 0.f, 0.f, 0.f)
+    : m_translation({ 0.f, 0.f, 0.f })
+    , m_orientation({ 0.f, 0.f, 0.f, 1.f })
 {
     bool found_physics = false;
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {

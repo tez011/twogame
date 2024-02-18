@@ -1,4 +1,3 @@
-#include <glm/gtc/matrix_transform.hpp>
 #include "render.h"
 #include "scene.h"
 
@@ -54,8 +53,8 @@ void Renderer::draw(Scene* scene)
     }
 
     auto ps1i0 = static_cast<descriptor_storage::uniform_s1i0_t*>(m_ds1_buffers[m_frame_number % 2][0].details.pMappedData);
-    ps1i0->view = scene->camera_view();
-    ps1i0->proj = m_projection;
+    memcpy(&ps1i0->view, scene->camera_view().raw, sizeof(mat4));
+    memcpy(&ps1i0->proj, &m_projection, sizeof(mat4));
 
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::RenderOneStage)];
     VkCommandBufferBeginInfo cbuf_begin {};

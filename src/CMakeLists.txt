@@ -19,8 +19,8 @@ add_executable(twogame
     "vk/pool.cpp"
     "vk/render_init.cpp")
 target_link_libraries(twogame
+    cglm
     EnTT::EnTT
-    glm::glm
     ktx_read
     PhysFS::PhysFS
     pugixml

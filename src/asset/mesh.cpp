@@ -369,10 +369,10 @@ void Animation::Iterator::get(size_t count, float* out) const
     if (m_it->m_step_interpolate) {
         memcpy(out, x0, std::min(count, dim) * sizeof(float));
     } else if (m_it->m_target == ChannelTarget::Orientation) {
-        assert(false); // slerp/nlerp
+        glm_quat_slerp(const_cast<float*>(x0), const_cast<float*>(x1), m_iv, out);
     } else {
         for (size_t i = 0; i < std::min(count, dim); i++)
-            out[i] = x0[i] + m_iv * (x1[i] - x0[i]);
+            out[i] = glm_lerp(x0[i], x1[i], m_iv);
     }
 }
 

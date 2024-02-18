@@ -5,7 +5,7 @@
 #include <optional>
 #include <queue>
 #include <vector>
-#include <glm/glm.hpp>
+#include <cglm/mat4.h>
 #include <SDL.h>
 #include <spdlog/spdlog.h>
 #include <vk_mem_alloc.h>
@@ -71,8 +71,8 @@ namespace twogame::descriptor_storage {
 
 // this structure has to match the buffer bound to set 1 instance 0 exactly.
 typedef struct {
-    glm::mat4 proj;
-    glm::mat4 view;
+    mat4 proj;
+    mat4 view;
 } uniform_s1i0_t;
 
 }
@@ -136,7 +136,7 @@ private:
     int m_multisample_count = 1;
     float m_sample_shading = 0;
     float m_requested_anisotropy = 0;
-    float m_vertical_fov = 45.f;
+    float m_cot_vertical_fov = 1.0f / tanf(glm_rad(45.f) * 0.5f);
 
     std::array<VkRenderPass, 1> m_render_pass;
     std::array<std::array<VkFramebuffer, 1>, 2> m_framebuffers;
@@ -159,7 +159,7 @@ private:
     std::array<VkFence, 2> m_fence_frame;
     VkFence m_fence_assets_prepared;
 
-    glm::mat4 m_projection;
+    mat4 m_projection;
 
     void create_instance();
     void create_debug_messenger();
