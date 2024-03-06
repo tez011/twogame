@@ -19,7 +19,7 @@ class Scene {
     entt::registry m_registry;
 
     void write_perobject_descriptors(entt::entity, e_components::geometry&);
-    template <typename T>
+    template <size_t W>
     void _update_perobject_descriptors();
 
 public:

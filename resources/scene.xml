@@ -1,20 +1,20 @@
 <scene>
     <!-- Since we're using glTF models, we're using their coordinate system:
          right handed, Y is up. So +X is right, +Z is towards the camera. -->
-    <assets path="/tg/triblend.xml" />
+    <assets path="/tg/RiggedSimple.xml" />
     <entity>
-        <geometry mesh="triangle">
-            <material name="morph-basic" />
+        <geometry mesh="tubeman">
+            <material name="tubeman-basic" />
         </geometry>
         <rigidbody physics="off">
             <transform translation="0 0 0" />
         </rigidbody>
-        <blend-shape-animation initial="morphing" />
+        <joint-animation initial="tubing" />
     </entity>
     <entity>
         <camera />
         <rigidbody physics="off">
-            <transform translation="0 0 10" />
+            <transform translation="-15 0 0" orientation="0.5 -0.5 -0.5 0.5"/>
         </rigidbody>
     </entity>
 </scene>

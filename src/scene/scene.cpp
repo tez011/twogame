@@ -30,6 +30,12 @@ static void push_dirty_morph_weights(entt::registry& r, entt::entity e)
     r.emplace_or_replace<morph_weights_dirty_1>(e);
 }
 
+static void push_dirty_joint_mats(entt::registry& r, entt::entity e)
+{
+    r.emplace_or_replace<joint_mats_dirty_0>(e);
+    r.emplace_or_replace<joint_mats_dirty_1>(e);
+}
+
 }
 
 namespace twogame {
@@ -68,9 +74,10 @@ Scene::Scene(Twogame* tg, std::string_view path)
     }
 
     m_registry.on_update<e_components::hierarchy>().connect<&e_components::push_dirty_transform>();
-    m_registry.on_update<e_components::orientation>().connect<&e_components::push_dirty_transform>();
+    m_registry.on_update<e_components::translation>().connect<&e_components::push_dirty_transform>();
     m_registry.on_update<e_components::orientation>().connect<&e_components::push_dirty_transform>();
     m_registry.on_update<e_components::morph_weights>().connect<&e_components::push_dirty_morph_weights>();
+    m_registry.on_update<e_components::joint_mats>().connect<&e_components::push_dirty_joint_mats>();
     m_registry.on_destroy<e_components::geometry>().connect<&e_components::free_perobject_descriptors>(m_twogame->renderer());
 
     std::vector<entt::entity> scene_entities(scenedoc->entities().size());
@@ -98,6 +105,7 @@ Scene::Scene(Twogame* tg, std::string_view path)
                 return;
             }
 
+            const auto& mesh = mesh_it->second;
             std::shared_ptr<asset::Material> material;
             if (ecomp.material()->name().empty()) {
                 auto shader_it = m_assets.shaders().find(ecomp.material()->shader());
@@ -119,8 +127,31 @@ Scene::Scene(Twogame* tg, std::string_view path)
                     material = material_it->second;
             }
 
-            auto& geometry = m_registry.emplace<e_components::geometry>(e, mesh_it->second, material);
-            (void)material->shader()->graphics_pipeline(mesh_it->second.get());
+            if (mesh->default_pose().size() > 0) {
+                std::vector<entt::entity> bone_entities(mesh->default_pose().size());
+                std::vector<mat4s> bone_mats(mesh->default_pose().size(), GLMS_MAT4_IDENTITY);
+                m_registry.create(bone_entities.begin(), bone_entities.end());
+                for (size_t j = 0; j < bone_entities.size(); j++) {
+                    entt::entity bone_self = bone_entities[j], bone_parent = mesh->default_pose().at(j).parent == 0 ? e : bone_entities[mesh->default_pose().at(j).parent - 1];
+                    m_registry.emplace<e_components::bone>(bone_self, e);
+                    m_registry.emplace<e_components::hierarchy>(bone_self, bone_parent);
+                    m_registry.emplace<e_components::translation>(bone_self, mesh->default_pose().at(j).translation);
+                    m_registry.emplace<e_components::orientation>(bone_self, mesh->default_pose().at(j).orientation);
+                    m_registry.emplace<e_components::transform>(bone_self);
+
+                    entt::entity bone_sibling = m_registry.get<e_components::hierarchy>(bone_parent).m_child;
+                    m_registry.patch<e_components::hierarchy>(bone_self, [bone_sibling](auto& h) { h.m_next = bone_sibling; });
+                    m_registry.patch<e_components::hierarchy>(bone_parent, [bone_self](auto& h) { h.m_child = bone_self; });
+                    if (bone_sibling != entt::null)
+                        m_registry.patch<e_components::hierarchy>(bone_sibling, [bone_self](auto& h) { h.m_prev = bone_self; });
+                }
+
+                m_registry.emplace<e_components::joints>(e, std::move(bone_entities));
+                m_registry.emplace<e_components::joint_mats>(e, std::move(bone_mats));
+            }
+
+            auto& geometry = m_registry.emplace<e_components::geometry>(e, mesh, material);
+            (void)material->shader()->graphics_pipeline(mesh.get());
             m_twogame->renderer()->create_perobject_descriptors(geometry.m_descriptors, geometry.m_descriptor_buffers); // Here we allocate buffers for per-object data
             write_perobject_descriptors(e, geometry); // Here we write buffers and images for per-object-prototype data
         }
@@ -152,6 +183,23 @@ Scene::Scene(Twogame* tg, std::string_view path)
                     } else {
                         spdlog::warn("skipping application of blend shape animation to entity without geometry");
                     }
+                } else if constexpr (std::is_same_v<C, E::JointAnimation>) {
+                    if (m_registry.all_of<e_components::geometry>(e)) {
+                        auto& g = m_registry.get<e_components::geometry>(e);
+                        auto anim_it = g.m_mesh->animations().find(ecomp.initial_animation());
+                        if (anim_it == g.m_mesh->animations().end())
+                            anim_it = m_assets.animations().find(ecomp.initial_animation());
+                        if (anim_it == m_assets.animations().end()) {
+                            spdlog::error("unknown animation '{}'", ecomp.initial_animation());
+                            return;
+                        }
+
+                        m_registry.emplace<e_components::joint_animation>(e, anim_it->second, anim_it->second, 0ULL, 1.f);
+                        m_registry.emplace<e_components::joint_mats_dirty_0>(e);
+                        m_registry.emplace<e_components::joint_mats_dirty_1>(e);
+                    } else {
+                        spdlog::warn("skipping application of joint animation to entity without geometry");
+                    }
                 } else if constexpr (!std::is_same_v<C, E::Geometry> && !std::is_same_v<C, std::monostate>) {
                     static_assert(variant_false_v<C>, "entity xml parser: non-exhaustive visitor");
                 }
@@ -174,7 +222,7 @@ Scene::Scene(Twogame* tg, std::string_view path)
         }
 
         entt::entity sibling = m_registry.get<e_components::hierarchy>(parent_it->second).m_child;
-        m_registry.replace<e_components::hierarchy>(scene_entities[i], parent_it->second, entt::null, entt::null, sibling);
+        m_registry.patch<e_components::hierarchy>(scene_entities[i], [sibling](auto& h) { h.m_next = sibling; });
         m_registry.patch<e_components::hierarchy>(parent_it->second, [e](auto& h) { h.m_child = e; });
         if (sibling != entt::null)
             m_registry.patch<e_components::hierarchy>(sibling, [e](auto& h) { h.m_prev = e; });
@@ -183,7 +231,7 @@ Scene::Scene(Twogame* tg, std::string_view path)
 
 void Scene::animate(uint64_t frame_time, uint64_t delta_time)
 {
-    // first transition animations that are expired
+    // first transition animations that are expired, we probably want to tag these with a component eventually
     for (entt::entity e : m_registry.view<e_components::morph_animation>()) {
         const auto& a = m_registry.get<e_components::morph_animation>(e);
         if ((a.m_start_time + static_cast<uint64_t>(1000.f * a.m_animation->duration())) <= frame_time) {
@@ -193,8 +241,17 @@ void Scene::animate(uint64_t frame_time, uint64_t delta_time)
             });
         }
     }
+    for (entt::entity e : m_registry.view<e_components::joint_animation>()) {
+        const auto& a = m_registry.get<e_components::joint_animation>(e);
+        if ((a.m_start_time + static_cast<uint64_t>(1000.f * a.m_animation->duration())) <= frame_time) {
+            m_registry.patch<e_components::joint_animation>(e, [](auto& aa) {
+                aa.m_start_time += static_cast<uint64_t>(1000.f * aa.m_animation->duration());
+                aa.m_animation = aa.m_next_animation;
+            });
+        }
+    }
 
-    auto morphs = m_registry.view<e_components::morph_animation, e_components::morph_weights>();
+    auto morphs = m_registry.view<e_components::morph_animation>();
     for (entt::entity e : morphs) {
         const auto& a = morphs.get<e_components::morph_animation>(e);
         if (!a.m_animation)
@@ -204,7 +261,24 @@ void Scene::animate(uint64_t frame_time, uint64_t delta_time)
         for (auto it = a.m_animation->interpolate(t); !a.m_animation->finished(it); ++it) {
             if (it.target() == asset::Animation::ChannelTarget::DisplaceWeights) {
                 m_registry.patch<e_components::morph_weights>(e, [&it](auto& w) { it.get(w.m_weights.size(), w.m_weights.data()); });
-                break;
+                break; // ???
+            }
+        }
+    }
+
+    auto skels = m_registry.view<e_components::joint_animation, e_components::joints>();
+    for (entt::entity e : skels) {
+        const auto& a = skels.get<e_components::joint_animation>(e);
+        const auto& b = skels.get<e_components::joints>(e);
+        if (!a.m_animation)
+            continue;
+
+        float t = (frame_time - a.m_start_time) * a.m_multiplier / 1000.f;
+        for (auto it = a.m_animation->interpolate(t); !a.m_animation->finished(it); ++it) {
+            if (it.target() == asset::Animation::ChannelTarget::Translation) {
+                m_registry.patch<e_components::translation>(b.m_bones[it.bone()], [&it](auto& w) { it.get(3, w.raw); });
+            } else if (it.target() == asset::Animation::ChannelTarget::Orientation) {
+                m_registry.patch<e_components::orientation>(b.m_bones[it.bone()], [&it](auto& w) { it.get(4, w.raw); });
             }
         }
     }
@@ -225,9 +299,14 @@ void Scene::update_transforms()
         return lhs < rhs;
     });
 
-    auto view = m_registry.view<e_components::transform, e_components::transform_dirty, e_components::hierarchy>();
-    for (entt::entity e : view) {
-        entt::entity p = view.get<e_components::hierarchy>(e).m_parent;
+    std::set<entt::entity> dirty_skeletons;
+    auto dirty_bones = m_registry.view<e_components::transform_dirty, e_components::bone>();
+    for (entt::entity e : dirty_bones)
+        dirty_skeletons.insert(dirty_bones.get<e_components::bone>(e).m_ancestor);
+
+    auto dirty_transforms = m_registry.view<e_components::transform_dirty, e_components::transform, e_components::hierarchy>();
+    for (entt::entity e : dirty_transforms) {
+        entt::entity p = dirty_transforms.get<e_components::hierarchy>(e).m_parent;
 
         mat4s local_xfm = glms_mat4_identity();
         local_xfm = glms_translate(local_xfm, m_registry.get<e_components::translation>(e));
@@ -235,9 +314,19 @@ void Scene::update_transforms()
         if (p == entt::null)
             m_registry.replace<e_components::transform>(e, local_xfm);
         else
-            m_registry.replace<e_components::transform>(e, glms_mat4_mul(view.get<e_components::transform>(p), local_xfm));
+            m_registry.replace<e_components::transform>(e, glms_mat4_mul(dirty_transforms.get<e_components::transform>(p), local_xfm));
     }
     m_registry.clear<e_components::transform_dirty>();
+
+    for (entt::entity e : dirty_skeletons) {
+        auto& bones = m_registry.get<e_components::joints>(e).m_bones;
+        auto& ibm = m_registry.get<e_components::geometry>(e).m_mesh->inverse_bind_matrices();
+        std::vector<mat4s> jm(bones.size());
+        for (size_t i = 0; i < bones.size(); i++)
+            jm[i] = glms_mat4_mul(m_registry.get<e_components::transform>(bones[i]), const_cast<mat4s&>(ibm[i]));
+
+        m_registry.replace<e_components::joint_mats>(e, std::move(jm));
+    }
 
     auto cameras = m_registry.view<e_components::camera>();
     if (cameras.begin() != cameras.end()) {
@@ -249,9 +338,9 @@ void Scene::update_perobject_descriptors()
 {
     switch (m_twogame->renderer()->current_frame() % 2) {
     case 0:
-        return _update_perobject_descriptors<e_components::morph_weights_dirty_0>();
+        return _update_perobject_descriptors<0>();
     case 1:
-        return _update_perobject_descriptors<e_components::morph_weights_dirty_1>();
+        return _update_perobject_descriptors<1>();
     default:
         assert(false);
     }
@@ -306,21 +395,31 @@ void Scene::write_perobject_descriptors(entt::entity e, e_components::geometry& 
     }
 }
 
-template <typename MWD>
+template <size_t W>
 void Scene::_update_perobject_descriptors()
 {
-    using MWDi = entt::ident<e_components::morph_weights_dirty_0, e_components::morph_weights_dirty_1>;
-    static_assert(std::is_same_v<MWD, e_components::morph_weights_dirty_0> || std::is_same_v<MWD, e_components::morph_weights_dirty_1>);
+    static_assert(W == 0 || W == 1);
+    using MWD_t = entt::type_list_element_t<W, entt::type_list<e_components::morph_weights_dirty_0, e_components::morph_weights_dirty_1>>;
+    using JMD_t = entt::type_list_element_t<W, entt::type_list<e_components::joint_mats_dirty_0, e_components::joint_mats_dirty_1>>;
 
-    auto morphs = m_registry.view<e_components::morph_weights, MWD, e_components::geometry>();
+    auto morphs = m_registry.view<e_components::morph_weights, e_components::geometry, MWD_t>();
     for (entt::entity e : morphs) {
         auto& g = morphs.template get<e_components::geometry>(e);
-        memcpy(m_twogame->renderer()->perobject_buffer_pool(0)->buffer_memory(g.m_descriptor_buffers[0 + MWDi::value<MWD>]),
+        memcpy(m_twogame->renderer()->perobject_buffer_pool(0)->buffer_memory(g.m_descriptor_buffers[0 + W]),
             morphs.template get<e_components::morph_weights>(e).m_weights.data(),
             morphs.template get<e_components::morph_weights>(e).m_weights.size() * sizeof(float));
     }
 
-    m_registry.clear<MWD>();
+    auto skels = m_registry.view<e_components::joint_mats, e_components::geometry, JMD_t>();
+    for (entt::entity e : skels) {
+        auto& g = skels.template get<e_components::geometry>(e);
+        memcpy(m_twogame->renderer()->perobject_buffer_pool(1)->buffer_memory(g.m_descriptor_buffers[2 + W]),
+            skels.template get<e_components::joint_mats>(e).m_mats.data(),
+            skels.template get<e_components::joint_mats>(e).m_mats.size() * sizeof(mat4));
+    }
+
+    m_registry.clear<MWD_t>();
+    m_registry.clear<JMD_t>();
 }
 
 }

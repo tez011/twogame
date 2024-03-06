@@ -106,6 +106,7 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
             if ((fh = PHYSFS_openRead(info.displacements()->source().data())) == nullptr)
                 throw IOException(info.displacements()->source(), PHYSFS_getLastErrorCode());
         }
+
         m_displacement_prep.bufferOffset = mapped_offset;
         if (PHYSFS_seek(fh, info.displacements()->range().first) == 0)
             throw IOException(info.displacements()->source(), PHYSFS_getLastErrorCode());
@@ -161,6 +162,31 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
     } else {
         m_displacement_image = VK_NULL_HANDLE;
         m_displacement_position = m_displacement_normal = VK_NULL_HANDLE;
+    }
+    if (info.skeleton()) {
+        if (last_source != info.skeleton()->source()) {
+            last_source = info.skeleton()->source();
+            if (fh)
+                PHYSFS_close(fh);
+            if ((fh = PHYSFS_openRead(info.skeleton()->source().data())) == nullptr)
+                throw IOException(info.skeleton()->source(), PHYSFS_getLastErrorCode());
+        }
+
+        m_inverse_bind_matrices.resize(info.skeleton()->joints().size());
+        if (info.skeleton()->joints().size() * 64 != info.skeleton()->range().second)
+            throw MalformedException(info.name(), "mismatch between number of joints and of bind matrices");
+        if (PHYSFS_seek(fh, info.skeleton()->range().first) == 0)
+            throw IOException(info.skeleton()->source(), PHYSFS_getLastErrorCode());
+        if (PHYSFS_readBytes(fh, m_inverse_bind_matrices.data(), info.skeleton()->range().second) < static_cast<PHYSFS_sint64>(info.skeleton()->range().second))
+            throw IOException(info.skeleton()->source(), PHYSFS_getLastErrorCode());
+
+        m_default_pose.reserve(info.skeleton()->joints().size());
+        for (auto it = info.skeleton()->joints().begin(); it != info.skeleton()->joints().end(); ++it) {
+            auto& j = m_default_pose.emplace_back();
+            j.parent = it->parent();
+            j.translation = it->translation();
+            j.orientation = it->orientation();
+        }
     }
     if (fh)
         PHYSFS_close(fh);
@@ -288,7 +314,7 @@ Animation::Animation(const xml::assets::Animation& info, Mesh* mesh)
 
     for (auto it = info.outputs().begin(); it != info.outputs().end(); ++it) {
         Channel& c = m_channels.emplace_back();
-        c.m_bone = it->bone();
+        c.m_bone = it->bone() - 1;
         c.m_step_interpolate = it->step_interpolate();
         if (it->target() == "translation") {
             c.m_target = ChannelTarget::Translation;
@@ -323,20 +349,24 @@ Animation::Iterator::Iterator(const Animation* animation, float t)
     : m_animation(animation)
 {
     size_t begin = 0, end = animation->m_inputs.size() - 1, res = -1;
-    while (begin <= end) {
-        size_t mid = (begin + end) / 2;
-        if (animation->m_inputs[mid] <= t) {
-            res = mid;
-            begin = mid + 1;
-        } else {
-            end = mid - 1;
-        }
-    }
-
-    float t0 = animation->m_inputs[res], t1 = animation->m_inputs[res + 1];
     m_it = animation->m_channels.begin();
-    m_index = res;
-    m_iv = (t - t0) / (t1 - t0);
+    if (t < animation->m_inputs[0]) {
+        m_index = m_iv = 0;
+    } else {
+        while (begin <= end) {
+            size_t mid = (begin + end) / 2;
+            if (animation->m_inputs[mid] <= t) {
+                res = mid;
+                begin = mid + 1;
+            } else {
+                end = mid - 1;
+            }
+        }
+
+        float t0 = animation->m_inputs[res], t1 = animation->m_inputs[res + 1];
+        m_index = res;
+        m_iv = (t - t0) / (t1 - t0);
+    }
 }
 
 Animation::Iterator& Animation::Iterator::operator++()

@@ -672,6 +672,7 @@ void Renderer::create_descriptor_sets()
         { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
         { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT, &m_morph_sampler },
         { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+        { 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
     };
     VkDescriptorSetLayoutCreateInfo dsl_ci {};
     dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -682,7 +683,7 @@ void Renderer::create_descriptor_sets()
     dsl_ci.bindingCount = 1;
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_ds1_layout));
     dsl_ci.pBindings += dsl_ci.bindingCount;
-    dsl_ci.bindingCount = 2;
+    dsl_ci.bindingCount = 3;
     m_ds2_pool = new vk::DescriptorPool(*this, dsl_ci);
 
     auto dsp01sz = std::to_array<VkDescriptorPoolSize>({
@@ -745,6 +746,7 @@ void Renderer::create_descriptor_sets()
     vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
 
     m_ds2_buffer_pool[0] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 64 * sizeof(float), 1024);
+    m_ds2_buffer_pool[1] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 16 * sizeof(mat4), 1024);
 }
 
 void Renderer::create_command_buffers()
@@ -929,20 +931,21 @@ VkPipelineLayout Renderer::create_pipeline_layout(VkDescriptorSetLayout material
     return pl;
 }
 
-void Renderer::create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, 2>& buffers)
+void Renderer::create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>& buffers)
 {
     m_ds2_pool->allocate(sets.data(), sets.size());
-    buffers[0] = m_ds2_buffer_pool[0]->allocate();
-    buffers[1] = m_ds2_buffer_pool[0]->allocate();
+    for (size_t i = 0; i < buffers.size(); i++)
+        buffers[i] = m_ds2_buffer_pool[i / 2]->allocate();
 
-    std::array<VkWriteDescriptorSet, 2> writes;
-    std::array<VkDescriptorBufferInfo, 2> wbuffers;
+    std::array<VkWriteDescriptorSet, DS2_BUFFERS * 2> writes;
+    std::array<VkDescriptorBufferInfo, DS2_BUFFERS * 2> wbuffers;
     writes[0] = {
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
         nullptr,
         sets[0],
         1,
-        0, 1,
+        0,
+        1,
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         nullptr,
         &wbuffers[0],
@@ -953,21 +956,46 @@ void Renderer::create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets
         nullptr,
         sets[1],
         1,
-        0, 1,
+        0,
+        1,
         VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
         nullptr,
         &wbuffers[1],
         nullptr
     };
-    m_ds2_buffer_pool[0]->buffer_handle(buffers[0], wbuffers[0]);
-    m_ds2_buffer_pool[0]->buffer_handle(buffers[1], wbuffers[1]);
+    writes[2] = {
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        nullptr,
+        sets[0],
+        2,
+        0,
+        1,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        nullptr,
+        &wbuffers[2],
+        nullptr
+    };
+    writes[3] = {
+        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        nullptr,
+        sets[1],
+        2,
+        0,
+        1,
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+        nullptr,
+        &wbuffers[3],
+        nullptr
+    };
+    for (size_t i = 0; i < buffers.size(); i++)
+        m_ds2_buffer_pool[i / 2]->buffer_handle(buffers[i], wbuffers[i]);
     vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
 }
 
-void Renderer::free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, 2>& buffers)
+void Renderer::free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>& buffers)
 {
-    m_ds2_buffer_pool[0]->free(buffers[0]);
-    m_ds2_buffer_pool[0]->free(buffers[1]);
+    for (size_t i = 0; i < buffers.size(); i++)
+        m_ds2_buffer_pool[i / 2]->free(buffers[i]);
     m_ds2_pool->free(sets.data(), sets.size());
 }
 

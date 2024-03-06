@@ -1,0 +1,31 @@
+<assets>
+    <mesh name="tubeman">
+        <attributes source="/tg/RiggedSimple0.bin" range="8528 1280" interleaved="false">
+            <attribute name="joints" format="R16G16B16A16_UINT" count="160" />
+        </attributes>
+        <attributes source="/tg/RiggedSimple0.bin" range="4688 3840">
+            <attribute name="normal" format="R32G32B32_SFLOAT" count="160" />
+            <attribute name="position" format="R32G32B32_SFLOAT" count="160" />
+        </attributes>
+        <attributes source="/tg/RiggedSimple0.bin" range="928 2560">
+            <attribute name="weights" format="R32G32B32A32_SFLOAT" count="160" />
+        </attributes>
+        <indexes source="/tg/RiggedSimple0.bin" format="uint16" topology="triangles" offset="10008" count="564" />
+        <skeleton source="/tg/RiggedSimple0.bin" range="0 128">
+            <joint translation="0 0 -4.18" />
+            <joint parent="1" translation="0 0 4.18" orientation="0 0 0 -1" />
+        </skeleton>
+        <animation name="tubing" source="/tg/RiggedSimple0.bin" keyframes="50">
+            <input offset="9808" />
+            <output bone="2" target="translation" offset="3488" />
+            <output bone="2" target="orientation" offset="128" />
+        </animation>
+    </mesh>
+    <shader name="skeleton">
+        <stage stage="vert" path="/tg/shaders/skeleton.vert.spv" />
+        <stage stage="frag" path="/tg/shaders/rubberduck.frag.spv" />
+    </shader>
+    <material name="tubeman-basic" shader="skeleton">
+        <binding name="base_color">0.28 0.64 0.21</binding>
+    </material>
+</assets>

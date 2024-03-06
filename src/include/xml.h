@@ -69,6 +69,14 @@ namespace assets {
             X(bool, interleaved);
             Attributes(const pugi::xml_node&);
         };
+        struct Indexes {
+            X(std::string_view, source);
+            X(std::string_view, format);
+            X(std::string_view, topology);
+            X(size_t, offset);
+            X(size_t, count);
+            Indexes(const pugi::xml_node&);
+        };
         struct Displacements {
             struct Displacement {
                 X(float, weight);
@@ -79,17 +87,22 @@ namespace assets {
             X(std::vector<Displacement>, displacements);
             Displacements(const pugi::xml_node&);
         };
-        struct Indexes {
+        struct Skeleton {
+            struct Joint {
+                X(uint32_t, parent);
+                X(vec3s, translation);
+                X(versors, orientation);
+                Joint(const pugi::xml_node&);
+            };
             X(std::string_view, source);
-            X(std::string_view, format);
-            X(std::string_view, topology);
-            X(size_t, offset);
-            X(size_t, count);
-            Indexes(const pugi::xml_node&);
+            X(IntPair, range);
+            X(std::vector<Joint>, joints);
+            Skeleton(const pugi::xml_node&);
         };
         X(std::string_view, name);
         X(std::vector<Attributes>, attributes);
         X(std::optional<Displacements>, displacements);
+        X(std::optional<Skeleton>, skeleton);
         X(std::optional<Indexes>, indexes);
         X(std::vector<Animation>, animations);
         Mesh(const pugi::xml_node&);
@@ -143,7 +156,11 @@ struct Scene {
             X(std::string_view, initial_animation);
             BlendShapeAnimation(const pugi::xml_node&);
         };
-        using EntityComponent = std::variant<Camera, Geometry, Rigidbody, BlendShapeAnimation>;
+        struct JointAnimation {
+            X(std::string_view, initial_animation);
+            JointAnimation(const pugi::xml_node&);
+        };
+        using EntityComponent = std::variant<Camera, Geometry, Rigidbody, BlendShapeAnimation, JointAnimation>;
 
         X(std::string_view, name);
         X(std::string_view, parent);

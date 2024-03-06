@@ -7,6 +7,7 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#include <cglm/struct.h>
 #include <vk_mem_alloc.h>
 #include "vkutil.h"
 
@@ -117,6 +118,11 @@ public:
         vk::VertexInput field;
         VkFormat format;
     };
+    struct DefaultJoint {
+        vec3s translation;
+        versors orientation;
+        uint32_t parent;
+    };
 
 private:
     const Renderer& m_renderer;
@@ -129,6 +135,9 @@ private:
     VmaAllocation m_displacement_mem;
     VkBufferImageCopy m_displacement_prep;
     std::vector<float> m_displacement_initial_weights;
+
+    std::vector<mat4s> m_inverse_bind_matrices;
+    std::vector<DefaultJoint> m_default_pose;
 
     std::vector<VertexInputAttribute> m_attributes;
     std::vector<VkVertexInputBindingDescription> m_bindings;
@@ -156,6 +165,8 @@ public:
     inline VkImageView position_displacement() const { return m_displacement_position; }
     inline VkImageView normal_displacement() const { return m_displacement_normal; }
     inline const std::vector<float>& displacement_initial_weights() const { return m_displacement_initial_weights; }
+    inline const std::vector<mat4s>& inverse_bind_matrices() const { return m_inverse_bind_matrices; }
+    inline const std::vector<DefaultJoint>& default_pose() const { return m_default_pose; }
     inline const auto& animations() const { return m_animations; }
 
     virtual void prepare(VkCommandBuffer cmd);

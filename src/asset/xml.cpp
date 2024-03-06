@@ -191,6 +191,34 @@ Mesh::Attributes::Attributes(const pugi::xml_node& node)
         throw Exception(node, "attributes");
 }
 
+Mesh::Indexes::Indexes(const pugi::xml_node& node)
+    : m_offset(0)
+    , m_count(0)
+{
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "source") == 0)
+            m_source = it->value();
+        else if (strcmp(it->name(), "format") == 0)
+            m_format = it->value();
+        else if (strcmp(it->name(), "topology") == 0)
+            m_topology = it->value();
+        else if (strcmp(it->name(), "offset") == 0) {
+            if (sscanf(it->value(), "%zu", &m_offset) < 1)
+                throw Exception(node, "offset");
+        } else if (strcmp(it->name(), "count") == 0) {
+            if (sscanf(it->value(), "%zu", &m_count) < 1)
+                throw Exception(node, "count");
+        }
+    }
+
+    if (m_source.empty())
+        throw Exception(node, "source");
+    if (m_format.empty())
+        throw Exception(node, "format");
+    if (m_count == 0)
+        throw Exception(node, "count");
+}
+
 Mesh::Displacements::Displacement::Displacement(const pugi::xml_node& node)
     : m_weight(0)
 {
@@ -225,32 +253,46 @@ Mesh::Displacements::Displacements(const pugi::xml_node& node)
         throw Exception(node, "displacements");
 }
 
-Mesh::Indexes::Indexes(const pugi::xml_node& node)
-    : m_offset(0)
-    , m_count(0)
+Mesh::Skeleton::Joint::Joint(const pugi::xml_node& node)
+    : m_parent(0)
+    , m_translation({ 0.f, 0.f, 0.f })
+    , m_orientation({ 0.f, 0.f, 0.f, 1.f })
+{
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "parent") == 0) {
+            if (sscanf(it->value(), "%" PRIu32, &m_parent) < 1)
+                throw Exception(node, "parent");
+        } else if (strcmp(it->name(), "translation") == 0) {
+            if (sscanf(it->value(), "%f %f %f", &m_translation.x, &m_translation.y, &m_translation.z) < 3)
+                throw Exception(node, "translation");
+        } else if (strcmp(it->name(), "orientation") == 0) {
+            if (sscanf(it->value(), "%f %f %f %f", &m_orientation.x, &m_orientation.y, &m_orientation.z, &m_orientation.w) < 4)
+                throw Exception(node, "orientation");
+        }
+    }
+}
+
+Mesh::Skeleton::Skeleton(const pugi::xml_node& node)
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "source") == 0)
             m_source = it->value();
-        else if (strcmp(it->name(), "format") == 0)
-            m_format = it->value();
-        else if (strcmp(it->name(), "topology") == 0)
-            m_topology = it->value();
-        else if (strcmp(it->name(), "offset") == 0) {
-            if (sscanf(it->value(), "%zu", &m_offset) < 1)
-                throw Exception(node, "offset");
-        } else if (strcmp(it->name(), "count") == 0) {
-            if (sscanf(it->value(), "%zu", &m_count) < 1)
-                throw Exception(node, "count");
+        else if (strcmp(it->name(), "range") == 0) {
+            if (sscanf(it->value(), "%zu %zu", &m_range.first, &m_range.second) < 2)
+                throw Exception(node, "range");
         }
+    }
+    for (auto it = node.begin(); it != node.end(); ++it) {
+        if (strcmp(it->name(), "joint") == 0)
+            m_joints.emplace_back(*it);
     }
 
     if (m_source.empty())
         throw Exception(node, "source");
-    if (m_format.empty())
-        throw Exception(node, "format");
-    if (m_count == 0)
-        throw Exception(node, "count");
+    if (m_range.second == 0)
+        throw Exception(node, "range");
+    if (m_joints.size() == 0)
+        throw Exception(node, "joints");
 }
 
 Mesh::Mesh(const pugi::xml_node& node)
@@ -264,6 +306,8 @@ Mesh::Mesh(const pugi::xml_node& node)
             m_attributes.emplace_back(*it);
         else if (strcmp(it->name(), "displacements") == 0)
             m_displacements.emplace(*it);
+        else if (strcmp(it->name(), "skeleton") == 0)
+            m_skeleton.emplace(*it);
         else if (strcmp(it->name(), "indexes") == 0)
             m_indexes.emplace(*it);
         else if (strcmp(it->name(), "animation") == 0)

@@ -145,7 +145,7 @@ private:
     std::array<std::array<VmaAllocation, static_cast<size_t>(RenderAttachment::MAX_VALUE)>, 2> m_render_att_allocs;
     std::array<std::queue<std::pair<uint64_t, vk_destructible::Types>>, 4> m_trash;
 
-    constexpr static size_t DS1_INSTANCES = 1, DS2_BUFFERS = 1;
+    constexpr static size_t DS1_INSTANCES = 1, DS2_BUFFERS = 2;
     VkDescriptorSetLayout m_ds0_layout, m_ds1_layout;
     std::array<VkPushConstantRange, 1> m_push_constants;
     std::array<VkDescriptorPool, 2> m_ds01_pool;
@@ -219,8 +219,8 @@ public:
 
     VkPipelineLayout create_pipeline_layout(VkDescriptorSetLayout material_layout) const;
     const vk::BufferPool* perobject_buffer_pool(size_t i) const { return m_ds2_buffer_pool[i]; }
-    void create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, 2>& buffers);
-    void free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, 2>& buffers);
+    void create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>& buffers);
+    void free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>& buffers);
 };
 
 }
