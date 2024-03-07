@@ -8,13 +8,12 @@ CPMAddPackage(NAME cglm
               OPTIONS "CGLM_SHARED OFF"
                       "CGLM_STATIC ON")
 CPMAddPackage(NAME entt
-              VERSION 3.12.2
+              VERSION 3.13.1
               GIT_REPOSITORY https://github.com/skypjack/entt.git
               EXCLUDE_FROM_ALL TRUE)
 CPMAddPackage(NAME ktx
-              VERSION 4.3.0-2cf053c193593f11c932ad742798ee1b101e50ee
+              VERSION 4.3.1
               GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
-              GIT_TAG 2cf053c193593f11c932ad742798ee1b101e50ee  # latest at time of writing, since 4.2.1 has build issue
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "KTX_FEATURE_STATIC_LIBRARY ON"
                       "KTX_FEATURE_TESTS OFF"
@@ -37,14 +36,15 @@ CPMAddPackage(NAME physicsfs
                       "PHYSFS_ARCHIVE_VDF FALSE"
                       "PHYSFS_BUILD_TEST FALSE"
                       "PHYSFS_BUILD_DOCS FALSE"
+                      "PHYSFS_BUILD_STATIC FALSE"
                       "PHYSFS_DISABLE_INSTALL ON"
                       "PHYSFS_TARGETNAME_UNINSTALL PHYSFS_UNINSTALL_TGT_INT")
 CPMAddPackage(NAME pugixml
-              VERSION 1.13
+              VERSION 1.14
               GIT_REPOSITORY https://github.com/zeux/pugixml.git
               EXCLUDE_FROM_ALL TRUE)
 CPMAddPackage(NAME spdlog
-              VERSION 1.12.0
+              VERSION 1.13.0
               GIT_REPOSITORY https://github.com/gabime/spdlog.git)
 CPMAddPackage(NAME spirvreflect
               VERSION 1.3.239.0
@@ -58,12 +58,13 @@ CPMAddPackage(NAME volk
               GIT_REPOSITORY https://github.com/zeux/volk.git
               GIT_TAG sdk-1.3.239.0)
 CPMAddPackage(NAME vulkanmemoryallocator
-              VERSION 1.3.270
+              VERSION 3.0.1
               GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
-              GIT_TAG 33067f6b4f735db97c97660e46620266eebcf7de
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "VMA_BUILD_DOCUMENTATION OFF"
-                      "VMA_BUILD_SAMPLES OFF")
+                      "VMA_BUILD_SAMPLES OFF"
+                      "VMA_DYNAMIC_VULKAN_FUNCTIONS ON"
+                      "VMA_STATIC_VULKAN_FUNCTIONS OFF")
 CPMAddPackage(NAME xxhash
               VERSION 0.8.2
               GIT_REPOSITORY https://github.com/Cyan4973/xxHash.git
