@@ -57,15 +57,7 @@ Scene::Entity::Rigidbody::Rigidbody(const pugi::xml_node& node)
         throw Exception(node, "physics");
 }
 
-Scene::Entity::BlendShapeAnimation::BlendShapeAnimation(const pugi::xml_node& node)
-{
-    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
-        if (strcmp(it->name(), "initial") == 0)
-            m_initial_animation = it->value();
-    }
-}
-
-Scene::Entity::JointAnimation::JointAnimation(const pugi::xml_node& node)
+Scene::Entity::Animator::Animator(const pugi::xml_node& node)
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "initial") == 0)
@@ -89,10 +81,8 @@ Scene::Entity::Entity(const pugi::xml_node& node)
             m_components.emplace_back<Geometry>(*it);
         else if (strcmp(it->name(), "rigidbody") == 0)
             m_components.emplace_back<Rigidbody>(*it);
-        else if (strcmp(it->name(), "blend-shape-animation") == 0)
-            m_components.emplace_back<BlendShapeAnimation>(*it);
-        else if (strcmp(it->name(), "joint-animation") == 0)
-            m_components.emplace_back<JointAnimation>(*it);
+        else if (strcmp(it->name(), "animator") == 0)
+            m_components.emplace_back<Animator>(*it);
     }
 }
 

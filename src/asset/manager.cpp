@@ -18,7 +18,7 @@ bool AssetManager::import_assets(std::string_view path, const Renderer* renderer
         for (const auto& m : assetdoc->meshes())
             m_meshes[std::string { m.name() }] = std::make_shared<asset::Mesh>(m, renderer);
         for (const auto& a : assetdoc->animations())
-            m_animations[std::string { a.name() }] = std::make_shared<asset::Animation>(a, nullptr);
+            m_animations[std::string { a.name() }] = std::make_shared<asset::Animation>(a);
 
         for (const auto& m : assetdoc->materials()) {
             auto shader = m_shaders.find(m.shader());

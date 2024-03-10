@@ -4,8 +4,6 @@
 #include "xml.h"
 #include "xxhash.h"
 
-using namespace std::literals;
-
 namespace twogame::asset {
 
 Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
@@ -14,7 +12,7 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
     , m_index_count(info.indexes()->count())
 {
     if (!vk::parse<VkIndexType>(info.indexes()->format(), m_index_type))
-        throw MalformedException(info.name(), "invalid index buffer format "s + std::string { info.indexes()->format() });
+        throw MalformedException(info.name(), "invalid index buffer format {}", info.name(), info.indexes()->format());
 
     VkDeviceSize index_buffer_size = info.indexes()->count() * vk::format_width(m_index_type);
     m_buffer_size = (index_buffer_size + 15) & (~15);
@@ -76,9 +74,9 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
         for (const auto& attribute : attributes.attributes()) {
             VertexInputAttribute& a = m_attributes.emplace_back();
             if (vk::parse<VkFormat>(attribute.format(), a.format) == false)
-                throw MalformedException(info.name(), "bad shader input format: "s + std::string { attribute.format() });
+                throw MalformedException(info.name(), "bad shader input format {}", attribute.format());
             if (vk::parse<vk::VertexInput>(attribute.name(), a.field) == false)
-                throw MalformedException(info.name(), "bad shader input location: "s + std::string { attribute.name() });
+                throw MalformedException(info.name(), "bad shader input location {}", attribute.name());
             if (attributes.interleaved()) {
                 a.binding = m_bindings.back().binding;
                 a.offset = m_bindings.back().stride;
@@ -193,9 +191,9 @@ Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
 
     m_primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
     if (!info.indexes()->topology().empty() && !vk::parse<VkPrimitiveTopology>(info.indexes()->topology(), m_primitive_topology))
-        throw MalformedException(info.name(), "invalid primitive topology "s + std::string { info.indexes()->topology() });
+        throw MalformedException(info.name(), "invalid primitive topology {}", info.indexes()->topology());
     for (auto it = info.animations().begin(); it != info.animations().end(); ++it)
-        m_animations[std::string { it->name() }] = std::make_shared<Animation>(*it, this);
+        m_animations[std::string { it->name() }] = std::make_shared<Animation>(*it);
 
     XXH3_state_t* xxh = XXH3_createState();
     XXH3_64bits_reset(xxh);
@@ -299,38 +297,44 @@ bool Mesh::prepared() const
     return m_staging == VK_NULL_HANDLE;
 }
 
-Animation::Animation(const xml::assets::Animation& info, Mesh* mesh)
+Animation::Animation(const xml::assets::Animation& info)
 {
     PHYSFS_File* fh = PHYSFS_openRead(info.source().data());
     if (fh == nullptr)
         throw IOException(info.source(), PHYSFS_getLastErrorCode());
 
     m_inputs.resize(info.keyframes());
-    m_channels.reserve(info.outputs().size());
+    m_step_interpolate = info.step_interpolate();
     if (PHYSFS_seek(fh, info.input_offset()) == 0)
         throw IOException(info.source(), PHYSFS_getLastErrorCode());
     if (PHYSFS_readBytes(fh, m_inputs.data(), m_inputs.size() * sizeof(float)) < static_cast<PHYSFS_sint64>(m_inputs.size() * sizeof(float)))
         throw IOException(info.source(), PHYSFS_getLastErrorCode());
+    if (info.type() == "blend-shape")
+        m_anim_type = AnimationType::BlendShape;
+    else if (info.type() == "skeleton")
+        m_anim_type = AnimationType::Skeleton;
+    else
+        throw MalformedException(info.name(), "unknown animation type {}", info.type());
 
     for (auto it = info.outputs().begin(); it != info.outputs().end(); ++it) {
         Channel& c = m_channels.emplace_back();
-        c.m_bone = it->bone() - 1;
-        c.m_step_interpolate = it->step_interpolate();
-        if (it->target() == "translation") {
-            c.m_target = ChannelTarget::Translation;
-            c.m_data.resize(info.keyframes() * 3);
-        } else if (it->target() == "orientation") {
-            c.m_target = ChannelTarget::Orientation;
-            c.m_data.resize(info.keyframes() * 4);
-        } else if (it->target() == "displacements") {
-            if (mesh == nullptr)
-                throw MalformedException(info.name(), "animation with displacement weights must be associated with a mesh");
-            c.m_target = ChannelTarget::DisplaceWeights;
-            c.m_data.resize(info.keyframes() * mesh->displacement_initial_weights().size());
+        if (m_anim_type == AnimationType::BlendShape) {
+            c.m_width = it->width();
+        } else if (m_anim_type == AnimationType::Skeleton) {
+            c.m_bone = it->bone() - 1;
+            if (it->target() == "translation") {
+                c.m_target = ChannelTarget::Translation;
+                c.m_width = 3;
+            } else if (it->target() == "orientation") {
+                c.m_target = ChannelTarget::Orientation;
+                c.m_width = 4;
+            }
         }
+        size_t data_size = info.keyframes() * c.m_width;
+        c.m_data = std::make_unique<float[]>(data_size);
         if (PHYSFS_seek(fh, it->offset()) == 0)
             throw IOException(info.source(), PHYSFS_getLastErrorCode());
-        if (PHYSFS_readBytes(fh, c.m_data.data(), c.m_data.size() * sizeof(float)) < static_cast<PHYSFS_sint64>(c.m_data.size() * sizeof(float)))
+        if (PHYSFS_readBytes(fh, c.m_data.get(), data_size * sizeof(float)) < static_cast<PHYSFS_sint64>(data_size * sizeof(float)))
             throw IOException(info.source(), PHYSFS_getLastErrorCode());
     }
 }
@@ -375,35 +379,49 @@ Animation::Iterator& Animation::Iterator::operator++()
     return *this;
 }
 
-void Animation::Iterator::get(size_t count, float* out) const
+void Animation::Iterator::get(float* out, size_t count) const
 {
-    size_t dim;
-    switch (m_it->m_target) {
-    case ChannelTarget::Translation:
-        dim = 3;
-        break;
-    case ChannelTarget::Orientation:
-        dim = 4;
-        break;
-    default:
-        dim = m_it->m_data.size() / m_animation->m_inputs.size();
-        break;
-    }
-#ifdef TWOGAME_DEBUG_BUILD
-    if (count < dim)
-        spdlog::error("buffer provided to Animation::Iterator::get was {} big; needed {}", count, dim);
-#endif
-
-    const float *x0 = m_it->m_data.data() + (m_index * dim),
-                *x1 = m_it->m_data.data() + ((m_index + 1) * dim);
-    if (m_it->m_step_interpolate) {
-        memcpy(out, x0, std::min(count, dim) * sizeof(float));
-    } else if (m_it->m_target == ChannelTarget::Orientation) {
-        glm_quat_slerp(const_cast<float*>(x0), const_cast<float*>(x1), m_iv, out);
-    } else {
-        for (size_t i = 0; i < std::min(count, dim); i++)
+    const float *x0 = m_it->m_data.get() + (m_index * m_it->m_width),
+                *x1 = m_it->m_data.get() + ((m_index + 1) * m_it->m_width);
+    if (m_animation->m_step_interpolate)
+        memcpy(out, x0, count * sizeof(float));
+    else {
+        for (size_t i = 0; i < count; i++)
             out[i] = glm_lerp(x0[i], x1[i], m_iv);
     }
+}
+
+template <>
+void Animation::Iterator::get(vec3s& out) const
+{
+    const float *x0 = m_it->m_data.get() + (m_index * m_it->m_width),
+                *x1 = m_it->m_data.get() + ((m_index + 1) * m_it->m_width);
+    if (m_animation->m_step_interpolate)
+        memcpy(out.raw, x0, sizeof(vec3));
+    else
+        glm_vec3_lerp(const_cast<float*>(x0), const_cast<float*>(x1), m_iv, out.raw);
+}
+
+template <>
+void Animation::Iterator::get(vec4s& out) const
+{
+    const float *x0 = m_it->m_data.get() + (m_index * m_it->m_width),
+                *x1 = m_it->m_data.get() + ((m_index + 1) * m_it->m_width);
+    if (m_animation->m_step_interpolate)
+        memcpy(out.raw, x0, sizeof(vec4));
+    else
+        glm_vec4_lerp(const_cast<float*>(x0), const_cast<float*>(x1), m_iv, out.raw);
+}
+
+template <>
+void Animation::Iterator::get(versors& out) const
+{
+    const float *x0 = m_it->m_data.get() + (m_index * 4),
+                *x1 = m_it->m_data.get() + ((m_index + 1) * 4);
+    if (m_animation->m_step_interpolate)
+        memcpy(out.raw, x0, sizeof(versor));
+    else
+        glm_quat_slerp(const_cast<float*>(x0), const_cast<float*>(x1), m_iv, out.raw);
 }
 
 }

@@ -6,8 +6,6 @@
 #include "twogame.h"
 #include "xml.h"
 
-using namespace std::string_view_literals;
-
 template <class>
 inline constexpr bool variant_false_v = false;
 
@@ -165,7 +163,9 @@ Scene::Scene(Twogame* tg, std::string_view path)
                 } else if constexpr (std::is_same_v<C, E::Rigidbody>) {
                     m_registry.replace<e_components::translation>(e, ecomp.translation());
                     m_registry.replace<e_components::orientation>(e, glms_quat_normalize(ecomp.orientation()));
-                } else if constexpr (std::is_same_v<C, E::BlendShapeAnimation>) {
+                } else if constexpr (std::is_same_v<C, E::Animator>) {
+                    std::shared_ptr<asset::Animation> animation;
+                    asset::Mesh* mesh = nullptr;
                     if (m_registry.all_of<e_components::geometry>(e)) {
                         auto& g = m_registry.get<e_components::geometry>(e);
                         auto anim_it = g.m_mesh->animations().find(ecomp.initial_animation());
@@ -175,30 +175,27 @@ Scene::Scene(Twogame* tg, std::string_view path)
                             spdlog::error("unknown animation '{}'", ecomp.initial_animation());
                             return;
                         }
+                        animation = anim_it->second;
+                        mesh = g.m_mesh.get();
+                    } else {
+                        spdlog::warn("skipping application of animation to entity without geometry");
+                        return;
+                    }
 
-                        m_registry.emplace<e_components::morph_animation>(e, anim_it->second, anim_it->second, 0ULL, 1.f);
-                        m_registry.emplace<e_components::morph_weights>(e, g.m_mesh->displacement_initial_weights());
+                    switch (animation->type()) {
+                    case asset::Animation::AnimationType::BlendShape:
+                        m_registry.emplace<e_components::morph_animation>(e, animation, animation, 0ULL, 1.f);
+                        m_registry.emplace<e_components::morph_weights>(e, mesh->displacement_initial_weights());
                         m_registry.emplace<e_components::morph_weights_dirty_0>(e);
                         m_registry.emplace<e_components::morph_weights_dirty_1>(e);
-                    } else {
-                        spdlog::warn("skipping application of blend shape animation to entity without geometry");
-                    }
-                } else if constexpr (std::is_same_v<C, E::JointAnimation>) {
-                    if (m_registry.all_of<e_components::geometry>(e)) {
-                        auto& g = m_registry.get<e_components::geometry>(e);
-                        auto anim_it = g.m_mesh->animations().find(ecomp.initial_animation());
-                        if (anim_it == g.m_mesh->animations().end())
-                            anim_it = m_assets.animations().find(ecomp.initial_animation());
-                        if (anim_it == m_assets.animations().end()) {
-                            spdlog::error("unknown animation '{}'", ecomp.initial_animation());
-                            return;
-                        }
-
-                        m_registry.emplace<e_components::joint_animation>(e, anim_it->second, anim_it->second, 0ULL, 1.f);
+                        break;
+                    case asset::Animation::AnimationType::Skeleton:
+                        m_registry.emplace<e_components::joint_animation>(e, animation, animation, 0ULL, 1.f);
                         m_registry.emplace<e_components::joint_mats_dirty_0>(e);
                         m_registry.emplace<e_components::joint_mats_dirty_1>(e);
-                    } else {
-                        spdlog::warn("skipping application of joint animation to entity without geometry");
+                        break;
+                    default:
+                        assert(false);
                     }
                 } else if constexpr (!std::is_same_v<C, E::Geometry> && !std::is_same_v<C, std::monostate>) {
                     static_assert(variant_false_v<C>, "entity xml parser: non-exhaustive visitor");
@@ -251,19 +248,16 @@ void Scene::animate(uint64_t frame_time, uint64_t delta_time)
         }
     }
 
-    auto morphs = m_registry.view<e_components::morph_animation>();
+    auto morphs = m_registry.view<e_components::geometry, e_components::morph_animation>();
     for (entt::entity e : morphs) {
         const auto& a = morphs.get<e_components::morph_animation>(e);
         if (!a.m_animation)
             continue;
 
         float t = (frame_time - a.m_start_time) * a.m_multiplier / 1000.f;
-        for (auto it = a.m_animation->interpolate(t); !a.m_animation->finished(it); ++it) {
-            if (it.target() == asset::Animation::ChannelTarget::DisplaceWeights) {
-                m_registry.patch<e_components::morph_weights>(e, [&it](auto& w) { it.get(w.m_weights.size(), w.m_weights.data()); });
-                break; // ???
-            }
-        }
+        m_registry.patch<e_components::morph_weights>(e, [&](auto& w) {
+            a.m_animation->interpolate(t).get(w.m_weights.data(), w.m_weights.size());
+        });
     }
 
     auto skels = m_registry.view<e_components::joint_animation, e_components::joints>();
@@ -275,11 +269,12 @@ void Scene::animate(uint64_t frame_time, uint64_t delta_time)
 
         float t = (frame_time - a.m_start_time) * a.m_multiplier / 1000.f;
         for (auto it = a.m_animation->interpolate(t); !a.m_animation->finished(it); ++it) {
-            if (it.target() == asset::Animation::ChannelTarget::Translation) {
-                m_registry.patch<e_components::translation>(b.m_bones[it.bone()], [&it](auto& w) { it.get(3, w.raw); });
-            } else if (it.target() == asset::Animation::ChannelTarget::Orientation) {
-                m_registry.patch<e_components::orientation>(b.m_bones[it.bone()], [&it](auto& w) { it.get(4, w.raw); });
-            }
+            if (it.bone() >= b.m_bones.size())
+                continue;
+            if (it.target() == asset::Animation::ChannelTarget::Translation)
+                m_registry.patch<e_components::translation>(b.m_bones[it.bone()], [&it](auto& t) { it.get(t); });
+            else if (it.target() == asset::Animation::ChannelTarget::Orientation)
+                m_registry.patch<e_components::orientation>(b.m_bones[it.bone()], [&it](auto& o) { it.get(o); });
         }
     }
 }

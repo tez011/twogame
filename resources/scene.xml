@@ -9,7 +9,7 @@
         <rigidbody physics="off">
             <transform translation="0 0 0" />
         </rigidbody>
-        <joint-animation initial="tubing" />
+        <animator initial="tubing" />
     </entity>
     <entity>
         <camera />

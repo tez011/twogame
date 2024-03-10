@@ -31,13 +31,15 @@ namespace assets {
             X(std::string_view, target);
             X(size_t, offset);
             X(uint32_t, bone);
-            X(bool, step_interpolate);
-            Output(const pugi::xml_node&);
+            X(uint32_t, width);
+            Output(const pugi::xml_node&, const std::string_view&);
         };
         X(std::string_view, name);
         X(std::string_view, source);
+        X(std::string_view, type);
         X(size_t, input_offset);
         X(size_t, keyframes);
+        X(bool, step_interpolate);
         X(std::vector<Output>, outputs);
         Animation(const pugi::xml_node&);
     };
@@ -152,15 +154,11 @@ struct Scene {
             X(versors, orientation);
             Rigidbody(const pugi::xml_node&);
         };
-        struct BlendShapeAnimation {
+        struct Animator {
             X(std::string_view, initial_animation);
-            BlendShapeAnimation(const pugi::xml_node&);
+            Animator(const pugi::xml_node&);
         };
-        struct JointAnimation {
-            X(std::string_view, initial_animation);
-            JointAnimation(const pugi::xml_node&);
-        };
-        using EntityComponent = std::variant<Camera, Geometry, Rigidbody, BlendShapeAnimation, JointAnimation>;
+        using EntityComponent = std::variant<Camera, Geometry, Rigidbody, Animator>;
 
         X(std::string_view, name);
         X(std::string_view, parent);

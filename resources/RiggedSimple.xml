@@ -15,7 +15,7 @@
             <joint translation="0 0 -4.18" />
             <joint parent="1" translation="0 0 4.18" orientation="0 0 0 -1" />
         </skeleton>
-        <animation name="tubing" source="/tg/RiggedSimple0.bin" keyframes="50">
+        <animation name="tubing" type="skeleton" source="/tg/RiggedSimple0.bin" keyframes="50">
             <input offset="9808" />
             <output bone="2" target="translation" offset="3488" />
             <output bone="2" target="orientation" offset="128" />

@@ -5,47 +5,56 @@
 
 namespace twogame::xml::assets {
 
-Animation::Output::Output(const pugi::xml_node& node)
+Animation::Output::Output(const pugi::xml_node& node, const std::string_view& animation_type)
     : m_offset(std::numeric_limits<size_t>::max())
     , m_bone(std::numeric_limits<uint32_t>::max())
-    , m_step_interpolate(false)
+    , m_width(1)
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "target") == 0)
             m_target = it->value();
-        else if (strcmp(it->name(), "step") == 0)
-            m_step_interpolate = priv::parse_boolean(it->value());
         else if (strcmp(it->name(), "offset") == 0) {
             if (sscanf(it->value(), "%zu", &m_offset) < 1)
                 throw Exception(node, "offset");
         } else if (strcmp(it->name(), "bone") == 0) {
             if (sscanf(it->value(), "%" PRIu32, &m_bone) < 1)
                 throw Exception(node, "bone");
+        } else if (strcmp(it->name(), "width") == 0 && animation_type == "blend-shape") {
+            if (sscanf(it->value(), "%" PRIu32, &m_width) < 1)
+                throw Exception(node, "width");
         }
     }
 
-    if (m_target.empty())
-        throw Exception(node, "target");
     if (m_offset == std::numeric_limits<size_t>::max())
         throw Exception(node, "offset");
-    if (m_target != "displacements" && m_bone == std::numeric_limits<uint32_t>::max())
-        throw Exception(node, "bone");
+    if (animation_type == "skeleton") {
+        if (m_bone == std::numeric_limits<uint32_t>::max())
+            throw Exception(node, "bone");
+    }
 }
 
 Animation::Animation(const pugi::xml_node& node)
     : m_input_offset(std::numeric_limits<size_t>::max())
     , m_keyframes(0)
+    , m_step_interpolate(false)
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "name") == 0)
             m_name = it->value();
         else if (strcmp(it->name(), "source") == 0)
             m_source = it->value();
+        else if (strcmp(it->name(), "type") == 0)
+            m_type = it->value();
+        else if (strcmp(it->name(), "step") == 0)
+            m_step_interpolate = priv::parse_boolean(it->value());
         else if (strcmp(it->name(), "keyframes") == 0) {
             if (sscanf(it->value(), "%zu", &m_keyframes) < 1)
                 throw Exception(node, "keyframes");
         }
     }
+    if (m_type.empty())
+        throw Exception(node, "type");
+
     for (auto it = node.begin(); it != node.end(); ++it) {
         if (strcmp(it->name(), "input") == 0) {
             for (auto jt = it->attributes_begin(); jt != it->attributes_end(); ++jt) {
@@ -55,7 +64,7 @@ Animation::Animation(const pugi::xml_node& node)
                 }
             }
         } else if (strcmp(it->name(), "output") == 0) {
-            m_outputs.emplace_back(*it);
+            m_outputs.emplace_back(*it, m_type);
         }
     }
 
@@ -64,10 +73,10 @@ Animation::Animation(const pugi::xml_node& node)
     if (m_source.empty())
         throw Exception(node, "source");
     if (m_input_offset == std::numeric_limits<size_t>::max())
-        throw Exception(node, "input-offset");
+        throw Exception(node, "input.offset");
     if (m_keyframes == 0)
         throw Exception(node, "keyframes");
-    if (m_outputs.empty())
+    if (m_outputs.empty() || (m_type == "blend-shape" && m_outputs.size() != 1))
         throw Exception(node, "outputs");
 }
 

@@ -10,9 +10,9 @@
             <displacement weight="1.0" />
             <displacement weight="0.5" />
         </displacements>
-        <animation name="morphing" source="/tg/simpleMorphAnimation.bin" keyframes="5">
+        <animation name="morphing" type="blend-shape" source="/tg/simpleMorphAnimation.bin" keyframes="5">
             <input offset="0" />
-            <output target="displacements" offset="20" />
+            <output offset="20" width="2" />
         </animation>
     </mesh>
     <shader name="morph">

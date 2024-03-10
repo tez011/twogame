@@ -6,8 +6,6 @@
 #include "render.h"
 #include "xml.h"
 
-using namespace std::literals;
-
 static VkViewport viewport_state_viewport {};
 static VkRect2D viewport_state_scissor {};
 static VkPipelineViewportStateCreateInfo viewport_state = {
@@ -153,7 +151,7 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
                     } else {
                         std::ostringstream oss;
                         oss << "unrecognizable input: " << iv->name << "@" << iv->location;
-                        throw MalformedException(info.name(), oss.str());
+                        throw MalformedException(info.name(), "unrecognizable input: {}@{}", iv->name, iv->location);
                     }
                 }
             }
@@ -165,7 +163,7 @@ Shader::Shader(const xml::assets::Shader& info, const Renderer* r)
         spvReflectEnumerateDescriptorSets(&reflect, &count, sets.data());
         for (size_t i = 0; i < sets.size(); i++) {
             if (sets[i]->set >= 4)
-                throw MalformedException(info.stages().at(i).path(), "found invalid descriptor set >= 4");
+                throw MalformedException(info.stages().at(i).path(), "found invalid descriptor set {} >= 4", sets[i]->set);
             if (sets[i]->set != 3)
                 continue;
 

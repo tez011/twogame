@@ -8,6 +8,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cglm/struct.h>
+#include <spdlog/fmt/fmt.h>
 #include <vk_mem_alloc.h>
 #include "vkutil.h"
 
@@ -77,10 +78,13 @@ class MalformedException final : public std::exception {
     std::string m_what;
 
 public:
-    MalformedException(std::string_view name, const std::string& what)
+    template <typename... Ts>
+    MalformedException(std::string_view name, std::string_view fmtstr, Ts&&... args)
         : m_name(name)
-        , m_what(what)
     {
+#ifdef TWOGAME_DEBUG_BUILD
+        m_what = fmt::vformat(fmtstr, fmt::make_format_args(args...));
+#endif
     }
 
     std::string_view name() const { return m_name; }
@@ -254,22 +258,29 @@ public:
     enum class ChannelTarget : uint16_t {
         Translation,
         Orientation,
-        DisplaceWeights,
+        MAX_VALUE,
+    };
+    enum class AnimationType : uint16_t {
+        BlendShape,
+        Skeleton,
         MAX_VALUE,
     };
 
 private:
     struct Channel {
-        std::vector<float> m_data;
-        uint32_t m_bone;
+        std::unique_ptr<float[]> m_data;
+        uint32_t m_bone, m_width;
         ChannelTarget m_target;
-        bool m_step_interpolate;
     };
     std::vector<float> m_inputs;
     std::vector<Channel> m_channels;
+    AnimationType m_anim_type;
+    bool m_step_interpolate;
 
 public:
-    Animation(const xml::assets::Animation&, Mesh* mesh);
+    Animation(const xml::assets::Animation&);
+    inline AnimationType type() const { return m_anim_type; }
+    size_t channels() const { return m_channels.size(); }
     float duration() const { return m_inputs[m_inputs.size() - 1]; }
 
     class Iterator {
@@ -286,7 +297,11 @@ public:
 
         inline ChannelTarget target() const { return m_it->m_target; }
         inline uint32_t bone() const { return m_it->m_bone; }
-        void get(size_t count, float* out) const;
+
+        void get(float*, size_t count) const;
+
+        template <typename T>
+        void get(T&) const;
     };
 
     Iterator interpolate(float t) const;
