@@ -77,9 +77,6 @@ Renderer::Renderer(Twogame* tg, SDL_Window* window)
 Renderer::~Renderer()
 {
     for (size_t i = 0; i < 2; i++) {
-        for (size_t j = 0; j < DS1_INSTANCES; j++)
-            vmaDestroyBuffer(m_allocator, m_ds1_buffers[i][j].buffer, m_ds1_buffers[i][j].allocation);
-
         for (auto it = m_command_pools[i].begin(); it != m_command_pools[i].end(); ++it) {
             for (auto jt = it->begin(); jt != it->end(); ++jt)
                 vkDestroyCommandPool(m_device, *jt, nullptr);
@@ -91,18 +88,21 @@ Renderer::~Renderer()
 
         vkDestroyDescriptorPool(m_device, m_ds01_pool[i], nullptr);
     }
+    for (size_t i = 0; i < DS1_INSTANCES; i++)
+        vmaDestroyBuffer(m_allocator, m_ds1_buffers[i].buffer, m_ds1_buffers[i].allocation);
     for (size_t i = 0; i < DS2_BUFFERS; i++)
         delete m_ds2_buffer_pool[i];
     delete m_ds2_pool;
 
     vkDestroyCommandPool(m_device, m_command_pool_transient, nullptr);
     vkDestroyFence(m_device, m_fence_assets_prepared, nullptr);
+    vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
 
     for (size_t i = 0; i < 2; i++) {
-        vfree(m_framebuffers[i]);
-        vfree(m_render_att_views[i]);
-        vfree(m_render_atts[i]);
-        vfree(m_render_att_allocs[i]);
+        defer_free(m_framebuffers[i]);
+        defer_free(m_render_att_views[i]);
+        defer_free(m_render_atts[i]);
+        defer_free(m_render_att_allocs[i]);
     }
     for (size_t i = 0; i < m_trash.size(); i++)
         release_freed_items(i);
@@ -272,7 +272,7 @@ static bool evaluate_physical_device(VkPhysicalDevice hwd, VkSurfaceKHR surface,
     }
 
     VkImageFormatProperties ifmt;
-    if (vkGetPhysicalDeviceImageFormatProperties(hwd, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_TYPE_1D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+    if (vkGetPhysicalDeviceImageFormatProperties(hwd, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED) {
         spdlog::debug("{}: skipping: image format used for morph target displacements is not supported", device_props.deviceName);
         return false;
     }
@@ -324,12 +324,6 @@ void Renderer::create_logical_device()
     available_exts.resize(count);
     vkEnumerateDeviceExtensionProperties(m_hwd, nullptr, &count, available_exts.data());
 
-    VkPhysicalDevicePageableDeviceLocalMemoryFeaturesEXT pageable_device_local_memory {};
-    pageable_device_local_memory.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PAGEABLE_DEVICE_LOCAL_MEMORY_FEATURES_EXT;
-    VkPhysicalDeviceRobustness2FeaturesEXT robustness2 {};
-    robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
-    robustness2.pNext = &pageable_device_local_memory;
-
     for (auto& ext : available_exts) {
         if (strcmp(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
@@ -337,6 +331,8 @@ void Renderer::create_logical_device()
             extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
         if (strcmp(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
+        if (strcmp(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME, ext.extensionName) == 0)
+            extensions.push_back(VK_EXT_INDEX_TYPE_UINT8_EXTENSION_NAME);
         if (strcmp(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME, ext.extensionName) == 0) {
             extensions.push_back(VK_EXT_MEMORY_PRIORITY_EXTENSION_NAME);
             extensions.push_back(VK_EXT_PAGEABLE_DEVICE_LOCAL_MEMORY_EXTENSION_NAME);
@@ -347,9 +343,15 @@ void Renderer::create_logical_device()
     properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
     vkGetPhysicalDeviceProperties2(m_hwd, &properties);
     spdlog::info("selecting device {}", properties.properties.deviceName);
+#ifdef TWOGAME_DEBUG_BUILD
+    for (auto& e : extensions)
+        spdlog::info("    with {}", e);
+#endif
+
     memcpy(&m_device_limits, &properties.properties.limits, sizeof(VkPhysicalDeviceLimits));
+    m_device_robustness2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
     m_device_features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    m_device_features12.pNext = &robustness2;
+    m_device_features12.pNext = &m_device_robustness2_features;
     m_device_features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     m_device_features11.pNext = &m_device_features12;
     m_device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -591,7 +593,6 @@ void Renderer::create_framebuffers()
     i_createinfo.samples = VK_SAMPLE_COUNT_1_BIT;
     i_createinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     i_createinfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    i_createinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     i_createinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     v_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     v_createinfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -666,13 +667,13 @@ void Renderer::create_pipeline_cache()
 
 void Renderer::create_descriptor_sets()
 {
-    m_push_constants[0] = { VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mat4) };
-
     VkDescriptorSetLayoutBinding internal_bindings[] = {
-        { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
-        { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT, &m_morph_sampler },
-        { 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
-        { 2, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+        { static_cast<size_t>(DescriptorSetSlot::ProjectionView), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+        { static_cast<size_t>(DescriptorSetSlot::ModelMatrix), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+        { static_cast<size_t>(DescriptorSetSlot::BoneMatrices), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+        { static_cast<size_t>(DescriptorSetSlot::ShapeKeyWeights), VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+        { static_cast<size_t>(DescriptorSetSlot::PositionDisplacements), VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT, &m_morph_sampler },
+        { static_cast<size_t>(DescriptorSetSlot::NormalDisplacements), VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT, &m_morph_sampler },
     };
     VkDescriptorSetLayoutCreateInfo dsl_ci {};
     dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
@@ -683,7 +684,7 @@ void Renderer::create_descriptor_sets()
     dsl_ci.bindingCount = 1;
     VK_CHECK(vkCreateDescriptorSetLayout(m_device, &dsl_ci, nullptr, &m_ds1_layout));
     dsl_ci.pBindings += dsl_ci.bindingCount;
-    dsl_ci.bindingCount = 3;
+    dsl_ci.bindingCount = 5;
     m_ds2_pool = new vk::DescriptorPool(*this, dsl_ci);
 
     auto dsp01sz = std::to_array<VkDescriptorPoolSize>({
@@ -714,21 +715,25 @@ void Renderer::create_descriptor_sets()
         VK_CHECK(vkAllocateDescriptorSets(m_device, &dsallocinfo, m_ds1[i].data()));
     }
 
+    std::array<VkDescriptorSetLayout, 3> plci_layout = { m_ds0_layout, m_ds1_layout, m_ds2_pool->layout() };
+    VkPipelineLayoutCreateInfo plci {};
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.setLayoutCount = plci_layout.size();
+    plci.pSetLayouts = plci_layout.data();
+    plci.pushConstantRangeCount = 0;
+    VK_CHECK(vkCreatePipelineLayout(m_device, &plci, nullptr, &m_pipeline_layout));
+
     VkBufferCreateInfo buffer_ci {};
     VmaAllocationCreateInfo buffer_ai {};
     std::vector<VkWriteDescriptorSet> writes;
     std::list<VkDescriptorBufferInfo> w_buffers;
     buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_ci.size = sizeof(descriptor_storage::uniform_s1i0_t) * 2;
+    buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    buffer_ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+    buffer_ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    VK_CHECK(vmaCreateBuffer(m_allocator, &buffer_ci, &buffer_ai, &m_ds1_buffers[0].buffer, &m_ds1_buffers[0].allocation, &m_ds1_buffers[0].details));
     for (int i = 0; i < 2; i++) {
-        buffer_ci.size = sizeof(descriptor_storage::uniform_s1i0_t);
-        buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-        buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        buffer_ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-        buffer_ai.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-        VK_CHECK(vmaCreateBuffer(m_allocator, &buffer_ci, &buffer_ai,
-            &m_ds1_buffers[i][0].buffer, &m_ds1_buffers[i][0].allocation,
-            &m_ds1_buffers[i][0].details));
-
         auto& dsw = writes.emplace_back();
         auto& dsb = w_buffers.emplace_back();
         dsw.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -738,15 +743,16 @@ void Renderer::create_descriptor_sets()
         dsw.descriptorCount = 1;
         dsw.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
         dsw.pBufferInfo = &dsb;
-        dsb.buffer = m_ds1_buffers[i][0].buffer;
-        dsb.offset = 0;
-        dsb.range = sizeof(mat4) * 2;
+        dsb.buffer = m_ds1_buffers[0].buffer;
+        dsb.offset = i * sizeof(descriptor_storage::uniform_s1i0_t);
+        dsb.range = sizeof(descriptor_storage::uniform_s1i0_t);
     }
 
     vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
 
-    m_ds2_buffer_pool[0] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 64 * sizeof(float), 1024);
-    m_ds2_buffer_pool[1] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 16 * sizeof(mat4), 1024);
+    m_ds2_buffer_pool[static_cast<size_t>(DescriptorSetSlot::ModelMatrix)] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(mat4), 1024);
+    m_ds2_buffer_pool[static_cast<size_t>(DescriptorSetSlot::BoneMatrices)] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 32 * sizeof(mat4), 1024);
+    m_ds2_buffer_pool[static_cast<size_t>(DescriptorSetSlot::ShapeKeyWeights)] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 64 * sizeof(float), 1024);
 }
 
 void Renderer::create_command_buffers()
@@ -819,16 +825,12 @@ void Renderer::create_sampler()
     ci.minLod = 0;
     ci.maxLod = VK_LOD_CLAMP_NONE;
     ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-
-    if (m_active_sampler != VK_NULL_HANDLE)
-        vfree(m_active_sampler);
     VK_CHECK(vkCreateSampler(m_device, &ci, nullptr, &m_active_sampler));
 
     ci.magFilter = ci.minFilter = VK_FILTER_NEAREST;
     ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     ci.anisotropyEnable = VK_FALSE;
-    if (m_morph_sampler == VK_NULL_HANDLE)
-        VK_CHECK(vkCreateSampler(m_device, &ci, nullptr, &m_morph_sampler));
+    VK_CHECK(vkCreateSampler(m_device, &ci, nullptr, &m_morph_sampler));
 }
 
 void Renderer::release_freed_items(int bucket)
@@ -872,12 +874,12 @@ void Renderer::release_freed_items(int bucket)
 
 void Renderer::recreate_swapchain()
 {
-    vfree(m_swapchain);
+    defer_free(m_swapchain);
     for (size_t i = 0; i < 2; i++) {
-        vfree(m_framebuffers[i]);
-        vfree(m_render_att_views[i]);
-        vfree(m_render_atts[i]);
-        vfree(m_render_att_allocs[i]);
+        defer_free(m_framebuffers[i]);
+        defer_free(m_render_att_views[i]);
+        defer_free(m_render_atts[i]);
+        defer_free(m_render_att_allocs[i]);
     }
 
     VkSwapchainKHR old_swapchain = m_swapchain;
@@ -908,27 +910,17 @@ void Renderer::wait_idle()
     vkDeviceWaitIdle(m_device);
 }
 
-bool Renderer::null_descriptor_enabled() const
-{
-    const VkBaseOutStructure* s = reinterpret_cast<const VkBaseOutStructure*>(&m_device_features);
-    while (s->sType != VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT)
-        s = reinterpret_cast<const VkBaseOutStructure*>(s->pNext);
-
-    return reinterpret_cast<const VkPhysicalDeviceRobustness2FeaturesEXT*>(s)->nullDescriptor;
-}
-
 VkPipelineLayout Renderer::create_pipeline_layout(VkDescriptorSetLayout material_layout) const
 {
-    VkPipelineLayout pl = VK_NULL_HANDLE;
-    VkPipelineLayoutCreateInfo createinfo {};
-    VkDescriptorSetLayout set_layouts[4] = { m_ds0_layout, m_ds1_layout, m_ds2_pool->layout(), material_layout };
-    createinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    createinfo.setLayoutCount = 4;
-    createinfo.pSetLayouts = set_layouts;
-    createinfo.pushConstantRangeCount = m_push_constants.size();
-    createinfo.pPushConstantRanges = m_push_constants.data();
-    VK_CHECK(vkCreatePipelineLayout(m_device, &createinfo, nullptr, &pl));
-    return pl;
+    VkPipelineLayout layout;
+    VkPipelineLayoutCreateInfo plci {};
+    std::array<VkDescriptorSetLayout, 4> plci_layout = { m_ds0_layout, m_ds1_layout, m_ds2_pool->layout(), material_layout };
+    plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plci.setLayoutCount = plci_layout.size();
+    plci.pSetLayouts = plci_layout.data();
+    plci.pushConstantRangeCount = 0;
+    VK_CHECK(vkCreatePipelineLayout(m_device, &plci, nullptr, &layout));
+    return layout;
 }
 
 void Renderer::create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>& buffers)
@@ -939,56 +931,16 @@ void Renderer::create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets
 
     std::array<VkWriteDescriptorSet, DS2_BUFFERS * 2> writes;
     std::array<VkDescriptorBufferInfo, DS2_BUFFERS * 2> wbuffers;
-    writes[0] = {
-        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        nullptr,
-        sets[0],
-        1,
-        0,
-        1,
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        nullptr,
-        &wbuffers[0],
-        nullptr
-    };
-    writes[1] = {
-        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        nullptr,
-        sets[1],
-        1,
-        0,
-        1,
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        nullptr,
-        &wbuffers[1],
-        nullptr
-    };
-    writes[2] = {
-        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        nullptr,
-        sets[0],
-        2,
-        0,
-        1,
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        nullptr,
-        &wbuffers[2],
-        nullptr
-    };
-    writes[3] = {
-        VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
-        nullptr,
-        sets[1],
-        2,
-        0,
-        1,
-        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
-        nullptr,
-        &wbuffers[3],
-        nullptr
-    };
-    for (size_t i = 0; i < buffers.size(); i++)
+    memset(writes.data(), 0, writes.size() * sizeof(VkWriteDescriptorSet));
+    for (size_t i = 0; i < buffers.size(); i++) {
+        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[i].dstSet = sets[i % 2];
+        writes[i].dstBinding = i / 2;
+        writes[i].descriptorCount = 1;
+        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+        writes[i].pBufferInfo = &wbuffers[i];
         m_ds2_buffer_pool[i / 2]->buffer_handle(buffers[i], wbuffers[i]);
+    }
     vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
 }
 
@@ -997,6 +949,14 @@ void Renderer::free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, 
     for (size_t i = 0; i < buffers.size(); i++)
         m_ds2_buffer_pool[i / 2]->free(buffers[i]);
     m_ds2_pool->free(sets.data(), sets.size());
+}
+
+uint64_t Renderer::dummy_perobject_descriptors_internal(DescriptorSetSlot slot) const
+{
+    if (m_device_robustness2_features.nullDescriptor)
+        return VK_NULL_HANDLE;
+    else
+        assert(false); // TODO
 }
 
 }

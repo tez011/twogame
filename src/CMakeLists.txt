@@ -5,7 +5,7 @@ add_executable(twogame
     "main.cpp"
     "twogame.cpp"
     "util.cpp"
-    "xml.cpp"
+    "asset/animation.cpp"
     "asset/image.cpp"
     "asset/manager.cpp"
     "asset/material.cpp"
@@ -13,14 +13,17 @@ add_executable(twogame
     "asset/shader.cpp"
     "asset/xml.cpp"
     "scene/scene.cpp"
+    "scene/xml.cpp"
     "vk/allocator.cpp"
     "vk/frame.cpp"
-    "vk/parse.cpp"
     "vk/pool.cpp"
-    "vk/render_init.cpp")
+    "vk/render_init.cpp"
+    "vk/util.cpp"
+)
 target_link_libraries(twogame
     cglm
     EnTT::EnTT
+    FastFloat::fast_float
     ktx_read
     PhysFS::PhysFS
     pugixml

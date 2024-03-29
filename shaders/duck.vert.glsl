@@ -4,7 +4,7 @@ layout(set = 1, binding = 0) uniform DS1B0 {
     mat4 proj;
     mat4 view;
 };
-layout(push_constant) uniform PushConstants {
+layout(set = 2, binding = 0) uniform ModelMat {
     mat4 model;
 };
 

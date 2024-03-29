@@ -3,13 +3,13 @@
          right handed, Y is up. So +X is right, +Z is towards the camera. -->
     <assets path="/tg/RiggedSimple.xml" />
     <entity>
-        <geometry mesh="tubeman">
-            <material name="tubeman-basic" />
+        <geometry mesh="Cylinder" skeleton="Armature">
+            <material>Material_001-effect</material>
         </geometry>
         <rigidbody physics="off">
             <transform translation="0 0 0" />
         </rigidbody>
-        <animator initial="tubing" />
+        <animator initial="RiggedSimple.an0" />
     </entity>
     <entity>
         <camera />

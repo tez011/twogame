@@ -1,277 +1,319 @@
 #include <physfs.h>
+#include <xxhash.h>
 #include "asset.h"
 #include "render.h"
-#include "xml.h"
-#include "xxhash.h"
 
 namespace twogame::asset {
 
-Mesh::Mesh(const xml::assets::Mesh& info, const Renderer* r)
-    : m_renderer(*r)
-    , m_displacement_prep({})
-    , m_index_count(info.indexes()->count())
+struct Mesh::PrepareData {
+    VkBuffer staging, displacements;
+    VmaAllocation staging_mem, displacements_mem;
+    size_t staging_size, displacements_size;
+    std::vector<VkBufferImageCopy> displacements_copies;
+
+    PrepareData(size_t pc)
+        : staging(VK_NULL_HANDLE)
+        , displacements(VK_NULL_HANDLE)
+        , staging_size(0)
+        , displacements_size(0)
+    {
+    }
+};
+
+Mesh::Mesh(const xml::assets::Mesh& info, const AssetManager& manager)
+    : m_renderer(manager.renderer())
+    , m_morph(VK_NULL_HANDLE)
+    , m_primitive_groups(info.primitives().size())
+    , m_index_buffer_width(VK_INDEX_TYPE_MAX_ENUM)
+    , m_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST)
 {
-    if (!vk::parse<VkIndexType>(info.indexes()->format(), m_index_type))
-        throw MalformedException(info.name(), "invalid index buffer format {}", info.name(), info.indexes()->format());
+    VkDeviceSize index_buffer_size = 0;
+    for (const auto& p : info.primitives()) {
+        if (p.indexes())
+            index_buffer_size += p.indexes()->range().second;
+    }
 
-    VkDeviceSize index_buffer_size = info.indexes()->count() * vk::format_width(m_index_type);
-    m_buffer_size = (index_buffer_size + 15) & (~15);
-    for (const auto& attributes : info.attributes())
-        m_buffer_size += (attributes.range().second + 15) & (~15);
-    if (info.displacements())
-        m_buffer_size += (info.displacements()->range().second + 15) & (~15);
-
-    const VkPhysicalDeviceMemoryProperties* mem_props;
-    vmaGetMemoryProperties(m_renderer.allocator(), &mem_props);
+    m_primitives = std::make_unique<PrimitiveGroup[]>(m_primitive_groups);
+    m_prepare_data = std::make_unique<PrepareData>(m_primitive_groups);
+    m_prepare_data->staging_size = (index_buffer_size + 15) & ~15;
+    m_prepare_data->displacements_size = 0;
+    for (const auto& p : info.primitives()) {
+        for (const auto& a : p.attributes())
+            m_prepare_data->staging_size += (a.range().second + 15) & ~15;
+    }
+    for (const auto& p : info.primitives()) {
+        for (const auto& s : p.displacements())
+            m_prepare_data->displacements_size += (s.range().second + 15) & ~15;
+    }
 
     VmaAllocationCreateInfo alloc_ci {};
     VkBufferCreateInfo buffer_ci {};
-    VmaAllocationInfo allocinfo;
+    VmaAllocationInfo staging_allocinfo, displacements_allocinfo;
     buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_ci.size = m_buffer_size;
+    buffer_ci.size = m_prepare_data->staging_size;
     buffer_ci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
-    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &buffer_ci, &alloc_ci, &m_buffer, &m_buffer_mem, &allocinfo));
+    VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &buffer_ci, &alloc_ci, &m_buffer, &m_buffer_mem, nullptr));
     buffer_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &buffer_ci, &alloc_ci, &m_staging, &m_staging_mem, &allocinfo));
+    VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &buffer_ci, &alloc_ci, &m_prepare_data->staging, &m_prepare_data->staging_mem, &staging_allocinfo));
+    if (m_prepare_data->displacements_size) {
+        buffer_ci.size = m_prepare_data->displacements_size;
+        VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &buffer_ci, &alloc_ci, &m_prepare_data->displacements, &m_prepare_data->displacements_mem, &displacements_allocinfo));
+    }
 
-    uint8_t* mapped_buffer = static_cast<uint8_t*>(allocinfo.pMappedData);
-    std::string_view last_source = info.indexes()->source();
-    PHYSFS_File* fh = PHYSFS_openRead(info.indexes()->source().data());
+    uint16_t index_buffer_width = 0;
+    size_t mapped_offset = 0;
+    uint8_t* mapped_buffer = static_cast<uint8_t*>(staging_allocinfo.pMappedData);
+    PHYSFS_File* fh = PHYSFS_openRead(info.source().data());
     if (fh == nullptr)
-        throw IOException(info.indexes()->source(), PHYSFS_getLastErrorCode());
-    if (PHYSFS_seek(fh, info.indexes()->offset()) == 0)
-        throw IOException(info.indexes()->source(), PHYSFS_getLastErrorCode());
-    if (PHYSFS_readBytes(fh, mapped_buffer + 0, index_buffer_size) < static_cast<PHYSFS_sint64>(index_buffer_size))
-        throw IOException(info.indexes()->source(), PHYSFS_getLastErrorCode());
-
-    std::bitset<static_cast<size_t>(vk::VertexInput::MAX_VALUE)> vertex_inputs;
-    size_t mapped_offset = (index_buffer_size + 15) & (~15);
-    for (const auto& attributes : info.attributes()) {
-        if (last_source != attributes.source()) {
-            last_source = attributes.source();
-            if (fh)
-                PHYSFS_close(fh);
-            if ((fh = PHYSFS_openRead(attributes.source().data())) == nullptr)
-                throw IOException(attributes.source(), PHYSFS_getLastErrorCode());
+        throw IOException(info.source(), PHYSFS_getLastErrorCode());
+    for (size_t p = 0; p < m_primitive_groups; p++) {
+        const auto& i = info.primitives().at(p).indexes();
+        if (i) {
+            if (PHYSFS_seek(fh, i->range().first) == 0)
+                throw IOException(info.source(), PHYSFS_getLastErrorCode());
+            if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, i->range().second) < static_cast<PHYSFS_sint64>(i->range().second))
+                throw IOException(info.source(), PHYSFS_getLastErrorCode());
+            if (!i->topology().empty() && !util::parse<>(i->topology(), m_primitive_topology))
+                throw MalformedException(info.name(), "bad primitive topology '{}'", i->topology());
+            if (index_buffer_width == 0)
+                index_buffer_width = i->range().second / i->count();
+            else if (index_buffer_width != i->range().second / i->count())
+                throw MalformedException(info.name(), "all index buffers must have the same width");
+            m_primitives[p].index_count = i->count();
+            mapped_offset += i->range().second;
         }
-        if (PHYSFS_seek(fh, attributes.range().first) == 0)
-            throw IOException(attributes.source(), PHYSFS_getLastErrorCode());
-        if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, attributes.range().second) < static_cast<PHYSFS_sint64>(attributes.range().second))
-            throw IOException(attributes.source(), PHYSFS_getLastErrorCode());
+    }
+    switch (index_buffer_width) {
+    case 0:
+        m_index_buffer_width = VK_INDEX_TYPE_NONE_KHR;
+        break;
+    case 1:
+        m_index_buffer_width = VK_INDEX_TYPE_UINT8_EXT;
+        break;
+    case 2:
+        m_index_buffer_width = VK_INDEX_TYPE_UINT16;
+        break;
+    case 4:
+        m_index_buffer_width = VK_INDEX_TYPE_UINT32;
+        break;
+    default:
+        throw MalformedException(info.name(), "invalid index buffer: width={}", index_buffer_width);
+    }
 
-        size_t internal_offset = 0;
-        if (attributes.interleaved()) {
-            VkVertexInputBindingDescription& b = m_bindings.emplace_back();
-            b.binding = m_bindings.size() - 1;
-            b.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-            b.stride = 0;
-            m_binding_offsets.push_back(mapped_offset);
-        }
-        for (const auto& attribute : attributes.attributes()) {
-            VertexInputAttribute& a = m_attributes.emplace_back();
-            if (vk::parse<VkFormat>(attribute.format(), a.format) == false)
-                throw MalformedException(info.name(), "bad shader input format {}", attribute.format());
-            if (vk::parse<vk::VertexInput>(attribute.name(), a.field) == false)
-                throw MalformedException(info.name(), "bad shader input location {}", attribute.name());
-            if (attributes.interleaved()) {
-                a.binding = m_bindings.back().binding;
-                a.offset = m_bindings.back().stride;
-                m_bindings.back().stride = vk::format_width(a.format);
-            } else {
-                VkVertexInputBindingDescription& b = m_bindings.emplace_back();
-                b.binding = m_bindings.size() - 1;
-                b.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-                b.stride = vk::format_width(a.format);
-                a.binding = b.binding;
-                a.offset = 0;
-                m_binding_offsets.push_back(mapped_offset + internal_offset);
-                internal_offset += b.stride * attribute.count();
+    std::vector<std::array<size_t, 3>> pnt_counts(m_primitive_groups);
+    mapped_offset = (index_buffer_size + 15) & ~15;
+    for (size_t p = 0; p < m_primitive_groups; p++) {
+        pnt_counts[p].fill(0);
+        m_primitives[p].vertex_count = info.primitives().at(p).count();
+        for (const auto& a : info.primitives().at(p).attributes()) {
+            if (PHYSFS_seek(fh, a.range().first) == 0)
+                throw IOException(info.source(), PHYSFS_getLastErrorCode());
+            if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, a.range().second) < static_cast<PHYSFS_sint64>(a.range().second))
+                throw IOException(info.source(), PHYSFS_getLastErrorCode());
+
+            size_t ioff = 0;
+            if (a.interleaved()) {
+                VkVertexInputBindingDescription& d = m_primitives[p].bindings.emplace_back();
+                d.binding = m_primitives[p].bindings.size() - 1;
+                d.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+                d.stride = 0;
+                m_primitives[p].binding_offsets.push_back(mapped_offset);
             }
-            vertex_inputs.set(static_cast<size_t>(a.field), true);
-        }
+            for (const auto& aa : a.attributes()) {
+                VkVertexInputAttributeDescription& d = m_primitives[p].attributes.emplace_back();
+                d.location = m_primitives[p].attribute_names.size();
+                if (!util::parse<VkFormat>(aa.format(), d.format))
+                    throw MalformedException(info.name(), "bad input format {}", aa.format());
+                if (a.interleaved()) {
+                    d.binding = m_primitives[p].bindings.back().binding;
+                    d.offset = m_primitives[p].bindings.back().stride;
+                    m_primitives[p].bindings.back().stride += vk::format_width(d.format);
+                } else {
+                    VkVertexInputBindingDescription& bd = m_primitives[p].bindings.emplace_back();
+                    bd.binding = d.binding = m_primitives[p].bindings.size() - 1;
+                    bd.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+                    bd.stride = vk::format_width(d.format);
+                    d.offset = 0;
+                    m_primitives[p].binding_offsets.push_back(mapped_offset + ioff);
+                    ioff += bd.stride * m_primitives[p].vertex_count;
+                }
 
-        mapped_offset += (attributes.range().second + 15) & (~15);
-    }
-    if (info.displacements()) {
-        if (last_source != info.displacements()->source()) {
-            last_source = info.displacements()->source();
-            if (fh)
-                PHYSFS_close(fh);
-            if ((fh = PHYSFS_openRead(info.displacements()->source().data())) == nullptr)
-                throw IOException(info.displacements()->source(), PHYSFS_getLastErrorCode());
-        }
-
-        m_displacement_prep.bufferOffset = mapped_offset;
-        if (PHYSFS_seek(fh, info.displacements()->range().first) == 0)
-            throw IOException(info.displacements()->source(), PHYSFS_getLastErrorCode());
-        if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, info.displacements()->range().second) < static_cast<PHYSFS_sint64>(info.displacements()->range().second))
-            throw IOException(info.displacements()->source(), PHYSFS_getLastErrorCode());
-        mapped_offset += (info.displacements()->range().second + 15) & (~15);
-
-        size_t morph_target_count = info.displacements()->displacements().size(),
-               morph_sampler_height = morph_target_count * (vertex_inputs.test(static_cast<size_t>(vk::VertexInput::Normal)) ? 2 : 1);
-        m_displacement_initial_weights.reserve(morph_target_count);
-        for (auto it = info.displacements()->displacements().begin(); it != info.displacements()->displacements().end(); ++it)
-            m_displacement_initial_weights.emplace_back(it->weight());
-
-        VkImageCreateInfo dici {};
-        VmaAllocationCreateInfo diai {};
-        dici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        dici.imageType = VK_IMAGE_TYPE_1D;
-        dici.format = VK_FORMAT_R32G32B32A32_SFLOAT; // displacements are vec4's, since hardware support is required for this
-        dici.extent.width = info.displacements()->range().second / (morph_sampler_height * 16);
-        dici.extent.height = dici.extent.depth = 1;
-        dici.mipLevels = 1;
-        dici.arrayLayers = morph_sampler_height;
-        dici.samples = VK_SAMPLE_COUNT_1_BIT;
-        dici.tiling = VK_IMAGE_TILING_OPTIMAL;
-        dici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-        dici.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-        dici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        diai.usage = VMA_MEMORY_USAGE_AUTO;
-        m_displacement_prep.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        m_displacement_prep.imageSubresource.mipLevel = 0;
-        m_displacement_prep.imageSubresource.baseArrayLayer = 0;
-        m_displacement_prep.imageSubresource.layerCount = dici.arrayLayers;
-        m_displacement_prep.imageExtent = dici.extent;
-        VK_CHECK(vmaCreateImage(m_renderer.allocator(), &dici, &diai, &m_displacement_image, &m_displacement_mem, nullptr));
-
-        VkImageViewCreateInfo dvci {};
-        dvci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        dvci.image = m_displacement_image;
-        dvci.viewType = VK_IMAGE_VIEW_TYPE_1D_ARRAY;
-        dvci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
-        dvci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        dvci.subresourceRange.baseMipLevel = 0;
-        dvci.subresourceRange.levelCount = 1;
-        dvci.subresourceRange.baseArrayLayer = 0;
-        dvci.subresourceRange.layerCount = morph_target_count;
-        VK_CHECK(vkCreateImageView(m_renderer.device(), &dvci, nullptr, &m_displacement_position));
-        if (vertex_inputs.test(static_cast<size_t>(vk::VertexInput::Normal))) {
-            dvci.subresourceRange.baseArrayLayer = dvci.subresourceRange.layerCount = morph_target_count;
-            VK_CHECK(vkCreateImageView(m_renderer.device(), &dvci, nullptr, &m_displacement_normal));
-        } else {
-            m_displacement_normal = VK_NULL_HANDLE;
-        }
-    } else {
-        m_displacement_image = VK_NULL_HANDLE;
-        m_displacement_position = m_displacement_normal = VK_NULL_HANDLE;
-    }
-    if (info.skeleton()) {
-        if (last_source != info.skeleton()->source()) {
-            last_source = info.skeleton()->source();
-            if (fh)
-                PHYSFS_close(fh);
-            if ((fh = PHYSFS_openRead(info.skeleton()->source().data())) == nullptr)
-                throw IOException(info.skeleton()->source(), PHYSFS_getLastErrorCode());
-        }
-
-        m_inverse_bind_matrices.resize(info.skeleton()->joints().size());
-        if (info.skeleton()->joints().size() * 64 != info.skeleton()->range().second)
-            throw MalformedException(info.name(), "mismatch between number of joints and of bind matrices");
-        if (PHYSFS_seek(fh, info.skeleton()->range().first) == 0)
-            throw IOException(info.skeleton()->source(), PHYSFS_getLastErrorCode());
-        if (PHYSFS_readBytes(fh, m_inverse_bind_matrices.data(), info.skeleton()->range().second) < static_cast<PHYSFS_sint64>(info.skeleton()->range().second))
-            throw IOException(info.skeleton()->source(), PHYSFS_getLastErrorCode());
-
-        m_default_pose.reserve(info.skeleton()->joints().size());
-        for (auto it = info.skeleton()->joints().begin(); it != info.skeleton()->joints().end(); ++it) {
-            auto& j = m_default_pose.emplace_back();
-            j.parent = it->parent();
-            j.translation = it->translation();
-            j.orientation = it->orientation();
+                auto attr_name_it = m_attribute_names.emplace(aa.name());
+                m_primitives[p].attribute_names.push_back(*attr_name_it.first);
+                if (aa.name() == "position")
+                    pnt_counts[p][0] = m_primitives[p].vertex_count;
+                else if (aa.name() == "normal")
+                    pnt_counts[p][1] = m_primitives[p].vertex_count;
+                else if (aa.name() == "tangent")
+                    pnt_counts[p][2] = m_primitives[p].vertex_count;
+            }
+            mapped_offset += (a.range().second + 15) & ~15;
         }
     }
-    if (fh)
-        PHYSFS_close(fh);
 
-    m_primitive_topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-    if (!info.indexes()->topology().empty() && !vk::parse<VkPrimitiveTopology>(info.indexes()->topology(), m_primitive_topology))
-        throw MalformedException(info.name(), "invalid primitive topology {}", info.indexes()->topology());
-    for (auto it = info.animations().begin(); it != info.animations().end(); ++it)
-        m_animations[std::string { it->name() }] = std::make_shared<Animation>(*it);
+    std::array<int32_t, 3> dacc = { 0, 0, 0 };
+    uint32_t morph_channel_count = 0;
+    int morph_attrs = -1;
+    mapped_offset = 0;
+    mapped_buffer = static_cast<uint8_t*>(displacements_allocinfo.pMappedData);
+    for (size_t p = 0; p < m_primitive_groups; p++) {
+        for (const auto& d : info.primitives().at(p).displacements()) {
+            int di;
+            if (d.name() == "position")
+                di = 0;
+            else if (d.name() == "normal")
+                di = 1;
+            else if (d.name() == "tangent")
+                di = 2;
+            else
+                throw MalformedException(info.name(), "illegal displacements for attribute {}", d.name());
+
+            if (PHYSFS_seek(fh, d.range().first) == 0)
+                throw IOException(info.source(), PHYSFS_getLastErrorCode());
+            if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, d.range().second) < static_cast<PHYSFS_sint64>(d.range().second))
+                throw IOException(info.source(), PHYSFS_getLastErrorCode());
+
+            VkBufferImageCopy& c = m_prepare_data->displacements_copies.emplace_back();
+            c.bufferOffset = mapped_offset;
+            c.bufferRowLength = c.bufferImageHeight = 0;
+            c.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            c.imageSubresource.mipLevel = 0;
+            c.imageSubresource.baseArrayLayer = di;
+            c.imageSubresource.layerCount = 1;
+            c.imageOffset = { dacc[di], 0, 0 };
+            c.imageExtent.width = pnt_counts[p][di];
+            c.imageExtent.height = d.range().second / (pnt_counts[p][di] * 16);
+            c.imageExtent.depth = 1;
+
+            morph_attrs = std::max(morph_attrs, di);
+            morph_channel_count = std::max(morph_channel_count, c.imageExtent.height);
+            mapped_offset += d.range().second;
+            dacc[di] += pnt_counts[p][di];
+        }
+    }
+
+    m_morph = VK_NULL_HANDLE;
+    m_morph_position = VK_NULL_HANDLE;
+    m_morph_normal = VK_NULL_HANDLE;
+    if (m_prepare_data->displacements_copies.size() > 0) {
+        VkImageCreateInfo morph_ci {};
+        VkImageViewCreateInfo mvci {};
+        morph_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        morph_ci.imageType = VK_IMAGE_TYPE_2D;
+        morph_ci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        morph_ci.extent.width = *std::max_element(dacc.begin(), dacc.end());
+        morph_ci.extent.height = morph_channel_count;
+        morph_ci.extent.depth = 1;
+        morph_ci.mipLevels = 1;
+        morph_ci.arrayLayers = morph_attrs + 1;
+        morph_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        morph_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        morph_ci.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+        morph_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+        alloc_ci.flags = 0;
+        VK_CHECK(vmaCreateImage(m_renderer.allocator(), &morph_ci, &alloc_ci, &m_morph, &m_morph_mem, nullptr));
+
+        mvci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        mvci.image = m_morph;
+        mvci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        mvci.format = morph_ci.format;
+        mvci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        mvci.subresourceRange.baseMipLevel = 0;
+        mvci.subresourceRange.levelCount = 1;
+        mvci.subresourceRange.layerCount = 1;
+        if (morph_ci.arrayLayers > 0) {
+            mvci.subresourceRange.baseArrayLayer = 0;
+            VK_CHECK(vkCreateImageView(m_renderer.device(), &mvci, nullptr, &m_morph_position));
+        }
+        if (morph_ci.arrayLayers > 1) {
+            mvci.subresourceRange.baseArrayLayer = 1;
+            VK_CHECK(vkCreateImageView(m_renderer.device(), &mvci, nullptr, &m_morph_normal));
+        }
+    }
+    m_morph_weights = info.shape_weights();
 
     XXH3_state_t* xxh = XXH3_createState();
-    XXH3_64bits_reset(xxh);
-    XXH3_64bits_update(xxh, m_attributes.data(), m_attributes.size() * sizeof(decltype(m_attributes)::value_type));
-    XXH3_64bits_update(xxh, m_bindings.data(), m_bindings.size() * sizeof(decltype(m_bindings)::value_type));
-    XXH3_64bits_update(xxh, &m_primitive_topology, sizeof(m_primitive_topology));
-    m_pipeline_parameter = XXH3_64bits_digest(xxh);
+    for (size_t p = 0; p < m_primitive_groups; p++) {
+        XXH3_64bits_reset(xxh);
+
+        for (const auto& x : m_primitives[p].attribute_names)
+            XXH3_64bits_update(xxh, x.data(), x.size());
+        XXH3_64bits_update(xxh, m_primitives[p].attributes.data(), m_primitives[p].attributes.size() * sizeof(VkVertexInputAttributeDescription));
+        XXH3_64bits_update(xxh, m_primitives[p].bindings.data(), m_primitives[p].bindings.size() * sizeof(VkVertexInputBindingDescription));
+        XXH3_64bits_update(xxh, &m_primitive_topology, sizeof(VkPrimitiveTopology));
+        m_primitives[p].pipeline_parameter = XXH3_64bits_digest(xxh);
+    }
     XXH3_freeState(xxh);
 }
 
 Mesh::Mesh(Mesh&& other) noexcept
     : m_renderer(other.m_renderer)
     , m_buffer(other.m_buffer)
-    , m_staging(other.m_staging)
+    , m_morph(other.m_morph)
     , m_buffer_mem(other.m_buffer_mem)
-    , m_staging_mem(other.m_staging_mem)
-    , m_buffer_size(other.m_buffer_size)
-    , m_displacement_image(other.m_displacement_image)
-    , m_displacement_position(other.m_displacement_position)
-    , m_displacement_normal(other.m_displacement_normal)
-    , m_displacement_mem(other.m_displacement_mem)
-    , m_displacement_prep(other.m_displacement_prep)
-    , m_attributes(std::move(other.m_attributes))
-    , m_bindings(std::move(other.m_bindings))
-    , m_binding_offsets(std::move(other.m_binding_offsets))
+    , m_morph_mem(other.m_morph_mem)
+    , m_morph_position(other.m_morph_position)
+    , m_morph_normal(other.m_morph_normal)
+    , m_primitive_groups(other.m_primitive_groups)
+    , m_prepare_data(std::move(other.m_prepare_data))
+    , m_primitives(std::move(other.m_primitives))
+    , m_index_buffer_width(other.m_index_buffer_width)
     , m_primitive_topology(other.m_primitive_topology)
-    , m_index_count(other.m_index_count)
-    , m_index_type(other.m_index_type)
+    , m_attribute_names(std::move(other.m_attribute_names))
+    , m_morph_weights(std::move(other.m_morph_weights))
 {
     other.m_buffer = VK_NULL_HANDLE;
-    other.m_staging = VK_NULL_HANDLE;
-    other.m_displacement_image = VK_NULL_HANDLE;
+    other.m_morph = VK_NULL_HANDLE;
+    other.m_buffer_mem = other.m_morph_mem = VK_NULL_HANDLE;
+    other.m_morph_position = other.m_morph_normal = VK_NULL_HANDLE;
 }
 
 Mesh::~Mesh()
 {
-    if (m_staging != VK_NULL_HANDLE)
-        vmaDestroyBuffer(m_renderer.allocator(), m_staging, m_staging_mem);
-    if (m_displacement_image != VK_NULL_HANDLE) {
-        vkDestroyImageView(m_renderer.device(), m_displacement_normal, nullptr);
-        vkDestroyImageView(m_renderer.device(), m_displacement_position, nullptr);
-        vmaDestroyImage(m_renderer.allocator(), m_displacement_image, m_displacement_mem);
+    if (m_morph_position != VK_NULL_HANDLE)
+        vkDestroyImageView(m_renderer.device(), m_morph_position, nullptr);
+    if (m_morph_normal != VK_NULL_HANDLE)
+        vkDestroyImageView(m_renderer.device(), m_morph_normal, nullptr);
+    if (m_morph != VK_NULL_HANDLE) {
+        vmaDestroyImage(m_renderer.allocator(), m_morph, m_morph_mem);
     }
     vmaDestroyBuffer(m_renderer.allocator(), m_buffer, m_buffer_mem);
 }
 
-void Mesh::bind_buffers(VkCommandBuffer cmd)
-{
-    VkBuffer bound_buffers[m_bindings.size()];
-    std::fill(bound_buffers, bound_buffers + m_bindings.size(), m_buffer);
-
-    vkCmdBindVertexBuffers(cmd, 0, m_bindings.size(), bound_buffers, m_binding_offsets.data());
-    vkCmdBindIndexBuffer(cmd, m_buffer, 0, m_index_type);
-}
-
 void Mesh::prepare(VkCommandBuffer cmd)
 {
-    VkBufferCopy region {};
-    region.srcOffset = region.dstOffset = 0;
-    region.size = m_buffer_size;
-    vkCmdCopyBuffer(cmd, m_staging, m_buffer, 1, &region);
-    if (m_displacement_image != VK_NULL_HANDLE) {
+    VkBufferCopy scopy;
+    scopy.dstOffset = scopy.srcOffset = 0;
+    scopy.size = m_prepare_data->staging_size;
+    vkCmdCopyBuffer(cmd, m_prepare_data->staging, m_buffer, 1, &scopy);
+
+    if (m_morph != VK_NULL_HANDLE) {
         VkImageMemoryBarrier barrier {};
         barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
         barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.image = m_displacement_image;
+        barrier.image = m_morph;
         barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
         barrier.subresourceRange.baseMipLevel = 0;
         barrier.subresourceRange.levelCount = 1;
         barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = m_displacement_prep.imageSubresource.layerCount;
         barrier.srcAccessMask = 0;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        if (m_morph_normal != VK_NULL_HANDLE)
+            barrier.subresourceRange.layerCount = 2;
+        else if (m_morph_position != VK_NULL_HANDLE)
+            barrier.subresourceRange.layerCount = 1;
+        else
+            barrier.subresourceRange.layerCount = 0;
+
         vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-        vkCmdCopyBufferToImage(cmd, m_staging, m_displacement_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &m_displacement_prep);
+        vkCmdCopyBufferToImage(cmd, m_prepare_data->displacements, m_morph, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, m_prepare_data->displacements_copies.size(), m_prepare_data->displacements_copies.data());
 
         barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
@@ -283,145 +325,36 @@ void Mesh::prepare(VkCommandBuffer cmd)
 
 void Mesh::post_prepare()
 {
-    vmaDestroyBuffer(m_renderer.allocator(), m_staging, m_staging_mem);
-    m_staging = VK_NULL_HANDLE;
-    if (m_displacement_image != VK_NULL_HANDLE) {
-        m_displacement_prep.imageExtent.width = 0;
-    }
+    vmaDestroyBuffer(m_renderer.allocator(), m_prepare_data->staging, m_prepare_data->staging_mem);
+    if (m_prepare_data->displacements)
+        vmaDestroyBuffer(m_renderer.allocator(), m_prepare_data->displacements, m_prepare_data->displacements_mem);
+
+    m_prepare_data.reset();
 }
 
 bool Mesh::prepared() const
 {
-    if (m_displacement_image != VK_NULL_HANDLE && m_displacement_prep.imageExtent.width != 0)
-        return false;
-    return m_staging == VK_NULL_HANDLE;
+    return m_prepare_data == nullptr;
 }
 
-Animation::Animation(const xml::assets::Animation& info)
+void Mesh::draw(VkCommandBuffer cmd, uint64_t frame_number, const std::vector<std::shared_ptr<Material>>& materials) const
 {
-    PHYSFS_File* fh = PHYSFS_openRead(info.source().data());
-    if (fh == nullptr)
-        throw IOException(info.source(), PHYSFS_getLastErrorCode());
+    uint32_t first_index = 0, first_vertex = 0;
+    vkCmdBindIndexBuffer(cmd, m_buffer, 0, m_index_buffer_width);
 
-    m_inputs.resize(info.keyframes());
-    m_step_interpolate = info.step_interpolate();
-    if (PHYSFS_seek(fh, info.input_offset()) == 0)
-        throw IOException(info.source(), PHYSFS_getLastErrorCode());
-    if (PHYSFS_readBytes(fh, m_inputs.data(), m_inputs.size() * sizeof(float)) < static_cast<PHYSFS_sint64>(m_inputs.size() * sizeof(float)))
-        throw IOException(info.source(), PHYSFS_getLastErrorCode());
-    if (info.type() == "blend-shape")
-        m_anim_type = AnimationType::BlendShape;
-    else if (info.type() == "skeleton")
-        m_anim_type = AnimationType::Skeleton;
-    else
-        throw MalformedException(info.name(), "unknown animation type {}", info.type());
+    for (size_t i = 0; i < m_primitive_groups; i++) {
+        VkBuffer bound_buffers[m_primitives[i].bindings.size()];
+        std::fill(bound_buffers, bound_buffers + m_primitives[i].bindings.size(), m_buffer);
 
-    for (auto it = info.outputs().begin(); it != info.outputs().end(); ++it) {
-        Channel& c = m_channels.emplace_back();
-        if (m_anim_type == AnimationType::BlendShape) {
-            c.m_width = it->width();
-        } else if (m_anim_type == AnimationType::Skeleton) {
-            c.m_bone = it->bone() - 1;
-            if (it->target() == "translation") {
-                c.m_target = ChannelTarget::Translation;
-                c.m_width = 3;
-            } else if (it->target() == "orientation") {
-                c.m_target = ChannelTarget::Orientation;
-                c.m_width = 4;
-            }
-        }
-        size_t data_size = info.keyframes() * c.m_width;
-        c.m_data = std::make_unique<float[]>(data_size);
-        if (PHYSFS_seek(fh, it->offset()) == 0)
-            throw IOException(info.source(), PHYSFS_getLastErrorCode());
-        if (PHYSFS_readBytes(fh, c.m_data.get(), data_size * sizeof(float)) < static_cast<PHYSFS_sint64>(data_size * sizeof(float)))
-            throw IOException(info.source(), PHYSFS_getLastErrorCode());
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, materials[i]->pipeline(this, i));
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, materials[i]->shader()->pipeline_layout(), 3, 1, &materials[i]->descriptor_set(frame_number % 2), 0, nullptr);
+
+        // vkCmdPushConstants(cmd, m_renderer.pipeline_layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &first_vertex);
+        vkCmdBindVertexBuffers(cmd, 0, m_primitives[i].bindings.size(), bound_buffers, m_primitives[i].binding_offsets.data());
+        vkCmdDrawIndexed(cmd, m_primitives[i].index_count, 1, first_index, 0, 0);
+        first_index += m_primitives[i].index_count;
+        first_vertex += m_primitives[i].vertex_count;
     }
-}
-
-Animation::Iterator Animation::interpolate(float t) const
-{
-    return Iterator(this, t);
-}
-
-bool Animation::finished(const Iterator& it) const
-{
-    return it.m_it == m_channels.end();
-}
-
-Animation::Iterator::Iterator(const Animation* animation, float t)
-    : m_animation(animation)
-{
-    size_t begin = 0, end = animation->m_inputs.size() - 1, res = -1;
-    m_it = animation->m_channels.begin();
-    if (t < animation->m_inputs[0]) {
-        m_index = m_iv = 0;
-    } else {
-        while (begin <= end) {
-            size_t mid = (begin + end) / 2;
-            if (animation->m_inputs[mid] <= t) {
-                res = mid;
-                begin = mid + 1;
-            } else {
-                end = mid - 1;
-            }
-        }
-
-        float t0 = animation->m_inputs[res], t1 = animation->m_inputs[res + 1];
-        m_index = res;
-        m_iv = (t - t0) / (t1 - t0);
-    }
-}
-
-Animation::Iterator& Animation::Iterator::operator++()
-{
-    ++m_it;
-    return *this;
-}
-
-void Animation::Iterator::get(float* out, size_t count) const
-{
-    const float *x0 = m_it->m_data.get() + (m_index * m_it->m_width),
-                *x1 = m_it->m_data.get() + ((m_index + 1) * m_it->m_width);
-    if (m_animation->m_step_interpolate)
-        memcpy(out, x0, count * sizeof(float));
-    else {
-        for (size_t i = 0; i < count; i++)
-            out[i] = glm_lerp(x0[i], x1[i], m_iv);
-    }
-}
-
-template <>
-void Animation::Iterator::get(vec3s& out) const
-{
-    const float *x0 = m_it->m_data.get() + (m_index * m_it->m_width),
-                *x1 = m_it->m_data.get() + ((m_index + 1) * m_it->m_width);
-    if (m_animation->m_step_interpolate)
-        memcpy(out.raw, x0, sizeof(vec3));
-    else
-        glm_vec3_lerp(const_cast<float*>(x0), const_cast<float*>(x1), m_iv, out.raw);
-}
-
-template <>
-void Animation::Iterator::get(vec4s& out) const
-{
-    const float *x0 = m_it->m_data.get() + (m_index * m_it->m_width),
-                *x1 = m_it->m_data.get() + ((m_index + 1) * m_it->m_width);
-    if (m_animation->m_step_interpolate)
-        memcpy(out.raw, x0, sizeof(vec4));
-    else
-        glm_vec4_lerp(const_cast<float*>(x0), const_cast<float*>(x1), m_iv, out.raw);
-}
-
-template <>
-void Animation::Iterator::get(versors& out) const
-{
-    const float *x0 = m_it->m_data.get() + (m_index * 4),
-                *x1 = m_it->m_data.get() + ((m_index + 1) * 4);
-    if (m_animation->m_step_interpolate)
-        memcpy(out.raw, x0, sizeof(versor));
-    else
-        glm_quat_slerp(const_cast<float*>(x0), const_cast<float*>(x1), m_iv, out.raw);
 }
 
 }

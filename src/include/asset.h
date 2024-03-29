@@ -3,14 +3,20 @@
 #include <array>
 #include <bitset>
 #include <exception>
+#include <map>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <cglm/struct.h>
-#include <spdlog/fmt/fmt.h>
 #include <vk_mem_alloc.h>
-#include "vkutil.h"
+#include "util.h"
+#include "xml.h"
+
+#ifdef TWOGAME_DEBUG_BUILD
+#include <spdlog/fmt/fmt.h>
+#endif
 
 template <typename... Bases>
 struct overload : Bases... {
@@ -25,26 +31,25 @@ class Renderer;
 }
 
 namespace twogame::xml::assets {
-struct Animation;
-struct Image;
-struct Material;
-struct Mesh;
-struct Shader;
+class Animation;
+class Image;
+class Material;
+class Mesh;
+class Shader;
+class Skeleton;
 }
 
 namespace twogame::asset {
 
-enum class Type {
-    Material,
-    Mesh,
-    Image,
-    Shader,
-    MAX_VALUE
-};
 template <typename T>
-class lookup : public std::unordered_map<std::string, T, overload<std::hash<std::string>, std::hash<std::string_view>>, std::equal_to<>> { };
+class lookup : public std::unordered_map<std::string, T, overload<std::hash<std::string>, std::hash<std::string_view>>, std::equal_to<>> {
+};
+template <>
+class lookup<void> : public std::unordered_set<std::string, overload<std::hash<std::string>, std::hash<std::string_view>>, std::equal_to<>> {
+};
 class AssetManager;
-class Animation;
+class Mesh;
+class Shader;
 
 class IPreparable {
 public:
@@ -91,6 +96,60 @@ public:
     std::string_view description() const { return m_what; }
 };
 
+class Animation {
+public:
+    enum class ChannelTarget : uint8_t {
+        Translation,
+        Orientation,
+        ShapeWeights,
+    };
+    enum class InterpolateMethod : uint8_t {
+        Step,
+        Linear,
+        CubicSpline,
+    };
+
+private:
+    struct Channel {
+        float* m_data;
+        uint32_t m_bone, m_width;
+        ChannelTarget m_target;
+    };
+    std::vector<Channel> m_channels;
+    std::unique_ptr<float[]> m_data;
+    size_t m_keyframes;
+    InterpolateMethod m_interp;
+
+public:
+    Animation(const xml::assets::Animation&, const AssetManager&);
+    size_t channels() const { return m_channels.size(); }
+    float duration() const { return m_data[m_keyframes - 1]; }
+    bool is_shapekey() const;
+    bool is_skeleton() const;
+
+    class Iterator {
+        const Animation* m_animation;
+        std::vector<Channel>::const_iterator m_it;
+        size_t m_index;
+        float m_iv;
+
+    public:
+        Iterator(const Animation*, float t);
+        Iterator& operator++();
+        bool finished() const;
+
+        inline ChannelTarget target() const { return m_it->m_target; }
+        inline uint32_t bone() const { return m_it->m_bone; }
+
+        void get(float*, size_t count) const;
+
+        template <typename T>
+        void get(T&) const;
+    };
+
+    Iterator interpolate(float t) const;
+};
+
 class Image : public IPreparable {
 private:
     const Renderer& m_renderer;
@@ -102,7 +161,7 @@ private:
     std::vector<VkBufferImageCopy> m_copies;
 
 public:
-    Image(const xml::assets::Image&, const Renderer*);
+    Image(const xml::assets::Image&, const AssetManager&);
     Image(const Image&) = delete;
     Image(Image&&) noexcept;
     virtual ~Image();
@@ -115,218 +174,282 @@ public:
     virtual bool prepared() const;
 };
 
+class Material : public std::enable_shared_from_this<Material> {
+private:
+    struct Proto;
+    struct MaterialImpl;
+
+    const Renderer& m_renderer;
+    std::shared_ptr<const Shader> m_shader;
+    const bool m_mutable;
+
+    std::shared_ptr<Proto> m_proto;
+    std::unique_ptr<MaterialImpl[]> p_impl;
+
+    Material(const Material&, std::true_type mut);
+    void write_descriptor_sets() const;
+
+public:
+    Material(const xml::assets::Material&, const AssetManager&);
+    Material(Material&&) noexcept;
+    ~Material();
+
+    std::shared_ptr<Material> get_mutable() const;
+    const Shader* shader() const { return m_shader.get(); }
+    const VkDescriptorSet& descriptor_set(int frame) const;
+    VkPipeline pipeline(const Mesh*, size_t primitive_group) const;
+};
+
 class Mesh : public IPreparable {
 public:
-    struct VertexInputAttribute {
-        uint32_t binding, offset;
-        vk::VertexInput field;
-        VkFormat format;
-    };
-    struct DefaultJoint {
-        vec3s translation;
-        versors orientation;
-        uint32_t parent;
+    struct PrimitiveGroup {
+        std::vector<std::string_view> attribute_names;
+        std::vector<VkVertexInputAttributeDescription> attributes;
+        std::vector<VkVertexInputBindingDescription> bindings;
+        std::vector<VkDeviceSize> binding_offsets;
+        size_t vertex_count, index_count;
+        uint64_t pipeline_parameter;
     };
 
 private:
+    struct PrepareData;
+
     const Renderer& m_renderer;
-    VkBuffer m_buffer, m_staging;
-    VmaAllocation m_buffer_mem, m_staging_mem;
-    VkDeviceSize m_buffer_size;
+    VkBuffer m_buffer;
+    VkImage m_morph;
+    VmaAllocation m_buffer_mem, m_morph_mem;
+    VkImageView m_morph_position, m_morph_normal;
 
-    VkImage m_displacement_image;
-    VkImageView m_displacement_position, m_displacement_normal;
-    VmaAllocation m_displacement_mem;
-    VkBufferImageCopy m_displacement_prep;
-    std::vector<float> m_displacement_initial_weights;
-
-    std::vector<mat4s> m_inverse_bind_matrices;
-    std::vector<DefaultJoint> m_default_pose;
-
-    std::vector<VertexInputAttribute> m_attributes;
-    std::vector<VkVertexInputBindingDescription> m_bindings;
-    std::vector<VkDeviceSize> m_binding_offsets;
+    size_t m_primitive_groups;
+    std::unique_ptr<PrepareData> m_prepare_data;
+    std::unique_ptr<PrimitiveGroup[]> m_primitives;
+    VkIndexType m_index_buffer_width;
     VkPrimitiveTopology m_primitive_topology;
-    size_t m_index_count;
-    VkIndexType m_index_type;
-    uint64_t m_pipeline_parameter;
 
-    lookup<std::shared_ptr<Animation>> m_animations;
+    lookup<void> m_attribute_names;
+    std::vector<float> m_morph_weights;
 
 public:
-    Mesh(const xml::assets::Mesh&, const Renderer*);
+    Mesh(const xml::assets::Mesh&, const AssetManager&);
     Mesh(const Mesh&) = delete;
     Mesh(Mesh&&) noexcept;
     virtual ~Mesh();
 
-    inline const std::vector<VertexInputAttribute>& input_attributes() const { return m_attributes; }
-    inline const std::vector<VkVertexInputBindingDescription>& input_bindings() const { return m_bindings; }
     inline VkPrimitiveTopology primitive_topology() const { return m_primitive_topology; }
-    inline size_t index_count() const { return m_index_count; }
-    inline uint64_t pipeline_parameter() const { return m_pipeline_parameter; }
-    void bind_buffers(VkCommandBuffer cmd);
-
-    inline VkImageView position_displacement() const { return m_displacement_position; }
-    inline VkImageView normal_displacement() const { return m_displacement_normal; }
-    inline const std::vector<float>& displacement_initial_weights() const { return m_displacement_initial_weights; }
-    inline const std::vector<mat4s>& inverse_bind_matrices() const { return m_inverse_bind_matrices; }
-    inline const std::vector<DefaultJoint>& default_pose() const { return m_default_pose; }
-    inline const auto& animations() const { return m_animations; }
+    inline const PrimitiveGroup& primitive_group(size_t i) const { return m_primitives[i]; }
+    inline const std::vector<float>& morph_weights() const { return m_morph_weights; }
+    inline VkImageView morph_position() const { return m_morph_position; }
+    inline VkImageView morph_normal() const { return m_morph_normal; }
 
     virtual void prepare(VkCommandBuffer cmd);
     virtual void post_prepare();
     virtual bool prepared() const;
+
+    void draw(VkCommandBuffer cmd, uint64_t frame_number, const std::vector<std::shared_ptr<Material>>& materials) const;
+};
+
+class Skeleton {
+public:
+    struct BoneProto {
+        uint32_t parent;
+        vec3s translation;
+        versors orientation;
+    };
+
+private:
+    std::vector<mat4s> m_inverse_bind_matrices;
+    std::vector<BoneProto> m_default_pose;
+
+public:
+    Skeleton(const xml::assets::Skeleton&, const AssetManager&);
+    Skeleton(const Skeleton&) = delete;
+    Skeleton(Skeleton&&) noexcept;
+    ~Skeleton() { }
+
+    size_t bones() const { return m_default_pose.size(); }
+    const std::vector<BoneProto>& default_pose() const { return m_default_pose; }
+    const std::vector<mat4s>& inverse_bind_matrices() const { return m_inverse_bind_matrices; }
 };
 
 class Shader {
-    friend class Material;
-
 public:
-    class FieldType {
-    private:
-        union {
-            struct {
-                unsigned dim : 4; // scalar, vec{2,3,4}, mat{2,3,4}{2,3,4}
-                unsigned st : 4; // void, bool, int32, int64, uint32, uint64, float32, float64
-            } f;
-            uint32_t rep;
-        };
-
-    public:
-        FieldType()
-            : rep(0)
-        {
-        }
-        FieldType(SpvReflectTypeDescription*);
-        bool parse(const std::string_view& text, void* out);
+    struct MaterialBinding {
+        uint32_t binding, offset, range;
     };
-    struct DescriptorSetSlot {
-        uint32_t binding, offset, count;
-        FieldType field_type;
-        VkDescriptorType descriptor_type;
-        DescriptorSetSlot(uint32_t binding, VkDescriptorType descriptor_type, FieldType field_type, uint32_t count, uint32_t offset)
-            : binding(binding)
-            , offset(offset)
-            , count(count)
-            , field_type(field_type)
-            , descriptor_type(descriptor_type)
-        {
-        }
+    struct DescriptorBinding {
+        VkDescriptorType type;
+        uint32_t offset, range;
     };
 
 private:
     const Renderer& m_renderer;
     std::vector<VkPipelineShaderStageCreateInfo> m_stages;
-    std::map<vk::VertexInput, int> m_inputs;
-    std::map<std::string, DescriptorSetSlot> m_material_bindings;
-    vk::DescriptorPool* m_descriptor_pool;
+    lookup<uint32_t> m_input_attributes;
+    lookup<MaterialBinding> m_material_bindings;
+    std::vector<DescriptorBinding> m_descriptor_bindings;
+    size_t m_material_buffer_size;
+
     VkPipelineLayout m_pipeline_layout;
     VkPipeline m_compute_pipeline;
-    std::map<uint32_t, vk::BufferPool> m_buffer_pools;
+    std::unique_ptr<vk::DescriptorPool> m_descriptor_pool;
     mutable std::map<uint64_t, VkPipeline> m_graphics_pipelines;
 
 public:
-    Shader(const xml::assets::Shader&, const Renderer*);
+    Shader(const xml::assets::Shader&, const AssetManager&);
     Shader(const Shader&) = delete;
     Shader(Shader&&) noexcept;
     virtual ~Shader();
 
     VkPipelineLayout pipeline_layout() const { return m_pipeline_layout; }
     VkPipeline compute_pipeline() const { return m_compute_pipeline; }
-    VkPipeline graphics_pipeline(const asset::Mesh*) const;
-};
+    const auto& input_attributes() const { return m_input_attributes; }
 
-class Material {
-private:
-    std::shared_ptr<asset::Shader> m_shader;
-    std::vector<std::pair<uint32_t, size_t>> m_buffers;
-    std::vector<VkWriteDescriptorSet> m_descriptor_writes;
-    VkDescriptorSet m_descriptor_set;
-
-public:
-    Material(const xml::assets::Material&, const AssetManager&);
-    Material(const Material&);
-    Material(Material&&) noexcept;
-    ~Material();
-
-    const asset::Shader* shader() const { return m_shader.get(); }
-    VkDescriptorSet descriptor() const { return m_descriptor_set; }
-};
-
-class Animation {
-public:
-    enum class ChannelTarget : uint16_t {
-        Translation,
-        Orientation,
-        MAX_VALUE,
-    };
-    enum class AnimationType : uint16_t {
-        BlendShape,
-        Skeleton,
-        MAX_VALUE,
-    };
-
-private:
-    struct Channel {
-        std::unique_ptr<float[]> m_data;
-        uint32_t m_bone, m_width;
-        ChannelTarget m_target;
-    };
-    std::vector<float> m_inputs;
-    std::vector<Channel> m_channels;
-    AnimationType m_anim_type;
-    bool m_step_interpolate;
-
-public:
-    Animation(const xml::assets::Animation&);
-    inline AnimationType type() const { return m_anim_type; }
-    size_t channels() const { return m_channels.size(); }
-    float duration() const { return m_inputs[m_inputs.size() - 1]; }
-
-    class Iterator {
-        friend class Animation;
-        const Animation* m_animation;
-        std::vector<Channel>::const_iterator m_it;
-        size_t m_index;
-        float m_iv;
-
-        Iterator(const Animation*, float t);
-
-    public:
-        Iterator& operator++();
-
-        inline ChannelTarget target() const { return m_it->m_target; }
-        inline uint32_t bone() const { return m_it->m_bone; }
-
-        void get(float*, size_t count) const;
-
-        template <typename T>
-        void get(T&) const;
-    };
-
-    Iterator interpolate(float t) const;
-    bool finished(const Iterator&) const;
+    vk::DescriptorPool* descriptor_pool() const { return m_descriptor_pool.get(); }
+    const auto& descriptor_bindings() const { return m_descriptor_bindings; }
+    size_t material_buffer_size() const { return m_material_buffer_size; }
+    const auto& material_bindings() const { return m_material_bindings; }
+    VkPipeline graphics_pipeline(const Mesh*, const Material*, size_t primitive_group) const;
 };
 
 class AssetManager {
 private:
+    const Renderer& m_renderer;
     std::deque<asset::IPreparable*> m_assets_preparing;
+    lookup<std::shared_ptr<asset::Animation>> m_animations;
     lookup<std::shared_ptr<asset::Image>> m_images;
     lookup<std::shared_ptr<asset::Material>> m_materials;
     lookup<std::shared_ptr<asset::Mesh>> m_meshes;
     lookup<std::shared_ptr<asset::Shader>> m_shaders;
-    lookup<std::shared_ptr<asset::Animation>> m_animations;
+    lookup<std::shared_ptr<asset::Skeleton>> m_skeletons;
 
 public:
-    bool import_assets(std::string_view path, const Renderer*);
+    AssetManager(const Renderer*);
+    bool import_assets(std::string_view path);
     size_t prepare(VkCommandBuffer cmd);
     void post_prepare();
 
+    const Renderer& renderer() const { return m_renderer; }
+    const auto& animations() const { return m_animations; }
     const auto& images() const { return m_images; }
     const auto& materials() const { return m_materials; }
     const auto& meshes() const { return m_meshes; }
     const auto& shaders() const { return m_shaders; }
-    const auto& animations() const { return m_animations; }
+    const auto& skeletons() const { return m_skeletons; }
+};
+
+}
+
+namespace twogame::xml {
+
+struct Assets;
+namespace assets {
+    struct AssetBase {
+        XML_FIELD(std::string_view, name);
+        XML_FIELD(std::string_view, source);
+        AssetBase(const pugi::xml_node&, const Assets&);
+    };
+    struct Animation : AssetBase {
+        struct Output {
+            XML_FIELD(std::string_view, target);
+            XML_FIELD(uint32_t, bone);
+            XML_FIELD(uint32_t, width);
+            Output(const pugi::xml_node&);
+        };
+        XML_FIELD(IntPair, range);
+        XML_FIELD(size_t, keyframes);
+        XML_FIELD(std::string_view, method);
+        XML_FIELD(std::vector<Output>, outputs);
+        Animation(const pugi::xml_node&, const Assets&);
+    };
+    struct Image : AssetBase {
+        XML_FIELD(std::string_view, usage);
+        XML_FIELD(std::string_view, image_source);
+        Image(const pugi::xml_node&, const Assets&);
+    };
+    struct Material : AssetBase {
+        struct Prop {
+            XML_FIELD(std::string_view, name);
+            XML_FIELD(std::string_view, type);
+            XML_FIELD(std::string_view, value);
+            Prop(const pugi::xml_node&);
+        };
+        XML_FIELD(std::string_view, shader);
+        XML_FIELD(std::vector<Prop>, props);
+        Material(const pugi::xml_node&, const Assets&);
+    };
+    struct Mesh : AssetBase {
+        struct Primitives {
+            struct Attributes {
+                struct Attribute {
+                    XML_FIELD(std::string_view, name);
+                    XML_FIELD(std::string_view, format);
+                    Attribute(const pugi::xml_node&);
+                };
+                XML_FIELD(IntPair, range);
+                XML_FIELD(bool, interleaved);
+                XML_FIELD(std::vector<Attribute>, attributes);
+                Attributes(const pugi::xml_node&);
+            };
+            struct Indexes {
+                XML_FIELD(size_t, count);
+                XML_FIELD(IntPair, range);
+                XML_FIELD(std::string_view, topology);
+                Indexes(const pugi::xml_node&);
+            };
+            struct Displacements {
+                XML_FIELD(std::string_view, name);
+                XML_FIELD(IntPair, range);
+                Displacements(const pugi::xml_node&);
+            };
+            XML_FIELD(std::vector<Attributes>, attributes);
+            XML_FIELD(std::optional<Indexes>, indexes);
+            XML_FIELD(std::vector<Displacements>, displacements);
+            XML_FIELD(size_t, count);
+            Primitives(const pugi::xml_node&);
+        };
+        XML_FIELD(std::vector<Primitives>, primitives);
+        XML_FIELD(std::vector<float>, shape_weights);
+        Mesh(const pugi::xml_node&, const Assets&);
+    };
+    struct Skeleton : AssetBase {
+        struct Joint {
+            XML_FIELD(size_t, parent);
+            XML_FIELD(vec3s, translation);
+            XML_FIELD(versors, orientation);
+            Joint(const pugi::xml_node&);
+        };
+        XML_FIELD(IntPair, range);
+        XML_FIELD(std::vector<Joint>, joints);
+        Skeleton(const pugi::xml_node&, const Assets&);
+    };
+    struct Shader : AssetBase {
+        struct Stage {
+            struct Specialization {
+                XML_FIELD(uint32_t, constant_id);
+                XML_FIELD(std::string_view, value);
+                Specialization(const pugi::xml_node&);
+            };
+            XML_FIELD(std::string_view, stage);
+            XML_FIELD(std::string_view, source);
+            XML_FIELD(std::vector<Specialization>, specialization);
+            Stage(const pugi::xml_node&);
+        };
+        XML_FIELD(std::vector<Stage>, stages);
+        Shader(const pugi::xml_node&, const Assets&);
+    };
+}
+
+struct Assets {
+    XML_FIELD(std::string, source);
+    XML_FIELD(std::vector<assets::Animation>, animations);
+    XML_FIELD(std::vector<assets::Image>, images);
+    XML_FIELD(std::vector<assets::Material>, materials);
+    XML_FIELD(std::vector<assets::Mesh>, meshes);
+    XML_FIELD(std::vector<assets::Shader>, shaders);
+    XML_FIELD(std::vector<assets::Skeleton>, skeletons);
+    Assets(const pugi::xml_node&, const std::string& path);
+
+    static constexpr const char* const root_name() { return "assets"; }
 };
 
 }

@@ -4,13 +4,13 @@ layout(set = 1, binding = 0) uniform DS1B0 {
     mat4 proj;
     mat4 view;
 };
-layout(set = 2, binding = 0) uniform sampler1DArray morph_position_displacements;
-layout(set = 2, binding = 1) uniform MorphPositionWeights {
-    vec4 morph_position_weights[16];
-};
-layout(push_constant) uniform PushConstants {
+layout(set = 2, binding = 0) uniform ModelMat {
     mat4 model;
 };
+layout(set = 2, binding = 2) uniform MorphPositionWeights {
+    vec4 morph_position_weights[16];
+};
+layout(set = 2, binding = 3) uniform sampler2D morph_position_displacements;
 
 layout(location = 0) in vec3 in_position;
 

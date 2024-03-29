@@ -1,6 +1,6 @@
 #include <algorithm>
 #include "render.h"
-#include "vkutil.h"
+#include "util.h"
 
 namespace twogame::vk {
 
@@ -31,11 +31,10 @@ void BufferPool::extend()
     buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_ci.size = m_unit_size * m_count;
     buffer_ci.usage = m_usage;
-    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
     VmaAllocationCreateInfo alloc_ci {};
     alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
     auto& out = m_buffers.emplace_back();
     VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &buffer_ci, &alloc_ci, &out.buffer, &out.allocation, &out.details));

@@ -11,6 +11,11 @@ CPMAddPackage(NAME entt
               VERSION 3.13.1
               GIT_REPOSITORY https://github.com/skypjack/entt.git
               EXCLUDE_FROM_ALL TRUE)
+CPMAddPackage(NAME fastfloat
+              VERSION 6.1.1
+              GIT_REPOSITORY https://github.com/fastfloat/fast_float.git
+              EXCLUDE_FROM_ALL TRUE
+              OPTIONS "FASTFLOAT_INSTALL OFF")
 CPMAddPackage(NAME ktx
               VERSION 4.3.1
               GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
@@ -19,6 +24,10 @@ CPMAddPackage(NAME ktx
                       "KTX_FEATURE_TESTS OFF"
                       "KTX_FEATURE_VULKAN OFF"
                       "KTX_FEATURE_GL_UPLOAD OFF")
+CPMAddPackage(NAME json
+              VERSION 3.11.3
+              GIT_REPOSITORY https://github.com/nlohmann/json.git
+              EXCLUDE_FROM_ALL TRUE)
 CPMAddPackage(NAME physicsfs
               VERSION 3.2.0
               GIT_REPOSITORY https://github.com/icculus/physfs.git
@@ -45,14 +54,21 @@ CPMAddPackage(NAME pugixml
               EXCLUDE_FROM_ALL TRUE)
 CPMAddPackage(NAME spdlog
               VERSION 1.13.0
-              GIT_REPOSITORY https://github.com/gabime/spdlog.git)
+              GIT_REPOSITORY https://github.com/gabime/spdlog.git
+              EXCLUDE_FROM_ALL TRUE)
 CPMAddPackage(NAME spirvreflect
               VERSION 1.3.239.0
               GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Reflect.git
               GIT_TAG sdk-1.3.239.0
+              EXCLUDE_FROM_ALL TRUE
               OPTIONS "SPIRV_REFLECT_EXECUTABLE OFF"
                       "SPIRV_REFLECT_EXAMPLES OFF"
                       "SPIRV_REFLECT_STATIC_LIB ON")
+CPMAddPackage(NAME stb
+              VERSION 2.29
+              GIT_REPOSITORY https://github.com/nothings/stb.git
+              GIT_TAG 0bc88af4de5fb022db643c2d8e549a0927749354
+              DOWNLOAD_ONLY YES)
 CPMAddPackage(NAME volk
               VERSION 1.3.239
               GIT_REPOSITORY https://github.com/zeux/volk.git
@@ -81,6 +97,10 @@ else()
 endif()
 
 # ---- custom targets ----
+if (stb_ADDED)
+    add_library(stb INTERFACE)
+    target_include_directories(stb INTERFACE $<BUILD_INTERFACE:${stb_SOURCE_DIR}>)
+endif()
 if (xxhash_ADDED)
     add_library(xxhash STATIC EXCLUDE_FROM_ALL ${xxhash_SOURCE_DIR}/xxhash.c)
     target_include_directories(xxhash PUBLIC $<BUILD_INTERFACE:${xxhash_SOURCE_DIR}>)

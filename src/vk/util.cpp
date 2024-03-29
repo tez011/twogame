@@ -1,5 +1,5 @@
+#include <charconv>
 #include <string_view>
-#include <spdlog/spdlog.h>
 #include "render.h"
 
 namespace twogame::vk {
@@ -142,6 +142,23 @@ namespace twogame::vk {
     X(D24_UNORM_S8_UINT, 4, 2)          \
     X(D32_SFLOAT_S8_UINT, 8, 2)
 
+size_t format_width(VkFormat fmt)
+{
+#define X(FMT, SIZE, COMPONENTS) \
+    case VK_FORMAT_##FMT:        \
+        return SIZE;
+    switch (fmt) {
+        VK_FORMATS
+    default:
+        return 0;
+    }
+#undef X
+}
+
+}
+
+namespace twogame::util {
+
 template <>
 bool parse(const std::string_view& name, VkFormat& fmt)
 {
@@ -161,54 +178,6 @@ bool parse(const std::string_view& name, VkPrimitiveTopology& out)
     P(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, "triangles");
     P(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY, "triangles-adj");
     return false;
-}
-
-template <>
-bool parse(const std::string_view& name, VkIndexType& out)
-{
-    P(VK_INDEX_TYPE_NONE_KHR, "none");
-    P(VK_INDEX_TYPE_UINT16, "uint16");
-    P(VK_INDEX_TYPE_UINT32, "uint32");
-    P(VK_INDEX_TYPE_UINT8_EXT, "uint8");
-    return false;
-}
-
-template <>
-bool parse(const std::string_view& name, vk::VertexInput& out)
-{
-    P(vk::VertexInput::Position, "position");
-    P(vk::VertexInput::Normal, "normal");
-    P(vk::VertexInput::Joints, "joints");
-    P(vk::VertexInput::Weights, "weights");
-    P(vk::VertexInput::UV0, "uv0");
-    return false;
-}
-
-size_t format_width(VkFormat fmt)
-{
-#define X(FMT, SIZE, COMPONENTS) \
-    case VK_FORMAT_##FMT:        \
-        return SIZE;
-    switch (fmt) {
-        VK_FORMATS
-    default:
-        return 0;
-    }
-#undef X
-}
-
-size_t format_width(VkIndexType fmt)
-{
-    switch (fmt) {
-    case VK_INDEX_TYPE_UINT16:
-        return 2;
-    case VK_INDEX_TYPE_UINT32:
-        return 4;
-    case VK_INDEX_TYPE_UINT8_EXT:
-        return 1;
-    default:
-        return 0;
-    }
 }
 
 }

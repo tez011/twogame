@@ -1,15 +1,14 @@
 #version 450
 
-layout(constant_id = 0) const int MAX_BONES = 16; // maximum: 1024
 layout(set = 1, binding = 0) uniform DS1B0 {
     mat4 proj;
     mat4 view;
 };
-layout(set = 2, binding = 2) uniform JointMatrices {
-    mat4 joint_mat[MAX_BONES];
-};
-layout(push_constant) uniform PushConstants {
+layout(set = 2, binding = 0) uniform DS2B0 {
     mat4 model;
+};
+layout(set = 2, binding = 1) uniform JointMatrices {
+    mat4 joint_mat[32];
 };
 
 layout(location = 0) in vec3 in_position;

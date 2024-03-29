@@ -2,15 +2,17 @@
 #include <cglm/struct.h>
 #include <entt/entt.hpp>
 #include "asset.h"
+#include "render.h"
 
 namespace twogame::e_components {
 
 struct camera { };
 struct geometry {
     std::shared_ptr<asset::Mesh> m_mesh;
-    std::shared_ptr<asset::Material> m_material;
+    std::shared_ptr<asset::Skeleton> m_skeleton;
+    std::vector<std::shared_ptr<asset::Material>> m_materials;
     std::array<VkDescriptorSet, 2> m_descriptors;
-    std::array<uint32_t, 4> m_descriptor_buffers;
+    Renderer::perobject_descriptor_buffers_t m_descriptor_buffers;
 };
 struct hierarchy {
     entt::entity m_parent { entt::null };
@@ -23,12 +25,15 @@ typedef vec3s translation;
 typedef versors orientation;
 typedef mat4s transform;
 struct transform_dirty { };
+struct transform_dirty_0 { };
+struct transform_dirty_1 { };
 
-struct morph_animation {
+struct animation {
     std::shared_ptr<asset::Animation> m_animation, m_next_animation;
     uint64_t m_start_time;
     float m_multiplier;
 };
+
 struct morph_weights {
     std::vector<float> m_weights;
 };
@@ -40,11 +45,6 @@ struct bone {
 };
 struct joints {
     std::vector<entt::entity> m_bones;
-};
-struct joint_animation {
-    std::shared_ptr<asset::Animation> m_animation, m_next_animation;
-    uint64_t m_start_time;
-    float m_multiplier;
 };
 struct joint_mats {
     std::vector<mat4s> m_mats; // globalJointTransform * inverseBindMatrix

@@ -1,5 +1,8 @@
 #include "util.h"
+#include <filesystem>
+#include <physfs.h>
 #include <spdlog/spdlog.h>
+#include "xml.h"
 
 thread_local static int s_current_thread_id = 0;
 
@@ -75,6 +78,71 @@ void ThreadPool::wait_idle()
 int ThreadPool::current_thread_id()
 {
     return s_current_thread_id;
+}
+
+std::string resolve_path(std::string_view current, std::string_view relative)
+{
+    if (relative.front() == '/')
+        return std::string { relative };
+
+    auto p = std::filesystem::path(current).parent_path();
+    auto append = [&p](const std::string_view& el) {
+        if (el == "..")
+            p = p.parent_path();
+        else if (el != ".")
+            p /= el;
+    };
+
+    std::string_view::size_type start = 0, end;
+    while ((end = relative.find_first_of("/")) != std::string_view::npos) {
+        append(relative.substr(start, end - start));
+        start = relative.find_first_not_of("/", end + 1);
+    }
+    if (start != std::string_view::npos) {
+        append(relative.substr(start));
+    }
+
+    return p.generic_string();
+}
+
+}
+
+namespace twogame::xml {
+
+Exception::Exception(const pugi::xml_node& node, std::string_view prop)
+{
+    std::ostringstream oss;
+    oss << node.path() << ": bad '" << prop << "'";
+    m_what = oss.str();
+}
+
+}
+
+namespace twogame::xml::priv {
+
+bool slurp(const std::string& path, pugi::xml_document& doc)
+{
+    PHYSFS_Stat stat;
+    PHYSFS_File* fh;
+
+    if (PHYSFS_stat(path.c_str(), &stat) == 0)
+        return false;
+    if ((fh = PHYSFS_openRead(path.c_str())) == nullptr)
+        return false;
+
+    void* buffer = pugi::get_memory_allocation_function()(stat.filesize);
+    if (PHYSFS_readBytes(fh, buffer, stat.filesize) < stat.filesize) {
+        pugi::get_memory_deallocation_function()(buffer);
+        PHYSFS_close(fh);
+        return false;
+    }
+
+    return doc.load_buffer_inplace_own(buffer, stat.filesize);
+}
+
+bool parse_boolean(const std::string_view& s)
+{
+    return s == "true" || s == "yes";
 }
 
 }

@@ -1,14 +1,21 @@
-#include "xml.h"
 #include <sstream>
 #include <physfs.h>
+#include "scene.h"
 
 namespace twogame::xml {
 
-Exception::Exception(const pugi::xml_node& node, std::string_view prop)
+Scene::Entity::Geometry::BoundMaterial::BoundMaterial(const pugi::xml_node& node)
+    : m_immutable(true)
 {
-    std::ostringstream oss;
-    oss << node.path() << ": bad '" << prop << "'";
-    m_what = oss.str();
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "mutable") == 0)
+            m_immutable = !priv::parse_boolean(it->value());
+    }
+
+    if (node.text())
+        m_name = node.text().get();
+    else
+        throw Exception(node, "material");
 }
 
 Scene::Entity::Geometry::Geometry(const pugi::xml_node& node)
@@ -16,16 +23,16 @@ Scene::Entity::Geometry::Geometry(const pugi::xml_node& node)
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "mesh") == 0)
             m_mesh = it->value();
+        if (strcmp(it->name(), "skeleton") == 0)
+            m_skeleton = it->value();
     }
     for (auto it = node.begin(); it != node.end(); ++it) {
         if (strcmp(it->name(), "material") == 0)
-            m_material.emplace(*it, false);
+            m_materials.emplace_back(*it);
     }
 
     if (m_mesh.empty())
         throw Exception(node, "mesh");
-    if (!m_material)
-        throw Exception(node, "material");
 }
 
 Scene::Entity::Rigidbody::Rigidbody(const pugi::xml_node& node)
@@ -84,9 +91,14 @@ Scene::Entity::Entity(const pugi::xml_node& node)
         else if (strcmp(it->name(), "animator") == 0)
             m_components.emplace_back<Animator>(*it);
     }
+
+    auto ecmp = [](const EntityComponent& lhs, const EntityComponent& rhs) {
+        return lhs.index() < rhs.index();
+    };
+    std::stable_sort(m_components.begin(), m_components.end(), ecmp);
 }
 
-Scene::Scene(const pugi::xml_node& node)
+Scene::Scene(const pugi::xml_node& node, const std::string& path)
 {
     for (auto it = node.begin(); it != node.end(); ++it) {
         if (strcmp(it->name(), "assets") == 0)
@@ -94,48 +106,6 @@ Scene::Scene(const pugi::xml_node& node)
         else if (strcmp(it->name(), "entity") == 0)
             m_entities.emplace_back(*it);
     }
-}
-
-}
-
-namespace twogame::xml::priv {
-
-bool slurp(const std::string& path, pugi::xml_document& doc)
-{
-    PHYSFS_Stat stat;
-    PHYSFS_File* fh;
-
-    if (PHYSFS_stat(path.c_str(), &stat) == 0)
-        return false;
-    if ((fh = PHYSFS_openRead(path.c_str())) == nullptr)
-        return false;
-
-    void* buffer = pugi::get_memory_allocation_function()(stat.filesize);
-    if (PHYSFS_readBytes(fh, buffer, stat.filesize) < stat.filesize) {
-        pugi::get_memory_deallocation_function()(buffer);
-        PHYSFS_close(fh);
-        return false;
-    }
-
-    return doc.load_buffer_inplace_own(buffer, stat.filesize);
-}
-
-bool parse_boolean(const std::string_view& s)
-{
-    return s == "true" || s == "yes";
-}
-
-size_t split(std::vector<std::string_view>& out, const std::string_view& in, std::string_view delim)
-{
-    std::string_view::size_type start = 0, end;
-    out.reserve(std::count_if(in.begin(), in.end(), [&](char ch) { return delim.find(ch) != std::string_view::npos; }));
-    while ((end = in.find_first_of(delim, start)) != std::string_view::npos) {
-        out.push_back(in.substr(start, end - start));
-        start = in.find_first_not_of(delim, end + 1);
-    }
-    if (start != std::string_view::npos)
-        out.push_back(in.substr(start));
-    return out.size();
 }
 
 }

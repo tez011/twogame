@@ -6,6 +6,7 @@
 #include <entt/entt.hpp>
 #include "asset.h"
 #include "components.h"
+#include "xml.h"
 
 class Twogame;
 
@@ -32,7 +33,51 @@ public:
     void animate(uint64_t frame_time, uint64_t delta_time);
     void update_transforms();
     void update_perobject_descriptors();
-    void draw(VkCommandBuffer cmd, VkRenderPass, uint32_t subpass, uint64_t frame_number, const std::array<VkDescriptorSet, 2>& descriptor_sets);
+    void draw(VkCommandBuffer cmd, uint64_t frame_number);
+};
+
+}
+
+namespace twogame::xml {
+
+struct Scene {
+    struct Entity {
+        struct Camera {
+            Camera(const pugi::xml_node&) { }
+        };
+        struct Geometry {
+            struct BoundMaterial {
+                XML_FIELD(std::string_view, name);
+                XML_FIELD(bool, immutable);
+                BoundMaterial(const pugi::xml_node&);
+            };
+            XML_FIELD(std::string_view, mesh);
+            XML_FIELD(std::string_view, skeleton);
+            XML_FIELD(std::vector<BoundMaterial>, materials);
+            Geometry(const pugi::xml_node&);
+        };
+        struct Rigidbody {
+            XML_FIELD(bool, physics);
+            XML_FIELD(vec3s, translation);
+            XML_FIELD(versors, orientation);
+            Rigidbody(const pugi::xml_node&);
+        };
+        struct Animator {
+            XML_FIELD(std::string_view, initial_animation);
+            Animator(const pugi::xml_node&);
+        };
+        using EntityComponent = std::variant<Geometry, Camera, Rigidbody, Animator>;
+
+        XML_FIELD(std::string_view, name);
+        XML_FIELD(std::string_view, parent);
+        XML_FIELD(std::vector<EntityComponent>, components);
+        Entity(const pugi::xml_node&);
+    };
+    XML_FIELD(std::vector<std::string_view>, assets);
+    XML_FIELD(std::vector<Entity>, entities);
+    Scene(const pugi::xml_node&, const std::string& path);
+
+    static constexpr const char* const root_name() { return "scene"; }
 };
 
 }

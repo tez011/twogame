@@ -52,9 +52,9 @@ void Renderer::draw(Scene* scene)
         std::terminate();
     }
 
-    auto ps1i0 = static_cast<descriptor_storage::uniform_s1i0_t*>(m_ds1_buffers[m_frame_number % 2][0].details.pMappedData);
-    memcpy(&ps1i0->view, scene->camera_view().raw, sizeof(mat4));
-    memcpy(&ps1i0->proj, &m_projection, sizeof(mat4));
+    auto ps1i0 = static_cast<descriptor_storage::uniform_s1i0_t*>(m_ds1_buffers[0].details.pMappedData);
+    memcpy(&ps1i0[m_frame_number % 2].view, scene->camera_view().raw, sizeof(mat4));
+    memcpy(&ps1i0[m_frame_number % 2].proj, &m_projection, sizeof(mat4));
 
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::RenderOneStage)];
     VkCommandBufferBeginInfo cbuf_begin {};
@@ -88,7 +88,8 @@ void Renderer::draw(Scene* scene)
     vkCmdSetViewport(cbuf, 0, 1, &viewport);
     vkCmdSetScissor(cbuf, 0, 1, &scissor);
 
-    scene->draw(cbuf, m_render_pass[0], 0, m_frame_number, descriptor_sets);
+    vkCmdBindDescriptorSets(cbuf, VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline_layout, 0, descriptor_sets.size(), descriptor_sets.data(), 0, nullptr);
+    scene->draw(cbuf, m_frame_number);
 
     vkCmdEndRenderPass(cbuf);
     VK_CHECK(vkEndCommandBuffer(cbuf));

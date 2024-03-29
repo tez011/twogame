@@ -1,25 +1,22 @@
-<assets>
-    <mesh name="Duck"><!-- eye=0,250,400 center=0,100,0 up=0,1,0 -->
-        <attributes source="/tg/Duck0.bin" range="0 76768" interleaved="false">
-            <attribute name="normal" format="R32G32B32_SFLOAT" count="2399" />
-            <attribute name="position" format="R32G32B32_SFLOAT" count="2399" />
-            <attribute name="uv0" format="R32G32_SFLOAT" count="2399" />
-        </attributes>
-        <indexes source="/tg/Duck0.bin" format="uint16" topology="triangles" offset="76768" count="12636" />
-    </mesh>
-    <image name="Duck" usage="sampled" source="/tg/Duck.ktx" />
-    <shader name="Duck">
-        <stage stage="vert" path="/tg/shaders/duck.vert.spv" />
-        <stage stage="frag" path="/tg/shaders/duck.frag.spv" />
+<?xml version="1.0"?>
+<assets source="duck.bin">
+	<mesh name="LOD3spShape"><!-- eye=0 250 400 look=-0.17842 0 0 0.98395 -->
+		<primitives count="2399">
+			<attributes range="0 76768" interleaved="false">
+				<attribute name="normal" format="R32G32B32_SFLOAT" />
+				<attribute name="position" format="R32G32B32_SFLOAT" />
+				<attribute name="uv0" format="R32G32_SFLOAT" />
+			</attributes>
+			<indexes count="12636" range="76768 25272" />
+		</primitives>
+	</mesh>
+	<shader name="Duck">
+        <stage type="vert" source="/tg/shaders/duck.vert.spv" />
+        <stage type="frag" source="/tg/shaders/duck.frag.spv" />
     </shader>
-    <shader name="RubberDuck">
-        <stage stage="vert" path="/tg/shaders/rubberduck.vert.spv" />
-        <stage stage="frag" path="/tg/shaders/rubberduck.frag.spv" />
-    </shader>
-    <material name="Duck" shader="Duck">
-        <binding name="tex_sampler">Duck</binding>
-    </material>
-    <material name="RubberDuck" shader="RubberDuck">
-        <binding name="base_color">0.196 0.804 0.196</binding>
-    </material>
+	<material name="blinn3-fx" shader="Duck">
+		<binding name="base_color_texture" type="image-sampler">RiggedSimple.i0</binding>
+		<binding name="metallic_factor" type="float">0</binding>
+	</material>
+	<image name="RiggedSimple.i0" usage="sampled" source="duck.i0.ktx2" />
 </assets>

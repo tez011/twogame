@@ -8,8 +8,8 @@
 #include <cglm/mat4.h>
 #include <SDL.h>
 #include <spdlog/spdlog.h>
-#include <vk_mem_alloc.h>
-#include "vkutil.h"
+#include "util.h"
+#include "vk_mem_alloc.h"
 
 #ifdef TWOGAME_DEBUG_BUILD
 #define VK_CHECK(X) VK_CHECK_3(X, __FILE__, __LINE__)
@@ -84,8 +84,22 @@ class Scene;
 class Renderer final {
     friend class asset::Shader;
 
-private:
+public:
     constexpr static uint32_t API_VERSION = VK_API_VERSION_1_2;
+
+    enum class DescriptorSetSlot {
+        // Descriptor set 0: per-frame
+        // Descriptor set 1: per-pass
+        ProjectionView = 0,
+        // Descriptor set 2: per-object
+        ModelMatrix = 0,
+        BoneMatrices,
+        ShapeKeyWeights,
+        PositionDisplacements,
+        NormalDisplacements,
+    };
+
+private:
     static PFN_vkDestroyDebugUtilsMessengerEXT s_vkDestroyDebugUtilsMessenger;
 
     enum class QueueFamily {
@@ -117,10 +131,12 @@ private:
     VkPhysicalDeviceFeatures2 m_device_features {};
     VkPhysicalDeviceVulkan11Features m_device_features11 {};
     VkPhysicalDeviceVulkan12Features m_device_features12 {};
+    VkPhysicalDeviceRobustness2FeaturesEXT m_device_robustness2_features {};
     VkSwapchainKHR m_swapchain;
     VkSurfaceFormatKHR m_swapchain_format;
     VkExtent2D m_swapchain_extent;
     VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
+    VkPipelineLayout m_pipeline_layout;
     std::vector<VkImage> m_swapchain_images;
     std::array<uint32_t, static_cast<size_t>(QueueFamily::MAX_VALUE)> m_queue_families;
     std::array<VkQueue, static_cast<size_t>(QueueFamily::MAX_VALUE)> m_queues;
@@ -128,8 +144,8 @@ private:
     std::array<std::array<VkCommandBuffer, static_cast<size_t>(CommandBuffer::MAX_VALUE)>, 2> m_command_buffers;
     VkCommandPool m_command_pool_transient;
     VkCommandBuffer m_cbuf_asset_prepare;
-    VkSampler m_active_sampler = VK_NULL_HANDLE;
-    VkSampler m_morph_sampler = VK_NULL_HANDLE;
+    VkSampler m_active_sampler;
+    VkSampler m_morph_sampler;
 
     uint64_t m_frame_number = 0;
     bool m_mip_filter = true;
@@ -145,13 +161,12 @@ private:
     std::array<std::array<VmaAllocation, static_cast<size_t>(RenderAttachment::MAX_VALUE)>, 2> m_render_att_allocs;
     std::array<std::queue<std::pair<uint64_t, vk_destructible::Types>>, 4> m_trash;
 
-    constexpr static size_t DS1_INSTANCES = 1, DS2_BUFFERS = 2;
+    constexpr static size_t DS1_INSTANCES = 1, DS2_BUFFERS = 3;
     VkDescriptorSetLayout m_ds0_layout, m_ds1_layout;
-    std::array<VkPushConstantRange, 1> m_push_constants;
     std::array<VkDescriptorPool, 2> m_ds01_pool;
     std::array<VkDescriptorSet, 2> m_ds0;
     std::array<std::array<VkDescriptorSet, DS1_INSTANCES>, 2> m_ds1;
-    std::array<std::array<vk::buffer, DS1_INSTANCES>, 2> m_ds1_buffers;
+    std::array<vk::buffer, DS1_INSTANCES> m_ds1_buffers;
     std::array<vk::BufferPool*, DS2_BUFFERS> m_ds2_buffer_pool;
     vk::DescriptorPool* m_ds2_pool;
 
@@ -178,23 +193,22 @@ private:
     void release_freed_items(int bucket);
     void recreate_swapchain();
     void write_pipeline_cache();
-
-    bool null_descriptor_enabled() const;
+    uint64_t dummy_perobject_descriptors_internal(DescriptorSetSlot) const;
 
     template <typename T, vk_destructible::Types I = vk_destructible::Type<T>::t()>
-    void vfree(T i)
+    void defer_free(T i)
     {
         m_trash[m_frame_number % 4].emplace(uint64_t(i), I);
     }
     template <typename T, size_t N, vk_destructible::Types I = vk_destructible::Type<T>::t()>
-    void vfree(std::array<T, N>& c)
+    void defer_free(std::array<T, N>& c)
     {
         for (const T& i : c)
             m_trash[m_frame_number % 4].emplace(uint64_t(i), I);
         c.fill(VK_NULL_HANDLE);
     }
     template <typename T, vk_destructible::Types I = vk_destructible::Type<T>::t()>
-    void vfree(std::vector<T>& c)
+    void defer_free(std::vector<T>& c)
     {
         for (const T& i : c)
             m_trash[m_frame_number % 4].emplace(uint64_t(i), I);
@@ -215,12 +229,17 @@ public:
     const VkDevice& device() const { return m_device; }
     const VmaAllocator& allocator() const { return m_allocator; }
     const VkSampler& active_sampler() const { return m_active_sampler; }
+    const VkSampler& morph_sampler() const { return m_morph_sampler; }
     const VkPhysicalDeviceLimits& limits() const { return m_device_limits; }
-
+    const VkPipelineLayout& pipeline_layout() const { return m_pipeline_layout; }
     VkPipelineLayout create_pipeline_layout(VkDescriptorSetLayout material_layout) const;
-    const vk::BufferPool* perobject_buffer_pool(size_t i) const { return m_ds2_buffer_pool[i]; }
-    void create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>& buffers);
-    void free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>& buffers);
+
+    using perobject_descriptor_buffers_t = std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>;
+    const vk::BufferPool* perobject_buffer_pool(DescriptorSetSlot i) const { return m_ds2_buffer_pool[static_cast<size_t>(i)]; }
+    void create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, perobject_descriptor_buffers_t& buffers);
+    void free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, perobject_descriptor_buffers_t& buffers);
+    template <typename T>
+    T dummy_perobject_descriptors(DescriptorSetSlot s) const { return reinterpret_cast<T>(dummy_perobject_descriptors_internal(s)); }
 };
 
 }

@@ -130,12 +130,13 @@ static ktx_error_code_e ktx_mip_iterate(int miplevel, int face, int width, int h
 
 namespace twogame::asset {
 
-Image::Image(const xml::assets::Image& info, const Renderer* r)
-    : m_renderer(*r)
+Image::Image(const xml::assets::Image& info, const AssetManager& manager)
+    : m_renderer(manager.renderer())
 {
-    PHYSFS_File* fh = PHYSFS_openRead(info.source().data());
+    std::string image_source = util::resolve_path(info.source(), info.image_source());
+    PHYSFS_File* fh = PHYSFS_openRead(image_source.c_str());
     if (!fh)
-        throw IOException(info.source(), PHYSFS_getLastErrorCode());
+        throw IOException(image_source, PHYSFS_getLastErrorCode());
 
     ktxTexture2* ktx2 = nullptr;
     ktx_physfs_istream kstream(fh);
@@ -159,7 +160,6 @@ Image::Image(const xml::assets::Image& info, const Renderer* r)
     b_createinfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     b_createinfo.size = ktxTexture_GetDataSizeUncompressed(ktx);
     b_createinfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    b_createinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     i_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     i_createinfo.flags = 0;
     i_createinfo.imageType = static_cast<VkImageType>(ktx->numDimensions - 1);
@@ -171,7 +171,6 @@ Image::Image(const xml::assets::Image& info, const Renderer* r)
     i_createinfo.samples = VK_SAMPLE_COUNT_1_BIT;
     i_createinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
     i_createinfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    i_createinfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     i_createinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (ktx->isArray) {
         i_createinfo.arrayLayers = ktx->numLayers;
@@ -192,7 +191,7 @@ Image::Image(const xml::assets::Image& info, const Renderer* r)
 
     VmaAllocationInfo storage_allocinfo;
     a_createinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-    a_createinfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    a_createinfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
     VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &b_createinfo, &a_createinfo, &m_storage, &m_storage_mem, &storage_allocinfo));
     if ((k_res = ktxTexture_LoadImageData(ktx, static_cast<ktx_uint8_t*>(storage_allocinfo.pMappedData), b_createinfo.size)) != KTX_SUCCESS)
         throw MalformedException(info.name(), "failed to load image data");
