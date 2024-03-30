@@ -321,6 +321,7 @@ public:
         std::ofstream outbin(outdir / outbin_name, std::ios_base::binary);
         std::set<pugi::xml_node> rewrite_range;
         std::set<size_t> index_accessors, displacement_accessors;
+        std::map<size_t, size_t> anim_orientation_accessors;
 
         pugi::xml_node asset_root = outdoc.append_child("assets");
         asset_root.append_attribute("source").set_value(outbin_name.c_str());
@@ -555,6 +556,8 @@ public:
                         anim_output.append_attribute("width").set_value(accessors[jt->output].count / accessors[it->first].count);
                     else if (jt->node != std::numeric_limits<size_t>::max())
                         anim_output.append_attribute("bone").set_value(nodes_to_bones[jt->node]);
+                    if (jt->path == "rotation")
+                        anim_orientation_accessors[jt->output] = range_start;
                     accessor_usage.push_back(jt->output);
                 }
                 animation.attribute("range").set_value(fmt::format("{} {}", range_start, accessor_usage.size()).c_str());
@@ -735,6 +738,16 @@ public:
 
             accessor_final_offsets.push_back(outbin.tellp());
             acc.buffer->seekg(acc.offset);
+
+            if (anim_orientation_accessors.contains(*it)) {
+                // All orientation accessors need to be aligned to a multiple of 16 bytes relative to
+                // the start of the animation block. This is needed because simd.
+                memset(scratch.data(), 0, 16);
+                size_t unpadded_range = static_cast<size_t>(outbin.tellp()) - accessor_final_offsets[anim_orientation_accessors[*it]],
+                       padding = (16 - (unpadded_range % 16)) % 16;
+                outbin.write(scratch.data(), padding);
+            }
+
             if (index_accessors.contains(*it)) {
                 write_index_buffer(outbin, acc);
             } else if (displacement_accessors.contains(*it)) {

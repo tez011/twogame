@@ -76,8 +76,6 @@ Mesh::Mesh(const xml::assets::Mesh& info, const AssetManager& manager)
                 throw IOException(info.source(), PHYSFS_getLastErrorCode());
             if (PHYSFS_readBytes(fh, mapped_buffer + mapped_offset, i->range().second) < static_cast<PHYSFS_sint64>(i->range().second))
                 throw IOException(info.source(), PHYSFS_getLastErrorCode());
-            if (!i->topology().empty() && !util::parse<>(i->topology(), m_primitive_topology))
-                throw MalformedException(info.name(), "bad primitive topology '{}'", i->topology());
             if (index_buffer_width == 0)
                 index_buffer_width = i->range().second / i->count();
             else if (index_buffer_width != i->range().second / i->count())
@@ -153,6 +151,8 @@ Mesh::Mesh(const xml::assets::Mesh& info, const AssetManager& manager)
             mapped_offset += (a.range().second + 15) & ~15;
         }
     }
+    if (!info.primitive_topology().empty() && !util::parse<VkPrimitiveTopology>(info.primitive_topology(), m_primitive_topology))
+        throw MalformedException(info.name(), "bad primitive topology '{}'", info.primitive_topology());
 
     std::array<int32_t, 3> dacc = { 0, 0, 0 };
     uint32_t morph_channel_count = 0;
@@ -340,7 +340,8 @@ bool Mesh::prepared() const
 void Mesh::draw(VkCommandBuffer cmd, uint64_t frame_number, const std::vector<std::shared_ptr<Material>>& materials) const
 {
     uint32_t first_index = 0, first_vertex = 0;
-    vkCmdBindIndexBuffer(cmd, m_buffer, 0, m_index_buffer_width);
+    if (m_index_buffer_width != VK_INDEX_TYPE_NONE_KHR)
+        vkCmdBindIndexBuffer(cmd, m_buffer, 0, m_index_buffer_width);
 
     for (size_t i = 0; i < m_primitive_groups; i++) {
         VkBuffer bound_buffers[m_primitives[i].bindings.size()];
@@ -351,7 +352,10 @@ void Mesh::draw(VkCommandBuffer cmd, uint64_t frame_number, const std::vector<st
 
         // vkCmdPushConstants(cmd, m_renderer.pipeline_layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &first_vertex);
         vkCmdBindVertexBuffers(cmd, 0, m_primitives[i].bindings.size(), bound_buffers, m_primitives[i].binding_offsets.data());
-        vkCmdDrawIndexed(cmd, m_primitives[i].index_count, 1, first_index, 0, 0);
+        if (m_index_buffer_width == VK_INDEX_TYPE_NONE_KHR)
+            vkCmdDraw(cmd, m_primitives[i].vertex_count, 1, 0, 0);
+        else
+            vkCmdDrawIndexed(cmd, m_primitives[i].index_count, 1, first_index, 0, 0);
         first_index += m_primitives[i].index_count;
         first_vertex += m_primitives[i].vertex_count;
     }

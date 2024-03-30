@@ -248,27 +248,23 @@ void Scene::animate(uint64_t frame_time, uint64_t delta_time)
 
 void Scene::update_transforms()
 {
-    m_registry.sort<e_components::transform_dirty>([this](entt::entity lhs, entt::entity rhs) {
-        entt::entity lp = lhs, rp = rhs;
-        do {
-            lp = m_registry.get<e_components::hierarchy>(lp).m_parent;
-            rp = m_registry.get<e_components::hierarchy>(rp).m_parent;
-            if (lp == entt::null && rp != entt::null)
-                return true;
-            else if (lp != entt::null && rp == entt::null)
-                return false;
-        } while (lp != entt::null && rp != entt::null);
-        return lhs < rhs;
-    });
+    std::vector<entt::entity> dirty_transforms(m_registry.view<e_components::transform_dirty>().begin(), m_registry.view<e_components::transform_dirty>().end());
+    for (size_t qhead = 0; qhead < dirty_transforms.size(); qhead++) {
+        entt::entity child = m_registry.get<e_components::hierarchy>(dirty_transforms[qhead]).m_child;
+        while (child != entt::null) {
+            dirty_transforms.push_back(child);
+            child = m_registry.get<e_components::hierarchy>(child).m_next;
+        }
+    }
+    // dirty_transforms is sorted by depth and contains all dirty transforms and their children.
 
     std::set<entt::entity> dirty_skeletons;
     auto dirty_bones = m_registry.view<e_components::transform_dirty, e_components::bone>();
     for (entt::entity e : dirty_bones)
         dirty_skeletons.insert(dirty_bones.get<e_components::bone>(e).m_ancestor);
 
-    auto dirty_transforms = m_registry.view<e_components::transform_dirty, e_components::transform, e_components::hierarchy>();
     for (entt::entity e : dirty_transforms) {
-        entt::entity p = dirty_transforms.get<e_components::hierarchy>(e).m_parent;
+        entt::entity p = m_registry.get<e_components::hierarchy>(e).m_parent;
 
         mat4s local_xfm = glms_mat4_identity();
         local_xfm = glms_translate(local_xfm, m_registry.get<e_components::translation>(e));
@@ -276,7 +272,7 @@ void Scene::update_transforms()
         if (p == entt::null)
             m_registry.replace<e_components::transform>(e, local_xfm);
         else
-            m_registry.replace<e_components::transform>(e, glms_mat4_mul(dirty_transforms.get<e_components::transform>(p), local_xfm));
+            m_registry.replace<e_components::transform>(e, glms_mat4_mul(m_registry.get<e_components::transform>(p), local_xfm));
     }
     m_registry.clear<e_components::transform_dirty>();
 

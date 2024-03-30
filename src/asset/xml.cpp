@@ -150,8 +150,6 @@ Mesh::Primitives::Indexes::Indexes(const pugi::xml_node& node)
         } else if (strcmp(it->name(), "range") == 0) {
             if (sscanf(it->value(), "%zu %zu", &m_range.first, &m_range.second) < 2)
                 throw Exception(node, "range");
-        } else if (strcmp(it->name(), "topology") == 0) {
-            m_topology = it->value();
         }
     }
 
@@ -198,8 +196,6 @@ Mesh::Primitives::Primitives(const pugi::xml_node& node)
 
     if (m_attributes.empty())
         throw Exception(node, "attributes");
-    if (!m_indexes)
-        throw Exception(node, "indexes");
     if (m_count == 0)
         throw Exception(node, "count");
 }
@@ -207,6 +203,10 @@ Mesh::Primitives::Primitives(const pugi::xml_node& node)
 Mesh::Mesh(const pugi::xml_node& node, const Assets& root)
     : AssetBase(node, root)
 {
+    for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
+        if (strcmp(it->name(), "topology") == 0)
+            m_primitive_topology = it->value();
+    }
     for (auto it = node.begin(); it != node.end(); ++it) {
         if (strcmp(it->name(), "primitives") == 0)
             m_primitives.emplace_back(*it);

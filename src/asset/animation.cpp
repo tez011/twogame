@@ -26,24 +26,25 @@ Animation::Animation(const xml::assets::Animation& info, const AssetManager&)
     if (PHYSFS_readBytes(fh, m_data.get(), info.range().second) < static_cast<PHYSFS_sint64>(info.range().second))
         throw IOException(info.source(), PHYSFS_getLastErrorCode());
 
-    float* output_data = m_data.get() + m_keyframes;
+    size_t acc_offset = m_keyframes;
     for (auto it = info.outputs().begin(); it != info.outputs().end(); ++it) {
         Channel& c = m_channels.emplace_back();
-        c.m_data = output_data;
-        c.m_bone = it->bone() - 1;
         if (it->target() == "translation") {
-            c.m_target = ChannelTarget::Translation;
             c.m_width = 3;
+            c.m_target = ChannelTarget::Translation;
         } else if (it->target() == "orientation") {
-            c.m_target = ChannelTarget::Orientation;
+            acc_offset += (4 - (acc_offset % 4)) % 4; // orientations must exist on a boundary of 4*sizeof(float) == 128 bits, for simd
             c.m_width = 4;
+            c.m_target = ChannelTarget::Orientation;
         } else if (it->target() == "shape-weights") {
-            c.m_target = ChannelTarget::ShapeWeights;
             c.m_width = it->width();
+            c.m_target = ChannelTarget::ShapeWeights;
         } else
             throw MalformedException(info.name(), "bad animation channel target: {}", it->target());
 
-        output_data += m_keyframes * c.m_width;
+        c.m_data = m_data.get() + acc_offset;
+        c.m_bone = it->bone() - 1;
+        acc_offset += m_keyframes * c.m_width;
     }
 }
 

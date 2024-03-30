@@ -1,6 +1,5 @@
 #define STBI_NO_BMP
 #define STBI_NO_PSD
-#define STBI_NO_STDIO
 #define STB_IMAGE_IMPLEMENTATION
 #define VK_ENABLE_BETA_EXTENSIONS
 #include "image.hpp"
@@ -729,30 +728,21 @@ void ImageGenerator::generate(const std::filesystem::path& out, const unsigned c
 
 void ImageGenerator::generate(const std::filesystem::path& out, const std::filesystem::path& in)
 {
-    stbi_io_callbacks iocb {};
-    iocb.read = stb_io_read;
-    iocb.skip = stb_io_skip;
-    iocb.eof = stb_io_eof;
-
-    std::ifstream reader(in);
     int x, y, n;
-    if (stbi_is_hdr_from_callbacks(&iocb, &reader)) {
-        reader.seekg(0);
-        float* rd = stbi_loadf_from_callbacks(&iocb, &reader, &x, &y, &n, 4);
+    if (stbi_is_hdr(in.c_str())) {
+        float* rd = stbi_loadf(in.c_str(), &x, &y, &n, 4);
         if (rd)
             return generate(out, rd, x, y, VK_FORMAT_R32G32B32A32_SFLOAT);
         else
             spdlog::error("failed to decode {}: {}", in.c_str(), stbi_failure_reason());
-    } else if (stbi_is_16_bit_from_callbacks(&iocb, &reader)) {
-        reader.seekg(0);
-        stbi_us* rd = stbi_load_16_from_callbacks(&iocb, &reader, &x, &y, &n, 4);
+    } else if (stbi_is_16_bit(in.c_str())) {
+        stbi_us* rd = stbi_load_16(in.c_str(), &x, &y, &n, 4);
         if (rd)
             return generate(out, rd, x, y, VK_FORMAT_R16G16B16A16_UINT);
         else
             spdlog::error("failed to decode {}: {}", in.c_str(), stbi_failure_reason());
     } else {
-        reader.seekg(0);
-        stbi_uc* rd = stbi_load_from_callbacks(&iocb, &reader, &x, &y, &n, 4);
+        stbi_uc* rd = stbi_load(in.c_str(), &x, &y, &n, 4);
         if (rd)
             return generate(out, rd, x, y, VK_FORMAT_R8G8B8A8_SRGB);
         else

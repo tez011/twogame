@@ -393,7 +393,6 @@ namespace assets {
             struct Indexes {
                 XML_FIELD(size_t, count);
                 XML_FIELD(IntPair, range);
-                XML_FIELD(std::string_view, topology);
                 Indexes(const pugi::xml_node&);
             };
             struct Displacements {
@@ -407,6 +406,7 @@ namespace assets {
             XML_FIELD(size_t, count);
             Primitives(const pugi::xml_node&);
         };
+        XML_FIELD(std::string_view, primitive_topology);
         XML_FIELD(std::vector<Primitives>, primitives);
         XML_FIELD(std::vector<float>, shape_weights);
         Mesh(const pugi::xml_node&, const Assets&);

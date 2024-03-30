@@ -1,0 +1,119 @@
+<?xml version="1.0"?>
+<!-- CC-BY 4.0 Model by PixelMannen https://opengameart.org/content/fox-and-shiba and @tomkranis https://sketchfab.com/3d-models/low-poly-fox-by-pixelmannen-animated-371dea88d7e04a76af5763f2a36866bc and @AsoboStudio with @scurest https://github.com/KhronosGroup/glTF-Sample-Models/pull/150#issuecomment-406300118 -->
+<assets source="fox.bin">
+	<mesh name="fox1"><!-- camera: translation="100 100 250" orientation="-0.10018 0.24503 0.02546 0.96399" -->
+		<primitives count="1728">
+			<attributes range="0 76032" interleaved="false">
+				<attribute name="joints" format="R16G16B16A16_UINT" />
+				<attribute name="position" format="R32G32B32_SFLOAT" />
+				<attribute name="uv0" format="R32G32_SFLOAT" />
+				<attribute name="weights" format="R32G32B32A32_SFLOAT" />
+			</attributes>
+		</primitives>
+	</mesh>
+	<skeleton name="fox.sk0" range="76032 1536">
+		<joint translation="0 0 0" orientation="0 0 0 1" />
+		<joint parent="1" translation="0 0 0" orientation="-0.7071081 0 0 0.70710546" />
+		<joint parent="2" translation="0 26.748404 42.93817" orientation="0.12769094 -0.695482 -0.12769023 0.69548184" />
+		<joint parent="3" translation="12.850601 0 0" orientation="0 0 -0.5904158 0.8070993" />
+		<joint parent="4" translation="21.655754 -0.000118255615 0" orientation="0 0 0.017411953 0.9998484" />
+		<joint parent="5" translation="25.649143 0 0" orientation="0 0 0.30337915 0.95286995" />
+		<joint parent="6" translation="13.376961 0 0" orientation="0 0 -0.40028542 0.91639054" />
+		<joint parent="5" translation="18.677914 -4.2973404 6.967575" orientation="0.00046732734 -0.00044614848 -0.7121793 0.70199734" />
+		<joint parent="8" translation="23.045126 0 0" orientation="0 0 0.0371259 0.9993106" />
+		<joint parent="9" translation="19.350056 -0.14598656 0" orientation="-0.012037407 -0.00782221 0.46056232 0.88751125" />
+		<joint parent="5" translation="18.677917 -4.297344 -6.967987" orientation="0.00049726194 -0.00088219234 -0.7120875 0.70209" />
+		<joint parent="11" translation="23.045124 0 0" orientation="0 0 0.0371259 0.9993106" />
+		<joint parent="12" translation="19.350052 -0.14599037 0" orientation="0.016517915 0.01401374 0.4600756 0.8876155" />
+		<joint parent="3" translation="4.260376 15.958771 0" orientation="0 0 0.9818929 0.18943691" />
+		<joint parent="14" translation="12.411919 0 0" orientation="0 0 -0.06961717 0.9975738" />
+		<joint parent="15" translation="24.240322 0 0" orientation="0 0 -0.053832743 0.99854994" />
+		<joint parent="3" translation="4.8137703 5.1540184 -6.968006" orientation="0 -0.00017175225 0.9700159 -0.24304147" />
+		<joint parent="17" translation="18.944176 0 0" orientation="0 0 -0.36804378 0.92980844" />
+		<joint parent="18" translation="17.942812 0 0" orientation="0.0002484106 0 0.4584841 0.8887026" />
+		<joint parent="19" translation="15.779939 0 0" orientation="0 0 0.5472883 0.83694416" />
+		<joint parent="3" translation="4.813778 5.154026 6.9675636" orientation="0 0 0.9699586 -0.24327007" />
+		<joint parent="21" translation="18.944183 0 0" orientation="0 0 -0.3680438 0.92980844" />
+		<joint parent="22" translation="17.94281 0 0" orientation="-0.00015345456 0 0.45790938 0.88899887" />
+		<joint parent="23" translation="15.779936 0 0" orientation="0 0 0.5472883 0.83694416" />
+	</skeleton>
+	<animation name="Survey" range="77568 27904" keyframes="83">
+		<output target="orientation" bone="7" />
+		<output target="orientation" bone="6" />
+		<output target="orientation" bone="10" />
+		<output target="orientation" bone="9" />
+		<output target="orientation" bone="8" />
+		<output target="orientation" bone="13" />
+		<output target="orientation" bone="12" />
+		<output target="orientation" bone="11" />
+		<output target="orientation" bone="5" />
+		<output target="orientation" bone="4" />
+		<output target="orientation" bone="16" />
+		<output target="orientation" bone="15" />
+		<output target="orientation" bone="14" />
+		<output target="orientation" bone="19" />
+		<output target="orientation" bone="18" />
+		<output target="orientation" bone="17" />
+		<output target="orientation" bone="23" />
+		<output target="orientation" bone="22" />
+		<output target="orientation" bone="21" />
+		<output target="translation" bone="3" />
+		<output target="orientation" bone="3" />
+	</animation>
+	<animation name="Walk" range="105472 6064" keyframes="18">
+		<output target="orientation" bone="7" />
+		<output target="orientation" bone="6" />
+		<output target="orientation" bone="10" />
+		<output target="orientation" bone="9" />
+		<output target="orientation" bone="8" />
+		<output target="orientation" bone="13" />
+		<output target="orientation" bone="12" />
+		<output target="orientation" bone="11" />
+		<output target="orientation" bone="5" />
+		<output target="orientation" bone="4" />
+		<output target="orientation" bone="16" />
+		<output target="orientation" bone="15" />
+		<output target="orientation" bone="14" />
+		<output target="orientation" bone="19" />
+		<output target="orientation" bone="18" />
+		<output target="orientation" bone="17" />
+		<output target="orientation" bone="23" />
+		<output target="orientation" bone="22" />
+		<output target="orientation" bone="21" />
+		<output target="translation" bone="3" />
+		<output target="orientation" bone="3" />
+	</animation>
+	<animation name="Run" range="111536 8416" keyframes="25">
+		<output target="orientation" bone="7" />
+		<output target="orientation" bone="6" />
+		<output target="orientation" bone="10" />
+		<output target="orientation" bone="9" />
+		<output target="orientation" bone="8" />
+		<output target="orientation" bone="13" />
+		<output target="orientation" bone="12" />
+		<output target="orientation" bone="11" />
+		<output target="orientation" bone="5" />
+		<output target="orientation" bone="4" />
+		<output target="orientation" bone="16" />
+		<output target="orientation" bone="15" />
+		<output target="orientation" bone="14" />
+		<output target="orientation" bone="19" />
+		<output target="orientation" bone="18" />
+		<output target="orientation" bone="17" />
+		<output target="orientation" bone="23" />
+		<output target="orientation" bone="22" />
+		<output target="orientation" bone="21" />
+		<output target="translation" bone="3" />
+		<output target="orientation" bone="3" />
+	</animation>
+	<shader name="skfox">
+        <stage type="vert" source="/tg/shaders/fox.vert.spv" />
+        <stage type="frag" source="/tg/shaders/fox.frag.spv" />
+    </shader>
+	<material name="fox_material" shader="skfox">
+		<binding name="base_color_texture" type="image-sampler">fox.i0</binding>
+		<binding name="metallic_factor" type="float">0</binding>
+		<binding name="roughness_factor" type="float">0.58</binding>
+	</material>
+	<image name="fox.i0" usage="sampled" source="fox.i0.ktx2" />
+</assets>

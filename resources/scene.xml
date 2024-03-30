@@ -1,20 +1,20 @@
 <scene>
     <!-- Since we're using glTF models, we're using their coordinate system:
          right handed, Y is up. So +X is right, +Z is towards the camera. -->
-    <assets path="/tg/RiggedSimple.xml" />
+    <assets path="/tg/fox.xml" />
     <entity>
-        <geometry mesh="Cylinder" skeleton="Armature">
-            <material>Material_001-effect</material>
+        <geometry mesh="fox1" skeleton="fox.sk0">
+            <material>fox_material</material>
         </geometry>
         <rigidbody physics="off">
             <transform translation="0 0 0" />
         </rigidbody>
-        <animator initial="RiggedSimple.an0" />
+        <animator initial="Walk" />
     </entity>
     <entity>
         <camera />
         <rigidbody physics="off">
-            <transform translation="-15 0 0" orientation="0.5 -0.5 -0.5 0.5"/>
+            <transform translation="100 100 250" orientation="-0.10018 0.24503 0.02546 0.96399"/>
         </rigidbody>
     </entity>
 </scene>
