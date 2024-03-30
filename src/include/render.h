@@ -163,6 +163,7 @@ private:
 
     constexpr static size_t DS1_INSTANCES = 1, DS2_BUFFERS = 3;
     VkDescriptorSetLayout m_ds0_layout, m_ds1_layout;
+    std::array<VkPushConstantRange, 1> m_push_constant_layout;
     std::array<VkDescriptorPool, 2> m_ds01_pool;
     std::array<VkDescriptorSet, 2> m_ds0;
     std::array<std::array<VkDescriptorSet, DS1_INSTANCES>, 2> m_ds1;

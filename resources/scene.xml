@@ -1,20 +1,21 @@
 <scene>
     <!-- Since we're using glTF models, we're using their coordinate system:
          right handed, Y is up. So +X is right, +Z is towards the camera. -->
-    <assets path="/tg/fox.xml" />
+    <assets path="/tg/morph.xml" />
     <entity>
-        <geometry mesh="fox1" skeleton="fox.sk0">
-            <material>fox_material</material>
+        <geometry mesh="Cube">
+            <material>Base</material>
+            <material>TestMaterial</material>
         </geometry>
         <rigidbody physics="off">
             <transform translation="0 0 0" />
         </rigidbody>
-        <animator initial="Walk" />
+        <animator initial="TheWave" />
     </entity>
     <entity>
         <camera />
         <rigidbody physics="off">
-            <transform translation="100 100 250" orientation="-0.10018 0.24503 0.02546 0.96399"/>
+            <transform translation="0.000000 3.000000 4.000000" orientation="-0.229753 -0.000000 -0.000000 0.973249" />
         </rigidbody>
     </entity>
 </scene>

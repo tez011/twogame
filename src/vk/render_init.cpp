@@ -675,6 +675,8 @@ void Renderer::create_descriptor_sets()
         { static_cast<size_t>(DescriptorSetSlot::PositionDisplacements), VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT, &m_morph_sampler },
         { static_cast<size_t>(DescriptorSetSlot::NormalDisplacements), VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_VERTEX_BIT, &m_morph_sampler },
     };
+    m_push_constant_layout[0] = { VK_SHADER_STAGE_VERTEX_BIT, 0, 4 };
+
     VkDescriptorSetLayoutCreateInfo dsl_ci {};
     dsl_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dsl_ci.bindingCount = 0;
@@ -720,7 +722,8 @@ void Renderer::create_descriptor_sets()
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.setLayoutCount = plci_layout.size();
     plci.pSetLayouts = plci_layout.data();
-    plci.pushConstantRangeCount = 0;
+    plci.pushConstantRangeCount = m_push_constant_layout.size();
+    plci.pPushConstantRanges = m_push_constant_layout.data();
     VK_CHECK(vkCreatePipelineLayout(m_device, &plci, nullptr, &m_pipeline_layout));
 
     VkBufferCreateInfo buffer_ci {};
@@ -817,7 +820,7 @@ void Renderer::create_sampler()
     ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     ci.magFilter = ci.minFilter = VK_FILTER_LINEAR;
     ci.mipmapMode = m_mip_filter ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     if (m_device_features.features.samplerAnisotropy && m_requested_anisotropy > 0) {
         ci.anisotropyEnable = VK_TRUE;
         ci.maxAnisotropy = std::min(m_requested_anisotropy, m_device_limits.maxSamplerAnisotropy);
@@ -918,7 +921,8 @@ VkPipelineLayout Renderer::create_pipeline_layout(VkDescriptorSetLayout material
     plci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     plci.setLayoutCount = plci_layout.size();
     plci.pSetLayouts = plci_layout.data();
-    plci.pushConstantRangeCount = 0;
+    plci.pushConstantRangeCount = m_push_constant_layout.size();
+    plci.pPushConstantRanges = m_push_constant_layout.data();
     VK_CHECK(vkCreatePipelineLayout(m_device, &plci, nullptr, &layout));
     return layout;
 }

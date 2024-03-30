@@ -350,7 +350,7 @@ void Mesh::draw(VkCommandBuffer cmd, uint64_t frame_number, const std::vector<st
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, materials[i]->pipeline(this, i));
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, materials[i]->shader()->pipeline_layout(), 3, 1, &materials[i]->descriptor_set(frame_number % 2), 0, nullptr);
 
-        // vkCmdPushConstants(cmd, m_renderer.pipeline_layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &first_vertex);
+        vkCmdPushConstants(cmd, m_renderer.pipeline_layout(), VK_SHADER_STAGE_VERTEX_BIT, 0, 4, &first_vertex);
         vkCmdBindVertexBuffers(cmd, 0, m_primitives[i].bindings.size(), bound_buffers, m_primitives[i].binding_offsets.data());
         if (m_index_buffer_width == VK_INDEX_TYPE_NONE_KHR)
             vkCmdDraw(cmd, m_primitives[i].vertex_count, 1, 0, 0);

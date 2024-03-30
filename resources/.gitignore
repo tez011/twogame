@@ -1,3 +1,5 @@
 *.bin
 *.ktx
 *.ktx2
+
+shaders/

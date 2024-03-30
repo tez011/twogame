@@ -246,11 +246,14 @@ VkPipeline Shader::graphics_pipeline(const Mesh* mesh, const Material*, size_t p
     if (pit != m_graphics_pipelines.end())
         return pit->second;
 
-    std::vector<VkVertexInputAttributeDescription> vertex_attributes(pg.attributes);
-    for (size_t i = 0; i < vertex_attributes.size(); i++) {
-        auto location_it = m_input_attributes.find(pg.attribute_names[vertex_attributes[i].location]);
-        if (location_it != m_input_attributes.end())
-            vertex_attributes[i].location = location_it->second;
+    std::vector<VkVertexInputAttributeDescription> vertex_attributes;
+    vertex_attributes.reserve(pg.attributes.size());
+    for (size_t i = 0; i < pg.attributes.size(); i++) {
+        auto location_it = m_input_attributes.find(pg.attribute_names[pg.attributes[i].location]);
+        if (location_it != m_input_attributes.end()) {
+            VkVertexInputAttributeDescription& a = vertex_attributes.emplace_back(pg.attributes[i]);
+            a.location = location_it->second;
+        }
     }
 
     VkPipeline pipeline;

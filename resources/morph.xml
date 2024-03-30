@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<assets source="morph.bin">
+	<mesh name="Cube">
+		<primitives count="24">
+			<attributes range="0 960" interleaved="false">
+				<attribute name="normal" format="R32G32B32_SFLOAT" />
+				<attribute name="position" format="R32G32B32_SFLOAT" />
+				<attribute name="uv0" format="R32G32_SFLOAT" />
+				<attribute name="uv1" format="R32G32_SFLOAT" />
+			</attributes>
+			<indexes count="36" range="960 72" />
+			<displacements name="normal" range="1032 3072" />
+			<displacements name="position" range="4104 3072" />
+		</primitives>
+		<primitives count="1504">
+			<attributes range="7176 60160" interleaved="false">
+				<attribute name="normal" format="R32G32B32_SFLOAT" />
+				<attribute name="position" format="R32G32B32_SFLOAT" />
+				<attribute name="uv0" format="R32G32_SFLOAT" />
+				<attribute name="uv1" format="R32G32_SFLOAT" />
+			</attributes>
+			<indexes count="7200" range="67336 14400" />
+			<displacements name="normal" range="81736 192512" />
+			<displacements name="position" range="274248 192512" />
+		</primitives>
+		<shape-weights>0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000 0.0000</shape-weights>
+	</mesh>
+	<animation name="Individuals" range="466760 10116" keyframes="281" method="linear">
+		<output target="shape-weights" width="8" />
+	</animation>
+	<animation name="TheWave" range="476876 2124" keyframes="59" method="linear">
+		<output target="shape-weights" width="8" />
+	</animation>
+	<animation name="Pulse" range="479000 6876" keyframes="191" method="linear">
+		<output target="shape-weights" width="8" />
+	</animation>
+    <shader name="morph">
+        <stage type="vert" source="/tg/shaders/morph.vert.spv" />
+        <stage type="frag" source="/tg/shaders/morph.frag.spv" />
+    </shader>
+	<material name="Base" double-sided="true" shader="morph">
+		<binding name="base_color_texture" type="image-sampler">TinyGrid</binding>
+		<binding name="metallic_factor" type="float">0</binding>
+		<binding name="roughness_factor" type="float">0.4</binding>
+		<binding name="occlusion_texture" type="image-sampler">Base_AO</binding>
+		<binding name="occlusion_texture_coordinates" type="uint">1</binding>
+	</material>
+	<material name="TestMaterial" double-sided="true" shader="morph">
+		<binding name="base_color_texture" type="image-sampler">ColorSwatches</binding>
+		<binding name="metallic_factor" type="float">0</binding>
+		<binding name="roughness_factor" type="float">0.5</binding>
+	</material>
+	<image name="Base_AO" usage="sampled" source="morph.Base_AO.ktx2" />
+	<image name="TinyGrid" usage="sampled" source="morph.TinyGrid.ktx2" />
+	<image name="ColorSwatches" usage="sampled" source="morph.ColorSwatches.ktx2" />
+</assets>

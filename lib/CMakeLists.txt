@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 # ---- external dependencies ----
 CPMAddPackage(NAME cglm
-              VERSION 0.9.2
+              VERSION 0.9.3
               GIT_REPOSITORY https://github.com/recp/cglm.git
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "CGLM_SHARED OFF"
