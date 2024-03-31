@@ -53,8 +53,8 @@ void Renderer::draw(Scene* scene)
     }
 
     auto ps1i0 = static_cast<descriptor_storage::uniform_s1i0_t*>(m_ds1_buffers[0].details.pMappedData);
-    memcpy(&ps1i0[m_frame_number % 2].view, scene->camera_view().raw, sizeof(mat4));
-    memcpy(&ps1i0[m_frame_number % 2].proj, &m_projection, sizeof(mat4));
+    memcpy(ps1i0[m_frame_number % 2].view, scene->camera_view().raw, sizeof(mat4));
+    memcpy(ps1i0[m_frame_number % 2].proj, &m_projection, sizeof(mat4));
 
     VkCommandBuffer cbuf = m_command_buffers[m_frame_number % 2][static_cast<size_t>(CommandBuffer::RenderOneStage)];
     VkCommandBufferBeginInfo cbuf_begin {};

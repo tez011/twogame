@@ -9,7 +9,7 @@
 #include <entt/core/type_traits.hpp>
 #include <SDL.h>
 #include <spdlog/spdlog.h>
-#include "util.h"
+#include <volk.h>
 #include "vk_mem_alloc.h"
 
 #ifdef TWOGAME_DEBUG_BUILD
@@ -33,8 +33,66 @@
 
 class Twogame;
 
-namespace twogame::asset {
-class Shader;
+namespace twogame {
+class Renderer;
+}
+
+namespace twogame::vk {
+
+size_t format_width(VkFormat);
+
+typedef struct {
+    VkBuffer buffer;
+    VmaAllocation allocation;
+    VmaAllocationInfo details;
+} buffer;
+
+class BufferPool {
+    VmaAllocator m_allocator;
+    std::vector<buffer> m_buffers;
+    std::vector<bool> m_bits;
+    std::vector<bool>::iterator m_bits_it;
+    VkDeviceSize m_unit_size, m_count;
+    VkBufferUsageFlags m_usage;
+
+    void extend();
+
+public:
+    using index_t = uint32_t;
+    BufferPool(const Renderer&, VkBufferUsageFlags usage, size_t unit_size, size_t count = 0x4000);
+    ~BufferPool();
+
+    index_t allocate();
+    void free(index_t);
+
+    VkDeviceSize unit_size() const { return m_unit_size; }
+    void buffer_handle(index_t index, VkDescriptorBufferInfo& out) const;
+    void* buffer_memory(index_t index, size_t extra_offset = 0) const;
+};
+
+class DescriptorPool {
+private:
+    VkDevice m_device;
+    uint32_t m_max_sets;
+    std::vector<VkDescriptorPoolSize> m_sizes;
+
+    VkDescriptorSetLayout m_set_layout;
+    std::deque<VkDescriptorPool> m_pools, m_pools_full;
+    std::deque<VkDescriptorSet> m_free_list;
+
+    void extend();
+
+public:
+    DescriptorPool(const Renderer&, const VkDescriptorSetLayoutCreateInfo& layout_info, uint32_t max_sets = 1024);
+    ~DescriptorPool();
+
+    inline const VkDescriptorSetLayout& layout() const { return m_set_layout; }
+
+    int allocate(VkDescriptorSet* out, size_t count = 1);
+    void free(VkDescriptorSet* sets, size_t count = 1);
+    void reset();
+};
+
 }
 
 namespace twogame::vk_destructible {
@@ -82,8 +140,6 @@ namespace twogame {
 class Scene;
 
 class Renderer final {
-    friend class asset::Shader;
-
 public:
     constexpr static uint32_t API_VERSION = VK_API_VERSION_1_2;
 
@@ -233,7 +289,9 @@ public:
     const VkSampler& morph_sampler() const { return m_morph_sampler; }
     const VkPhysicalDeviceLimits& limits() const { return m_device_limits; }
     const VkPipelineLayout& pipeline_layout() const { return m_pipeline_layout; }
+    const VkPipelineCache& pipeline_cache() const { return m_pipeline_cache; }
     VkPipelineLayout create_pipeline_layout(VkDescriptorSetLayout material_layout) const;
+    VkPipeline create_pipeline(VkGraphicsPipelineCreateInfo&, size_t render_pass, size_t subpass) const;
 
     using perobject_descriptor_buffers_t = std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>;
     bool null_descriptor_enabled() const { return m_dummy_image != VK_NULL_HANDLE; }

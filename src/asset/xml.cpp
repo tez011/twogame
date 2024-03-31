@@ -2,7 +2,8 @@
 #include <cinttypes>
 #include <queue>
 #include <sstream>
-#include "asset.h"
+#include "util.h"
+#include "xml/asset.h"
 
 namespace twogame::xml::assets {
 
@@ -128,7 +129,7 @@ Mesh::Primitives::Attributes::Attributes(const pugi::xml_node& node)
             if (sscanf(it->value(), "%zu %zu", &m_range.first, &m_range.second) < 2)
                 throw Exception(node, "range");
         } else if (strcmp(it->name(), "interleaved") == 0) {
-            m_interleaved = xml::priv::parse_boolean(it->value());
+            util::parse<bool>(it->value(), m_interleaved);
         }
     }
     for (auto it = node.begin(); it != node.end(); ++it) {
@@ -272,8 +273,8 @@ Shader::Shader(const pugi::xml_node& node, const Assets& root)
 
 Skeleton::Joint::Joint(const pugi::xml_node& node)
     : m_parent(0)
-    , m_translation({ 0.f, 0.f, 0.f })
-    , m_orientation({ 0.f, 0.f, 0.f, 1.f })
+    , m_translation(GLMS_VEC3_ZERO)
+    , m_orientation(GLMS_QUAT_IDENTITY)
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "parent") == 0) {

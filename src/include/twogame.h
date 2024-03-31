@@ -4,13 +4,11 @@
 #include <list>
 #include <memory>
 #include <SDL.h>
-#include <util.h>
+#include "util.h"
 
 namespace twogame {
-
 class Renderer;
 class Scene;
-
 }
 
 class Twogame {

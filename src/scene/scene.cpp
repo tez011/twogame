@@ -1,10 +1,12 @@
+#define XML_DEFINE_DOCUMENT
 #include "scene.h"
 #include <list>
+#include <set>
 #include <ranges>
 #include <physfs.h>
 #include "render.h"
 #include "twogame.h"
-#include "xml.h"
+#include "xml/scene.h"
 
 template <class>
 inline constexpr bool variant_false_v = false;

@@ -41,7 +41,7 @@ CPMAddPackage(NAME physicsfs
                       "PHYSFS_ARCHIVE_MVL FALSE"
                       "PHYSFS_ARCHIVE_QPAK FALSE"
                       "PHYSFS_ARCHIVE_SLB FALSE"
-                      "PHYSFS_ARCHIVE_ISO9660 FALSE"
+                      "PHYSFS_ARCHIVE_ISO9660 TRUE"
                       "PHYSFS_ARCHIVE_VDF FALSE"
                       "PHYSFS_BUILD_TEST FALSE"
                       "PHYSFS_BUILD_DOCS FALSE"

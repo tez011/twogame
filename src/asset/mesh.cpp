@@ -2,6 +2,8 @@
 #include <xxhash.h>
 #include "asset.h"
 #include "render.h"
+#include "util.h"
+#include "xml/asset.h"
 
 namespace twogame::asset {
 

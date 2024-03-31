@@ -1,6 +1,8 @@
 #include <sstream>
 #include <physfs.h>
 #include "scene.h"
+#include "util.h"
+#include "xml/scene.h"
 
 namespace twogame::xml {
 
@@ -9,7 +11,7 @@ Scene::Entity::Geometry::BoundMaterial::BoundMaterial(const pugi::xml_node& node
 {
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "mutable") == 0)
-            m_immutable = !priv::parse_boolean(it->value());
+            util::parse<bool>(it->value(), m_immutable);
     }
 
     if (node.text())
@@ -43,7 +45,7 @@ Scene::Entity::Rigidbody::Rigidbody(const pugi::xml_node& node)
     for (auto it = node.attributes_begin(); it != node.attributes_end(); ++it) {
         if (strcmp(it->name(), "physics") == 0) {
             found_physics = true;
-            m_physics = priv::parse_boolean(it->value());
+            util::parse<bool>(it->value(), m_physics);
         }
     }
     for (auto it = node.begin(); it != node.end(); ++it) {

@@ -3,6 +3,7 @@
 #include "asset.h"
 #include "fast_float/fast_float.h"
 #include "render.h"
+#include "xml/asset.h"
 
 namespace twogame::asset {
 static_assert(sizeof(float) == 4);

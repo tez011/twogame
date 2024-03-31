@@ -1,10 +1,8 @@
-#include <memory>
-#include <sstream>
 #include <physfs.h>
 #include <spirv_reflect.h>
 #include "asset.h"
 #include "render.h"
-#include "xml.h"
+#include "xml/asset.h"
 
 static VkViewport viewport_state_viewport {};
 static VkRect2D viewport_state_scissor {};
@@ -207,7 +205,7 @@ Shader::Shader(const xml::assets::Shader& info, const AssetManager& manager)
         cci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         cci.stage = m_stages[0];
         cci.layout = m_pipeline_layout;
-        VK_CHECK(vkCreateComputePipelines(m_renderer.device(), m_renderer.m_pipeline_cache, 1, &cci, nullptr, &m_compute_pipeline));
+        VK_CHECK(vkCreateComputePipelines(m_renderer.device(), m_renderer.pipeline_cache(), 1, &cci, nullptr, &m_compute_pipeline));
     } else {
         m_compute_pipeline = VK_NULL_HANDLE;
     }
@@ -256,12 +254,9 @@ VkPipeline Shader::graphics_pipeline(const Mesh* mesh, const Material*, size_t p
         }
     }
 
-    VkPipeline pipeline;
     VkGraphicsPipelineCreateInfo createinfo {};
     VkPipelineVertexInputStateCreateInfo vertex_input_state {};
     VkPipelineInputAssemblyStateCreateInfo input_assembly_state {};
-    VkPipelineMultisampleStateCreateInfo multisample_state {};
-    VkPipelineRasterizationStateCreateInfo rasterization_state {};
     createinfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     createinfo.stageCount = m_stages.size();
     createinfo.pStages = m_stages.data();
@@ -269,14 +264,10 @@ VkPipeline Shader::graphics_pipeline(const Mesh* mesh, const Material*, size_t p
     createinfo.pInputAssemblyState = &input_assembly_state;
     createinfo.pTessellationState = &tessellation_state;
     createinfo.pViewportState = &viewport_state;
-    createinfo.pRasterizationState = &rasterization_state;
-    createinfo.pMultisampleState = &multisample_state;
     createinfo.pDepthStencilState = &depth_stencil_state;
     createinfo.pColorBlendState = &color_blend_state;
     createinfo.pDynamicState = &dynamic_state;
     createinfo.layout = m_pipeline_layout;
-    createinfo.renderPass = m_renderer.m_render_pass[0];
-    createinfo.subpass = 0;
     vertex_input_state.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input_state.vertexBindingDescriptionCount = pg.bindings.size();
     vertex_input_state.pVertexBindingDescriptions = pg.bindings.data();
@@ -284,19 +275,8 @@ VkPipeline Shader::graphics_pipeline(const Mesh* mesh, const Material*, size_t p
     vertex_input_state.pVertexAttributeDescriptions = vertex_attributes.data();
     input_assembly_state.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
     input_assembly_state.topology = mesh->primitive_topology();
-    multisample_state.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-    multisample_state.rasterizationSamples = static_cast<VkSampleCountFlagBits>(m_renderer.m_multisample_count),
-    multisample_state.sampleShadingEnable = m_renderer.m_sample_shading > 0 ? VK_TRUE : VK_FALSE;
-    multisample_state.minSampleShading = m_renderer.m_sample_shading;
-    multisample_state.pSampleMask = nullptr;
-    multisample_state.alphaToCoverageEnable = VK_FALSE;
-    multisample_state.alphaToOneEnable = VK_FALSE;
-    rasterization_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
-    rasterization_state.polygonMode = VK_POLYGON_MODE_FILL;
-    rasterization_state.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterization_state.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    rasterization_state.lineWidth = 1.f;
-    VK_CHECK(vkCreateGraphicsPipelines(m_renderer.device(), m_renderer.m_pipeline_cache, 1, &createinfo, nullptr, &pipeline));
+
+    VkPipeline pipeline = m_renderer.create_pipeline(createinfo, 0, 0);
     m_graphics_pipelines[pg.pipeline_parameter] = pipeline;
     return pipeline;
 }

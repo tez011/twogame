@@ -2,7 +2,8 @@
 #include <physfs.h>
 #include "asset.h"
 #include "render.h"
-#include "xml.h"
+#include "util.h"
+#include "xml/asset.h"
 
 struct ktx_mip_iterate_userdata {
     std::vector<VkBufferImageCopy>& regions;

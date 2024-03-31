@@ -5,7 +5,7 @@
 namespace twogame::vk {
 
 BufferPool::BufferPool(const Renderer& r, VkBufferUsageFlags usage, size_t unit_size, size_t count)
-    : m_renderer(r)
+    : m_allocator(r.allocator())
     , m_count(count)
     , m_usage(usage)
 {
@@ -21,7 +21,7 @@ BufferPool::BufferPool(const Renderer& r, VkBufferUsageFlags usage, size_t unit_
 BufferPool::~BufferPool()
 {
     for (auto it = m_buffers.begin(); it != m_buffers.end(); ++it) {
-        vmaDestroyBuffer(m_renderer.allocator(), it->buffer, it->allocation);
+        vmaDestroyBuffer(m_allocator, it->buffer, it->allocation);
     }
 }
 
@@ -37,7 +37,7 @@ void BufferPool::extend()
     alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
 
     auto& out = m_buffers.emplace_back();
-    VK_CHECK(vmaCreateBuffer(m_renderer.allocator(), &buffer_ci, &alloc_ci, &out.buffer, &out.allocation, &out.details));
+    VK_CHECK(vmaCreateBuffer(m_allocator, &buffer_ci, &alloc_ci, &out.buffer, &out.allocation, &out.details));
     m_bits.resize(m_bits.size() + m_count);
     m_bits_it = m_bits.end() - m_count;
 }

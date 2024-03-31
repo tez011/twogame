@@ -1,7 +1,8 @@
+#define XML_DEFINE_DOCUMENT
 #include <filesystem>
 #include <physfs.h>
 #include "asset.h"
-#include "xml.h"
+#include "xml/asset.h"
 
 namespace twogame::asset {
 

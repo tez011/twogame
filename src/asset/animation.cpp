@@ -1,7 +1,7 @@
 #include <algorithm>
 #include <physfs.h>
 #include "asset.h"
-#include "xml.h"
+#include "xml/asset.h"
 
 namespace twogame::asset {
 

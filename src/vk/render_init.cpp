@@ -975,6 +975,32 @@ VkPipelineLayout Renderer::create_pipeline_layout(VkDescriptorSetLayout material
     return layout;
 }
 
+VkPipeline Renderer::create_pipeline(VkGraphicsPipelineCreateInfo& pipeline_ci, size_t render_pass_index, size_t subpass_index) const
+{
+    VkPipeline pipeline;
+    VkPipelineRasterizationStateCreateInfo rasterization_state {};
+    VkPipelineMultisampleStateCreateInfo multisample_state {};
+    rasterization_state.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterization_state.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterization_state.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterization_state.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterization_state.lineWidth = 1.f;
+    multisample_state.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample_state.rasterizationSamples = static_cast<VkSampleCountFlagBits>(m_multisample_count),
+    multisample_state.sampleShadingEnable = m_sample_shading > 0 ? VK_TRUE : VK_FALSE;
+    multisample_state.minSampleShading = m_sample_shading;
+    multisample_state.pSampleMask = nullptr;
+    multisample_state.alphaToCoverageEnable = VK_FALSE;
+    multisample_state.alphaToOneEnable = VK_FALSE;
+
+    pipeline_ci.pRasterizationState = &rasterization_state;
+    pipeline_ci.pMultisampleState = &multisample_state;
+    pipeline_ci.renderPass = m_render_pass[render_pass_index];
+    pipeline_ci.subpass = subpass_index;
+    VK_CHECK(vkCreateGraphicsPipelines(m_device, m_pipeline_cache, 1, &pipeline_ci, nullptr, &pipeline));
+    return pipeline;
+}
+
 void Renderer::create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>& buffers)
 {
     m_ds2_pool->allocate(sets.data(), sets.size());

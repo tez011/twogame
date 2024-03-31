@@ -1,6 +1,6 @@
 #pragma once
 #include <cglm/struct.h>
-#include <entt/entt.hpp>
+#include <entt/entity/fwd.hpp>
 #include "asset.h"
 #include "render.h"
 
@@ -47,7 +47,7 @@ struct joints {
     std::vector<entt::entity> m_bones;
 };
 struct joint_mats {
-    std::vector<mat4s> m_mats; // globalJointTransform * inverseBindMatrix
+    std::vector<mat4s> m_mats;
 };
 struct joint_mats_dirty_0 { };
 struct joint_mats_dirty_1 { };
