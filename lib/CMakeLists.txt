@@ -87,7 +87,6 @@ CPMAddPackage(NAME xxhash
               DOWNLOAD_ONLY YES)
 
 # ---- library options ----
-add_compile_definitions($<$<CONFIG:DEBUG>:CGLM_DEFINE_PRINTS>)
 if(WIN32)
     set(VOLK_STATIC_DEFINES VK_USE_PLATFORM_WIN32_KHR)
 elseif(APPLE)

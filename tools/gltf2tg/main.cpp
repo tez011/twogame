@@ -25,6 +25,7 @@ Attempting to use this tool on a glTF with these features, or that requires
 #include <iostream>
 #include <queue>
 #include <set>
+#include <sstream>
 #include <cglm/struct.h>
 #include <nlohmann/json.hpp>
 #include <pugixml.hpp>
@@ -60,6 +61,7 @@ static const char* indexes_format(int component_type)
         return "uint32";
     default:
         assert(false);
+        return nullptr;
     }
 }
 
@@ -95,6 +97,7 @@ class Gltf {
                 return width * 4;
             default:
                 assert(false);
+                return 0;
             }
         }
 
@@ -820,7 +823,7 @@ nlohmann::json parse_gltf(const fs::path& infile)
 
             uint32_t buffer_length = gltf["buffers"][glb_buffer]["byteLength"];
             chunk_length = (header[0] << 0) | (header[1] << 8) | (header[2] << 16) | (header[3] << 24);
-            if (chunk_length != (buffer_length + 3) & ~3) // account for padding
+            if (chunk_length != ((buffer_length + 3) & ~3)) // account for padding
                 return json::value_t::discarded;
             gltf["buffers"][glb_buffer]["uri"] = fs::absolute(infile);
             gltf["buffers"][glb_buffer]["byteOffset"] = static_cast<size_t>(instream.tellg());
@@ -851,7 +854,7 @@ int main(int argc, char** argv)
     for (int i = 0; ++i < argc;) {
         if (strcmp(argv[i], "-o") == 0) {
             outparam = argv[++i];
-        } else if (argv[i], "--uastc" == 0) {
+        } else if (strcmp(argv[i], "--uastc") == 0) {
             enable_uastc = true;
         } else {
             infile = argv[i];

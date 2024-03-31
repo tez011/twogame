@@ -147,7 +147,7 @@ Scene::Scene(Twogame* tg, std::string_view path)
                     }
 
                     auto& geometry = m_registry.emplace<e_components::geometry>(e, mesh_it->second, skeleton, materials);
-                    m_twogame->renderer()->create_perobject_descriptors(geometry.m_descriptors, geometry.m_descriptor_buffers);
+                    m_twogame->renderer()->create_perobject_descriptors(geometry.m_descriptors, geometry.m_descriptor_buffers); // TODO: not all objects need all of these.
                     write_perobject_descriptors(e, geometry);
                 } else if constexpr (std::is_same_v<C, E::Camera>) {
                     m_registry.emplace<e_components::camera>(e);
@@ -345,12 +345,12 @@ void Scene::write_perobject_descriptors(entt::entity e, e_components::geometry& 
     };
     wimages[0] = {
         VK_NULL_HANDLE,
-        g.m_mesh->morph_position() ? g.m_mesh->morph_position() : m_twogame->renderer()->dummy_perobject_descriptors<VkImageView>(Renderer::DescriptorSetSlot::PositionDisplacements),
+        g.m_mesh->morph_position() ? g.m_mesh->morph_position() : m_twogame->renderer()->dummy_descriptor<Renderer::DescriptorSetSlot::PositionDisplacements>(),
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
     };
     wimages[1] = {
         VK_NULL_HANDLE,
-        g.m_mesh->morph_normal() ? g.m_mesh->morph_normal() : m_twogame->renderer()->dummy_perobject_descriptors<VkImageView>(Renderer::DescriptorSetSlot::NormalDisplacements),
+        g.m_mesh->morph_normal() ? g.m_mesh->morph_normal() : m_twogame->renderer()->dummy_descriptor<Renderer::DescriptorSetSlot::NormalDisplacements>(),
         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
     };
 

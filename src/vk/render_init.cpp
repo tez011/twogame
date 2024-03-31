@@ -93,6 +93,10 @@ Renderer::~Renderer()
     for (size_t i = 0; i < DS2_BUFFERS; i++)
         delete m_ds2_buffer_pool[i];
     delete m_ds2_pool;
+    if (m_dummy_image) {
+        vkDestroyImageView(m_device, m_dummy_image_view_2d, nullptr);
+        vmaDestroyImage(m_allocator, m_dummy_image, m_dummy_image_allocation);
+    }
 
     vkDestroyCommandPool(m_device, m_command_pool_transient, nullptr);
     vkDestroyFence(m_device, m_fence_assets_prepared, nullptr);
@@ -348,15 +352,20 @@ void Renderer::create_logical_device()
         spdlog::info("    with {}", e);
 #endif
 
+    // Enable all features that are available.
+    VkPhysicalDeviceFeatures2 device_features {};
+    VkPhysicalDeviceVulkan11Features device_features11 {};
+    VkPhysicalDeviceVulkan12Features device_features12 {};
+    VkPhysicalDeviceRobustness2FeaturesEXT device_features_robustness2 {};
+    device_features_robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+    device_features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    device_features12.pNext = &device_features_robustness2;
+    device_features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    device_features11.pNext = &device_features12;
+    device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    device_features.pNext = &device_features11;
+    vkGetPhysicalDeviceFeatures2(m_hwd, &device_features);
     memcpy(&m_device_limits, &properties.properties.limits, sizeof(VkPhysicalDeviceLimits));
-    m_device_robustness2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
-    m_device_features12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    m_device_features12.pNext = &m_device_robustness2_features;
-    m_device_features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-    m_device_features11.pNext = &m_device_features12;
-    m_device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    m_device_features.pNext = &m_device_features11;
-    vkGetPhysicalDeviceFeatures2(m_hwd, &m_device_features);
 
     std::array<VkDeviceQueueCreateInfo, 3> queue_createinfos {};
     std::vector<VkQueueFamilyProperties> qf_properties;
@@ -410,7 +419,7 @@ void Renderer::create_logical_device()
 
     VkDeviceCreateInfo createinfo {};
     createinfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-    createinfo.pNext = &m_device_features;
+    createinfo.pNext = &device_features;
     createinfo.queueCreateInfoCount = ++queue_family_count;
     createinfo.pQueueCreateInfos = queue_createinfos.data();
     createinfo.enabledExtensionCount = extensions.size();
@@ -750,12 +759,48 @@ void Renderer::create_descriptor_sets()
         dsb.offset = i * sizeof(descriptor_storage::uniform_s1i0_t);
         dsb.range = sizeof(descriptor_storage::uniform_s1i0_t);
     }
-
     vkUpdateDescriptorSets(m_device, writes.size(), writes.data(), 0, nullptr);
 
     m_ds2_buffer_pool[static_cast<size_t>(DescriptorSetSlot::ModelMatrix)] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, sizeof(mat4), 1024);
     m_ds2_buffer_pool[static_cast<size_t>(DescriptorSetSlot::BoneMatrices)] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 32 * sizeof(mat4), 1024);
     m_ds2_buffer_pool[static_cast<size_t>(DescriptorSetSlot::ShapeKeyWeights)] = new vk::BufferPool(*this, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, 64 * sizeof(float), 1024);
+
+    VkPhysicalDeviceRobustness2FeaturesEXT robustness2_features {};
+    robustness2_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+    VkPhysicalDeviceFeatures2 features {};
+    features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    features.pNext = &robustness2_features;
+    vkGetPhysicalDeviceFeatures2(m_hwd, &features);
+    if (robustness2_features.nullDescriptor) {
+        m_dummy_image = VK_NULL_HANDLE;
+        m_dummy_image_view_2d = VK_NULL_HANDLE;
+    } else {
+        VmaAllocationCreateInfo alloc_ci {};
+        VkImageCreateInfo image_ci {};
+        image_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_ci.imageType = VK_IMAGE_TYPE_2D;
+        image_ci.format = VK_FORMAT_R8G8B8A8_UINT;
+        image_ci.extent.width = image_ci.extent.height = image_ci.extent.depth = 1;
+        image_ci.mipLevels = 1;
+        image_ci.arrayLayers = 1;
+        image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image_ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        image_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        VK_CHECK(vmaCreateImage(m_allocator, &image_ci, &alloc_ci, &m_dummy_image, &m_dummy_image_allocation, nullptr));
+
+        VkImageViewCreateInfo view_ci {};
+        view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_ci.image = m_dummy_image;
+        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_ci.subresourceRange.baseArrayLayer = 0;
+        view_ci.subresourceRange.layerCount = VK_REMAINING_ARRAY_LAYERS;
+        view_ci.subresourceRange.baseMipLevel = 0;
+        view_ci.subresourceRange.levelCount = 1;
+        VK_CHECK(vkCreateImageView(m_device, &view_ci, nullptr, &m_dummy_image_view_2d));
+    }
 }
 
 void Renderer::create_command_buffers()
@@ -816,12 +861,15 @@ void Renderer::create_synchronizers()
 
 void Renderer::create_sampler()
 {
+    VkPhysicalDeviceFeatures features;
+    vkGetPhysicalDeviceFeatures(m_hwd, &features);
+
     VkSamplerCreateInfo ci {};
     ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     ci.magFilter = ci.minFilter = VK_FILTER_LINEAR;
     ci.mipmapMode = m_mip_filter ? VK_SAMPLER_MIPMAP_MODE_LINEAR : VK_SAMPLER_MIPMAP_MODE_NEAREST;
     ci.addressModeU = ci.addressModeV = ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-    if (m_device_features.features.samplerAnisotropy && m_requested_anisotropy > 0) {
+    if (features.samplerAnisotropy && m_requested_anisotropy > 0) {
         ci.anisotropyEnable = VK_TRUE;
         ci.maxAnisotropy = std::min(m_requested_anisotropy, m_device_limits.maxSamplerAnisotropy);
     }
@@ -955,12 +1003,18 @@ void Renderer::free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, 
     m_ds2_pool->free(sets.data(), sets.size());
 }
 
-uint64_t Renderer::dummy_perobject_descriptors_internal(DescriptorSetSlot slot) const
+uint64_t Renderer::dummy_descriptor(DescriptorSetSlot s) const
 {
-    if (m_device_robustness2_features.nullDescriptor)
-        return VK_NULL_HANDLE;
-    else
-        assert(false); // TODO
+    if (null_descriptor_enabled())
+        return 0;
+
+    switch (s) {
+    case DescriptorSetSlot::PositionDisplacements:
+    case DescriptorSetSlot::NormalDisplacements:
+        return reinterpret_cast<uint64_t>(m_dummy_image_view_2d);
+    default:
+        return 0;
+    }
 }
 
 }

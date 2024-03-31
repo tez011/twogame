@@ -1,5 +1,6 @@
 #include "util.h"
 #include <filesystem>
+#include <sstream>
 #include <physfs.h>
 #include <spdlog/spdlog.h>
 #include "xml.h"

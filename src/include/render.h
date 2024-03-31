@@ -6,6 +6,7 @@
 #include <queue>
 #include <vector>
 #include <cglm/mat4.h>
+#include <entt/core/type_traits.hpp>
 #include <SDL.h>
 #include <spdlog/spdlog.h>
 #include "util.h"
@@ -69,7 +70,6 @@ DESTRUCTIBLE_TYPES
 
 namespace twogame::descriptor_storage {
 
-// this structure has to match the buffer bound to set 1 instance 0 exactly.
 typedef struct {
     mat4 proj;
     mat4 view;
@@ -100,6 +100,7 @@ public:
     };
 
 private:
+    using Descriptor2SlotBindingTypes = entt::type_list<uint64_t, uint64_t, uint64_t, VkImageView, VkImageView>;
     static PFN_vkDestroyDebugUtilsMessengerEXT s_vkDestroyDebugUtilsMessenger;
 
     enum class QueueFamily {
@@ -128,10 +129,6 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator;
     VkPhysicalDeviceLimits m_device_limits {};
-    VkPhysicalDeviceFeatures2 m_device_features {};
-    VkPhysicalDeviceVulkan11Features m_device_features11 {};
-    VkPhysicalDeviceVulkan12Features m_device_features12 {};
-    VkPhysicalDeviceRobustness2FeaturesEXT m_device_robustness2_features {};
     VkSwapchainKHR m_swapchain;
     VkSurfaceFormatKHR m_swapchain_format;
     VkExtent2D m_swapchain_extent;
@@ -146,6 +143,9 @@ private:
     VkCommandBuffer m_cbuf_asset_prepare;
     VkSampler m_active_sampler;
     VkSampler m_morph_sampler;
+    VkImage m_dummy_image;
+    VmaAllocation m_dummy_image_allocation;
+    VkImageView m_dummy_image_view_2d;
 
     uint64_t m_frame_number = 0;
     bool m_mip_filter = true;
@@ -194,7 +194,7 @@ private:
     void release_freed_items(int bucket);
     void recreate_swapchain();
     void write_pipeline_cache();
-    uint64_t dummy_perobject_descriptors_internal(DescriptorSetSlot) const;
+    uint64_t dummy_descriptor(DescriptorSetSlot) const;
 
     template <typename T, vk_destructible::Types I = vk_destructible::Type<T>::t()>
     void defer_free(T i)
@@ -236,11 +236,15 @@ public:
     VkPipelineLayout create_pipeline_layout(VkDescriptorSetLayout material_layout) const;
 
     using perobject_descriptor_buffers_t = std::array<vk::BufferPool::index_t, DS2_BUFFERS * 2>;
+    bool null_descriptor_enabled() const { return m_dummy_image != VK_NULL_HANDLE; }
     const vk::BufferPool* perobject_buffer_pool(DescriptorSetSlot i) const { return m_ds2_buffer_pool[static_cast<size_t>(i)]; }
     void create_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, perobject_descriptor_buffers_t& buffers);
     void free_perobject_descriptors(std::array<VkDescriptorSet, 2>& sets, perobject_descriptor_buffers_t& buffers);
-    template <typename T>
-    T dummy_perobject_descriptors(DescriptorSetSlot s) const { return reinterpret_cast<T>(dummy_perobject_descriptors_internal(s)); }
+    template <DescriptorSetSlot SLOT, typename T = entt::type_list_element_t<static_cast<size_t>(SLOT), Descriptor2SlotBindingTypes>>
+    T dummy_descriptor() const
+    {
+        return reinterpret_cast<T>(dummy_descriptor(SLOT));
+    }
 };
 
 }

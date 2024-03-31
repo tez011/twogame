@@ -31,12 +31,12 @@ class Renderer;
 }
 
 namespace twogame::xml::assets {
-class Animation;
-class Image;
-class Material;
-class Mesh;
-class Shader;
-class Skeleton;
+struct Animation;
+struct Image;
+struct Material;
+struct Mesh;
+struct Shader;
+struct Skeleton;
 }
 
 namespace twogame::asset {

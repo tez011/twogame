@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cinttypes>
 #include <queue>
+#include <sstream>
 #include "asset.h"
 
 namespace twogame::xml::assets {
