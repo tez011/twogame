@@ -525,6 +525,20 @@ void Renderer::create_swapchain(VkSwapchainKHR old_swapchain)
 
 void Renderer::create_render_pass()
 {
+    auto depth_candidates = std::to_array<VkFormat>({ VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D16_UNORM_S8_UINT });
+    for (size_t i = 0; i < depth_candidates.size() && m_depth_format == VK_FORMAT_UNDEFINED; i++) {
+        VkImageFormatProperties props {};
+        VkResult res = vkGetPhysicalDeviceImageFormatProperties(m_hwd, depth_candidates[i], VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &props);
+        if (res == VK_SUCCESS)
+            m_depth_format = depth_candidates[i];
+        else if (res != VK_ERROR_FORMAT_NOT_SUPPORTED)
+            VK_CHECK(res);
+    }
+    if (m_depth_format == VK_FORMAT_UNDEFINED) {
+        spdlog::critical("no usable depth/stencil formats were found");
+        std::terminate();
+    }
+
     VkRenderPassCreateInfo createinfo {};
     std::array<VkAttachmentDescription, 2> attachments = {};
     std::array<VkAttachmentReference, 1> refs = {};
@@ -540,7 +554,7 @@ void Renderer::create_render_pass()
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-    attachments[1].format = VK_FORMAT_D24_UNORM_S8_UINT;
+    attachments[1].format = m_depth_format;
     attachments[1].samples = static_cast<VkSampleCountFlagBits>(m_multisample_count);
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
@@ -621,7 +635,7 @@ void Renderer::create_framebuffers()
             &m_render_att_views[i][static_cast<size_t>(RenderAttachment::ColorBuffer)]));
     }
 
-    i_createinfo.format = VK_FORMAT_D24_UNORM_S8_UINT;
+    i_createinfo.format = m_depth_format;
     i_createinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
     v_createinfo.format = i_createinfo.format;
     v_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;

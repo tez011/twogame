@@ -187,6 +187,7 @@ private:
     VkPhysicalDeviceLimits m_device_limits {};
     VkSwapchainKHR m_swapchain;
     VkSurfaceFormatKHR m_swapchain_format;
+    VkFormat m_depth_format = VK_FORMAT_UNDEFINED;
     VkExtent2D m_swapchain_extent;
     VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
     VkPipelineLayout m_pipeline_layout;

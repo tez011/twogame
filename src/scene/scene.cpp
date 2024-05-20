@@ -1,8 +1,8 @@
 #define XML_DEFINE_DOCUMENT
 #include "scene.h"
 #include <list>
-#include <set>
 #include <ranges>
+#include <set>
 #include <physfs.h>
 #include "render.h"
 #include "twogame.h"

@@ -47,12 +47,12 @@ public:
 };
 
 class IOException final : public std::exception {
-    std::string_view m_path;
+    std::string m_path;
     int m_errcode;
 
 public:
     IOException(std::string_view path, int errcode)
-        : m_path(path)
+        : m_path { path }
         , m_errcode(errcode)
     {
     }

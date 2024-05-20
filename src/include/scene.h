@@ -1,6 +1,6 @@
 #pragma once
-#include <entt/entity/registry.hpp>
 #include <entt/core/hashed_string.hpp>
+#include <entt/entity/registry.hpp>
 #include "asset.h"
 #include "components.h"
 
