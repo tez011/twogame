@@ -86,7 +86,7 @@ std::string resolve_path(std::string_view current, std::string_view relative)
         return std::string { relative };
 
     auto p = std::filesystem::path(current).parent_path();
-    auto append = [&p](const std::string_view& el) {
+    auto append = [&p](std::string_view el) {
         if (el == "..")
             p = p.parent_path();
         else if (el != ".")
@@ -106,7 +106,7 @@ std::string resolve_path(std::string_view current, std::string_view relative)
 }
 
 template <>
-bool parse(const std::string_view& name, bool& out)
+bool parse(std::string_view name, bool& out)
 {
     out = (name == "true" || name == "TRUE" || name == "yes");
     return out || name == "false" || name == "FALSE" || name == "no";

@@ -70,6 +70,6 @@ public:
 std::string resolve_path(std::string_view current, std::string_view relative);
 
 template <typename T>
-bool parse(const std::string_view&, T&);
+bool parse(std::string_view, T&);
 
 }

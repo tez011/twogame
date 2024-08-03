@@ -10,12 +10,12 @@ static_assert(sizeof(float) == 4);
 static const char* BINDING_SEPARATORS = " \n\t\v\f\r";
 
 template <typename T>
-static bool parse_binding_field(const std::string_view& text, T* dst)
+static bool parse_binding_field(std::string_view text, T* dst)
 {
     return fast_float::from_chars(text.data(), text.data() + text.size(), *dst).ec == std::errc();
 }
 
-static bool parse_binding_field(const std::string_view& text, const std::string_view& type, char* dst, size_t index)
+static bool parse_binding_field(std::string_view text, std::string_view type, char* dst, size_t index)
 {
     if (type == "int")
         return parse_binding_field(text, reinterpret_cast<uint32_t*>(dst) + index);

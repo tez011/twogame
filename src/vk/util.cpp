@@ -160,7 +160,7 @@ size_t format_width(VkFormat fmt)
 namespace twogame::util {
 
 template <>
-bool parse(const std::string_view& name, VkFormat& fmt)
+bool parse(std::string_view name, VkFormat& fmt)
 {
 #define X(FMT, SIZE, COMPONENTS) \
     if (name == #FMT) {          \
@@ -173,7 +173,7 @@ bool parse(const std::string_view& name, VkFormat& fmt)
 }
 
 template <>
-bool parse(const std::string_view& name, VkPrimitiveTopology& out)
+bool parse(std::string_view name, VkPrimitiveTopology& out)
 {
     P(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, "triangles");
     P(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST_WITH_ADJACENCY, "triangles-adj");
