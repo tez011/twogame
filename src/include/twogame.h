@@ -22,7 +22,7 @@ private:
     void initialize_filesystem(const char* argv0, const char* app_name);
 
 public:
-    Twogame(const char* argv0, const char* app_name);
+    Twogame(const char* argv0, const char* app_name, const char* scene);
     ~Twogame();
 
     inline twogame::Renderer* renderer() { return m_renderer; }

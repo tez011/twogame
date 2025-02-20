@@ -10,7 +10,7 @@
 
 static bool SDL_WAS_INITTED = false;
 
-Twogame::Twogame(const char* argv0, const char* app_name)
+Twogame::Twogame(const char* argv0, const char* app_name, const char* scene)
 {
     if (SDL_WAS_INITTED == false) {
         if (SDL_Init(SDL_INIT_EVERYTHING) != 0) {
@@ -32,7 +32,7 @@ Twogame::Twogame(const char* argv0, const char* app_name)
     }
 
     m_renderer = new twogame::Renderer(this, m_window);
-    m_current_scene = new twogame::Scene(this, "/tg/scene.xml");
+    m_current_scene = new twogame::Scene(this, scene ? scene : "/tg/scene.xml");
 }
 
 Twogame::~Twogame()

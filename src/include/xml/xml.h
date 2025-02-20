@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <sstream>
 #include <physfs.h>
 #include <pugixml.hpp>
 #include <spdlog/spdlog.h>
