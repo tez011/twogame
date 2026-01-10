@@ -255,7 +255,7 @@ static bool evaluate_physical_device(VkPhysicalDevice hwd, VkSurfaceKHR surface,
         return false;                                                                                      \
     }
     DEMAND_FEATURE(available_features.features, depthClamp);
-    DEMAND_FEATURE(available_features.features, sampleRateShading);
+    // DEMAND_FEATURE(available_features.features, sampleRateShading);
     if (has_portability_subset) {
         DEMAND_FEATURE(portability_features, constantAlphaColorBlendFactors);
         DEMAND_FEATURE(portability_features, events);
@@ -343,10 +343,13 @@ void Renderer::create_logical_device()
         }
     }
 
+    VkPhysicalDeviceDriverProperties driver {};
     VkPhysicalDeviceProperties2 properties {};
+    driver.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES;
     properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+    properties.pNext = &driver;
     vkGetPhysicalDeviceProperties2(m_hwd, &properties);
-    spdlog::info("selecting device {}", properties.properties.deviceName);
+    spdlog::info("selecting device {} via {}", properties.properties.deviceName, driver.driverName);
 #ifdef TWOGAME_DEBUG_BUILD
     for (auto& e : extensions)
         spdlog::info("    with {}", e);
