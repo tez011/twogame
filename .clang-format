@@ -1,0 +1,10 @@
+BasedOnStyle: WebKit
+ColumnLimit: 0
+IncludeCategories:
+  - Regex: '<[[:alnum:]_]+>'
+    Priority: 1
+  - Regex: '<.+>'
+    Priority: 2
+  - Regex: '.+'
+    Priority: 3
+SortIncludes: CaseInsensitive
