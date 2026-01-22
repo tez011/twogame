@@ -101,6 +101,7 @@ protected:
     inline constexpr VmaAllocator allocator() const { return r_host.m_allocator; }
     inline constexpr VkExtent2D swapchain_extent() const { return r_host.m_swapchain_extent; }
     inline constexpr VkFormat swapchain_format() const { return r_host.m_swapchain_format; }
+    inline constexpr VkFormat depth_format() const { return r_host.m_depth_format; }
     inline constexpr uint32_t queue_family_index(DisplayHost::QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
     inline constexpr uint32_t frame_number() const { return r_host.m_frame_number; }
 
@@ -120,11 +121,11 @@ public:
     virtual void recreate_framebuffers(uint32_t frame_number) = 0;
 };
 
-class TriangleRenderer final : public twogame::vk::IRenderer {
+class SimpleForwardRenderer final : public twogame::vk::IRenderer {
     struct Framebuffers {
-        VkImage color_buffer;
-        VkImageView color_buffer_view;
-        VmaAllocation color_buffer_mem;
+        VkImage color_buffer, depth_buffer;
+        VkImageView color_buffer_view, depth_buffer_view;
+        VmaAllocation color_buffer_mem, depth_buffer_mem;
         VkFramebuffer framebuffer;
 
         VkCommandPool command_pool;
@@ -143,9 +144,11 @@ class TriangleRenderer final : public twogame::vk::IRenderer {
     void create_framebuffer_sized_items();
     void create_framebuffers();
 
+    void destroy_framebuffer_sized_items(struct Framebuffers&);
+
 public:
-    TriangleRenderer(DisplayHost* host);
-    ~TriangleRenderer();
+    SimpleForwardRenderer(DisplayHost* host);
+    ~SimpleForwardRenderer();
 
     virtual Output draw();
     virtual void recreate_framebuffers(uint32_t frame_number);

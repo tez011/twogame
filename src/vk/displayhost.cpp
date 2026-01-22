@@ -446,7 +446,7 @@ bool DisplayHost::create_logical_device()
 
     VmaAllocatorCreateInfo allocator_ci {};
     VmaVulkanFunctions vfn {};
-    allocator_ci.flags = 0;
+    allocator_ci.flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT | VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     allocator_ci.physicalDevice = m_hwd;
     allocator_ci.device = m_device;
     allocator_ci.instance = m_instance;

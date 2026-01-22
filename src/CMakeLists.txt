@@ -4,7 +4,7 @@ add_library(twogame SHARED
     "init.cpp"
     "vk/allocator.cpp"
     "vk/displayhost.cpp"
-    "vk/triangle.cpp")
+    "vk/renderer.cpp")
 target_include_directories(twogame PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(twogame
     embedded_shaders

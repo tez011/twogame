@@ -4,7 +4,7 @@
 
 namespace twogame::vk {
 
-TriangleRenderer::TriangleRenderer(DisplayHost* host)
+SimpleForwardRenderer::SimpleForwardRenderer(DisplayHost* host)
     : twogame::vk::IRenderer(host)
 {
     create_graphics_pipeline();
@@ -14,33 +14,28 @@ TriangleRenderer::TriangleRenderer(DisplayHost* host)
     vkGetDeviceQueue(device(), queue_family_index(twogame::vk::DisplayHost::QueueType::Graphics), 0, &m_graphics_queue);
 }
 
-TriangleRenderer::~TriangleRenderer()
+SimpleForwardRenderer::~SimpleForwardRenderer()
 {
     vkDeviceWaitIdle(device());
 
-    vkDestroyFramebuffer(device(), m_fb_discard.framebuffer, nullptr);
-    vkDestroyImageView(device(), m_fb_discard.color_buffer_view, nullptr);
-    vkDestroyImage(device(), m_fb_discard.color_buffer, nullptr);
-    vmaFreeMemory(allocator(), m_fb_discard.color_buffer_mem);
+    destroy_framebuffer_sized_items(m_fb_discard);
     for (auto it = m_framebuffers.begin(); it != m_framebuffers.end(); ++it) {
         vkDestroySemaphore(device(), it->color_buffer_ready, nullptr);
         vkDestroyCommandPool(device(), it->command_pool, nullptr);
-        vkDestroyFramebuffer(device(), it->framebuffer, nullptr);
-        vkDestroyImageView(device(), it->color_buffer_view, nullptr);
-        vkDestroyImage(device(), it->color_buffer, nullptr);
-        vmaFreeMemory(allocator(), it->color_buffer_mem);
+        destroy_framebuffer_sized_items(*it);
     }
     vkDestroyPipeline(device(), m_pipeline, nullptr);
     vkDestroyPipelineLayout(device(), m_pipeline_layout, nullptr);
     vkDestroyRenderPass(device(), m_render_pass, nullptr);
 }
 
-void TriangleRenderer::create_graphics_pipeline()
+void SimpleForwardRenderer::create_graphics_pipeline()
 {
     VkRenderPassCreateInfo2 render_pass_ci {};
-    std::array<VkAttachmentDescription2, 1> attachments {};
+    std::array<VkAttachmentDescription2, 2> attachments {};
     std::array<VkSubpassDescription2, 1> subpasses {};
     std::array<VkAttachmentReference2, 1> p0_color_atts = {};
+    VkAttachmentReference2 p0_depth_att {};
     render_pass_ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
     render_pass_ci.attachmentCount = attachments.size();
     render_pass_ci.pAttachments = attachments.data();
@@ -55,13 +50,26 @@ void TriangleRenderer::create_graphics_pipeline()
     attachments[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    attachments[1].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
+    attachments[1].format = depth_format();
+    attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    attachments[1].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    attachments[1].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    attachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    attachments[1].finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     subpasses[0].sType = VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2;
     subpasses[0].pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
     subpasses[0].colorAttachmentCount = p0_color_atts.size();
     subpasses[0].pColorAttachments = p0_color_atts.data();
+    subpasses[0].pDepthStencilAttachment = &p0_depth_att;
     p0_color_atts[0].sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
     p0_color_atts[0].attachment = 0;
     p0_color_atts[0].layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    p0_depth_att.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
+    p0_depth_att.attachment = 1;
+    p0_depth_att.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     VK_DEMAND(vkCreateRenderPass2(device(), &render_pass_ci, nullptr, &m_render_pass));
 
     VkShaderModuleCreateInfo shader_ci {};
@@ -115,6 +123,14 @@ void TriangleRenderer::create_graphics_pipeline()
     multisample_info.sampleShadingEnable = VK_FALSE;
     multisample_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_info {};
+    depth_stencil_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil_info.depthTestEnable = VK_TRUE;
+    depth_stencil_info.depthWriteEnable = VK_TRUE;
+    depth_stencil_info.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depth_stencil_info.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil_info.stencilTestEnable = VK_FALSE;
+
     std::array<VkPipelineColorBlendAttachmentState, 1> color_blend_atts {};
     VkPipelineColorBlendStateCreateInfo color_blend_info {};
     color_blend_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
@@ -136,7 +152,7 @@ void TriangleRenderer::create_graphics_pipeline()
     pipeline_info.pViewportState = &viewport_info;
     pipeline_info.pRasterizationState = &rasterizer_info;
     pipeline_info.pMultisampleState = &multisample_info;
-    pipeline_info.pDepthStencilState = nullptr;
+    pipeline_info.pDepthStencilState = &depth_stencil_info;
     pipeline_info.pColorBlendState = &color_blend_info;
     pipeline_info.pDynamicState = &dynamic_state_info;
     pipeline_info.layout = m_pipeline_layout;
@@ -148,13 +164,13 @@ void TriangleRenderer::create_graphics_pipeline()
     vkDestroyShaderModule(device(), tri_frag_shader, nullptr);
 }
 
-void TriangleRenderer::create_framebuffer_sized_items()
+void SimpleForwardRenderer::create_framebuffer_sized_items()
 {
     VmaAllocationCreateInfo mem_createinfo {};
     VkImageCreateInfo i_createinfo {};
     VkImageViewCreateInfo iv_createinfo {};
     VkFramebufferCreateInfo fb_createinfo {};
-    std::array<VkImageView, 1> fb_attachments;
+    std::array<VkImageView, 2> fb_attachments;
     i_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     iv_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
     fb_createinfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
@@ -188,12 +204,22 @@ void TriangleRenderer::create_framebuffer_sized_items()
         VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &it->color_buffer, &it->color_buffer_mem, nullptr));
         iv_createinfo.image = it->color_buffer;
         VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &it->color_buffer_view));
+
+        i_createinfo.format = depth_format();
+        i_createinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        iv_createinfo.format = i_createinfo.format;
+        iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &it->depth_buffer, &it->depth_buffer_mem, nullptr));
+        iv_createinfo.image = it->depth_buffer;
+        VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &it->depth_buffer_view));
+
         fb_attachments[0] = it->color_buffer_view;
+        fb_attachments[1] = it->depth_buffer_view;
         VK_DEMAND(vkCreateFramebuffer(device(), &fb_createinfo, nullptr, &it->framebuffer));
     }
 }
 
-void TriangleRenderer::create_framebuffers()
+void SimpleForwardRenderer::create_framebuffers()
 {
     VkCommandPoolCreateInfo pool_createinfo {};
     VkCommandBufferAllocateInfo cbuf_allocinfo {};
@@ -214,7 +240,18 @@ void TriangleRenderer::create_framebuffers()
     create_framebuffer_sized_items();
 }
 
-IRenderer::Output TriangleRenderer::draw()
+void SimpleForwardRenderer::destroy_framebuffer_sized_items(struct Framebuffers& fb)
+{
+    vkDestroyFramebuffer(device(), fb.framebuffer, nullptr);
+    vkDestroyImageView(device(), fb.depth_buffer_view, nullptr);
+    vkDestroyImage(device(), fb.depth_buffer, nullptr);
+    vmaFreeMemory(allocator(), fb.depth_buffer_mem);
+    vkDestroyImageView(device(), fb.color_buffer_view, nullptr);
+    vkDestroyImage(device(), fb.color_buffer, nullptr);
+    vmaFreeMemory(allocator(), fb.color_buffer_mem);
+}
+
+IRenderer::Output SimpleForwardRenderer::draw()
 {
     const Framebuffers& atts = m_framebuffers[frame_number() % m_framebuffers.size()];
     vkResetCommandPool(device(), atts.command_pool, 0);
@@ -227,7 +264,7 @@ IRenderer::Output TriangleRenderer::draw()
     VkRenderPassBeginInfo render_pass_begin {};
     VkSubpassBeginInfo subpass_begin {};
     VkSubpassEndInfo subpass_end {};
-    std::array<VkClearValue, 1> clear_values = { { { { { 0.9375f, 0.6953125f, 0.734375f, 1.0f } } } } };
+    std::array<VkClearValue, 2> clear_values = { { { { { 0.9375f, 0.6953125f, 0.734375f, 1.0f } } }, { { { 1.0f, 0.0f } } } } };
     render_pass_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     render_pass_begin.renderPass = m_render_pass;
     render_pass_begin.framebuffer = atts.framebuffer;
@@ -258,6 +295,9 @@ IRenderer::Output TriangleRenderer::draw()
     vkCmdEndRenderPass2(atts.command_buffer[0], &subpass_end);
     VK_DEMAND(vkEndCommandBuffer(atts.command_buffer[0]));
 
+    // Everything above this line is scene logic. Everything below this line is renderer logic.
+    // Synchronize command buffers appropriately.
+
     VkSubmitInfo submit {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.waitSemaphoreCount = 0;
@@ -269,17 +309,14 @@ IRenderer::Output TriangleRenderer::draw()
     return IRenderer::Output(atts.color_buffer, atts.color_buffer_ready);
 }
 
-void TriangleRenderer::recreate_framebuffers(uint32_t frame_number)
+void SimpleForwardRenderer::recreate_framebuffers(uint32_t frame_number)
 {
-    vkDestroyFramebuffer(device(), m_fb_discard.framebuffer, nullptr);
-    vkDestroyImageView(device(), m_fb_discard.color_buffer_view, nullptr);
-    vkDestroyImage(device(), m_fb_discard.color_buffer, nullptr);
-    vmaFreeMemory(allocator(), m_fb_discard.color_buffer_mem);
-    vkDestroyFramebuffer(device(), m_framebuffers[frame_number % 2].framebuffer, nullptr);
-    vkDestroyImageView(device(), m_framebuffers[frame_number % 2].color_buffer_view, nullptr);
-    vkDestroyImage(device(), m_framebuffers[frame_number % 2].color_buffer, nullptr);
-    vmaFreeMemory(allocator(), m_framebuffers[frame_number % 2].color_buffer_mem);
+    destroy_framebuffer_sized_items(m_fb_discard);
+    destroy_framebuffer_sized_items(m_framebuffers[frame_number % 2]);
     m_fb_discard.framebuffer = m_framebuffers[(frame_number + 1) % 2].framebuffer;
+    m_fb_discard.depth_buffer_view = m_framebuffers[(frame_number + 1) % 2].depth_buffer_view;
+    m_fb_discard.depth_buffer = m_framebuffers[(frame_number + 1) % 2].depth_buffer;
+    m_fb_discard.depth_buffer_mem = m_framebuffers[(frame_number + 1) % 2].depth_buffer_mem;
     m_fb_discard.color_buffer_view = m_framebuffers[(frame_number + 1) % 2].color_buffer_view;
     m_fb_discard.color_buffer = m_framebuffers[(frame_number + 1) % 2].color_buffer;
     m_fb_discard.color_buffer_mem = m_framebuffers[(frame_number + 1) % 2].color_buffer_mem;

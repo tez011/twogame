@@ -12,7 +12,7 @@
 // fields that could be part of appstate
 struct AppState {
     twogame::vk::DisplayHost* host;
-    twogame::vk::TriangleRenderer* renderer;
+    twogame::vk::SimpleForwardRenderer* renderer;
 
     AppState()
         : host(nullptr)
@@ -41,7 +41,7 @@ SDL_AppResult SDL_AppInit(void** _appstate, int argc, char** argv)
 
     if ((appstate.host = twogame::vk::DisplayHost::create()) == nullptr)
         return SDL_APP_FAILURE;
-    appstate.renderer = new twogame::vk::TriangleRenderer(appstate.host);
+    appstate.renderer = new twogame::vk::SimpleForwardRenderer(appstate.host);
 
     return SDL_APP_CONTINUE;
 }
