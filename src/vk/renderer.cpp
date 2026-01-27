@@ -11,7 +11,7 @@ SimpleForwardRenderer::SimpleForwardRenderer(DisplayHost* host)
     create_framebuffers();
 
     memset(&m_fb_discard, 0, sizeof(Framebuffers));
-    vkGetDeviceQueue(device(), queue_family_index(twogame::vk::DisplayHost::QueueType::Graphics), 0, &m_graphics_queue);
+    vkGetDeviceQueue(device(), queue_family_index(QueueType::Graphics), 0, &m_graphics_queue);
 }
 
 SimpleForwardRenderer::~SimpleForwardRenderer()
@@ -99,7 +99,27 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     dynamic_state_info.pDynamicStates = dynamic_state_set.data();
 
     VkPipelineVertexInputStateCreateInfo vertex_input_info {};
+    std::array<VkVertexInputBindingDescription, 2> vertex_bindings;
+    std::array<VkVertexInputAttributeDescription, 2> vertex_attributes;
+    vertex_bindings[0].binding = 0;
+    vertex_bindings[0].stride = 3 * sizeof(float);
+    vertex_bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    vertex_bindings[1].binding = 1;
+    vertex_bindings[1].stride = 3 * sizeof(float);
+    vertex_bindings[1].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    vertex_attributes[0].binding = 0;
+    vertex_attributes[0].location = 0;
+    vertex_attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    vertex_attributes[0].offset = 0;
+    vertex_attributes[1].binding = 1;
+    vertex_attributes[1].location = 1;
+    vertex_attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    vertex_attributes[1].offset = 0;
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input_info.vertexBindingDescriptionCount = vertex_bindings.size();
+    vertex_input_info.pVertexBindingDescriptions = vertex_bindings.data();
+    vertex_input_info.vertexAttributeDescriptionCount = vertex_attributes.size();
+    vertex_input_info.pVertexAttributeDescriptions = vertex_attributes.data();
 
     VkPipelineInputAssemblyStateCreateInfo input_assy_info {};
     input_assy_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
@@ -180,9 +200,9 @@ void SimpleForwardRenderer::create_framebuffer_sized_items()
     fb_createinfo.width = swapchain_extent().width;
     fb_createinfo.height = swapchain_extent().height;
     fb_createinfo.layers = 1;
+    mem_createinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
     for (auto it = m_framebuffers.begin(); it != m_framebuffers.end(); ++it) {
-        i_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         i_createinfo.imageType = VK_IMAGE_TYPE_2D;
         i_createinfo.format = swapchain_format();
         i_createinfo.extent.width = swapchain_extent().width;
@@ -194,6 +214,7 @@ void SimpleForwardRenderer::create_framebuffer_sized_items()
         i_createinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         i_createinfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         i_createinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &it->color_buffer, &it->color_buffer_mem, nullptr));
         iv_createinfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
         iv_createinfo.format = i_createinfo.format;
         iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -201,15 +222,14 @@ void SimpleForwardRenderer::create_framebuffer_sized_items()
         iv_createinfo.subresourceRange.levelCount = 1;
         iv_createinfo.subresourceRange.baseArrayLayer = 0;
         iv_createinfo.subresourceRange.layerCount = 1;
-        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &it->color_buffer, &it->color_buffer_mem, nullptr));
         iv_createinfo.image = it->color_buffer;
         VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &it->color_buffer_view));
 
         i_createinfo.format = depth_format();
         i_createinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &it->depth_buffer, &it->depth_buffer_mem, nullptr));
         iv_createinfo.format = i_createinfo.format;
         iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &it->depth_buffer, &it->depth_buffer_mem, nullptr));
         iv_createinfo.image = it->depth_buffer;
         VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &it->depth_buffer_view));
 
@@ -228,7 +248,7 @@ void SimpleForwardRenderer::create_framebuffers()
     cbuf_allocinfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     sem_createinfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     for (auto it = m_framebuffers.begin(); it != m_framebuffers.end(); ++it) {
-        pool_createinfo.queueFamilyIndex = queue_family_index(twogame::vk::DisplayHost::QueueType::Graphics);
+        pool_createinfo.queueFamilyIndex = queue_family_index(QueueType::Graphics);
         VK_DEMAND(vkCreateCommandPool(device(), &pool_createinfo, nullptr, &it->command_pool));
         cbuf_allocinfo.commandPool = it->command_pool;
         cbuf_allocinfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -251,7 +271,7 @@ void SimpleForwardRenderer::destroy_framebuffer_sized_items(struct Framebuffers&
     vmaFreeMemory(allocator(), fb.color_buffer_mem);
 }
 
-IRenderer::Output SimpleForwardRenderer::draw()
+IRenderer::Output SimpleForwardRenderer::draw(IScene* scene)
 {
     const Framebuffers& atts = m_framebuffers[frame_number() % m_framebuffers.size()];
     vkResetCommandPool(device(), atts.command_pool, 0);
@@ -291,12 +311,10 @@ IRenderer::Output SimpleForwardRenderer::draw()
     vkCmdSetViewport(atts.command_buffer[0], 0, 1, &viewport);
     vkCmdSetScissor(atts.command_buffer[0], 0, 1, &scissor);
 
-    vkCmdDraw(atts.command_buffer[0], 3, 1, 0, 0);
+    scene->record_draw_calls(atts.command_buffer[0], frame_number());
+
     vkCmdEndRenderPass2(atts.command_buffer[0], &subpass_end);
     VK_DEMAND(vkEndCommandBuffer(atts.command_buffer[0]));
-
-    // Everything above this line is scene logic. Everything below this line is renderer logic.
-    // Synchronize command buffers appropriately.
 
     VkSubmitInfo submit {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;

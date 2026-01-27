@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.31)
 
-add_library(twogame SHARED
+add_library(twogame STATIC
     "init.cpp"
     "vk/allocator.cpp"
     "vk/displayhost.cpp"

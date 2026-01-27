@@ -28,19 +28,22 @@
 namespace twogame::vk {
 
 class IRenderer;
+class IScene;
+
+enum class QueueType {
+    Graphics,
+    Compute,
+    Transfer,
+    MAX_VALUE,
+};
 
 class DisplayHost final {
     friend class IRenderer;
+    friend class IScene;
 
 public:
     constexpr static uint32_t API_VERSION = VK_API_VERSION_1_3;
     constexpr static int SIMULTANEOUS_FRAMES = 2;
-    enum class QueueType {
-        Graphics,
-        Compute,
-        Transfer,
-        MAX_VALUE,
-    };
 
 private:
     SDL_Window* m_window = nullptr;
@@ -65,7 +68,6 @@ private:
 
     uint32_t m_frame_number;
 
-    DisplayHost() { }
     bool create_instance();
     bool create_debug_messenger();
     bool create_surface();
@@ -79,11 +81,30 @@ private:
     void present_image(uint32_t index, VkImage image, VkSemaphore signal);
 
 public:
-    static DisplayHost* create();
+    DisplayHost();
     ~DisplayHost();
 
     SDL_AppResult handle_event(SDL_Event*);
-    SDL_AppResult draw_frame(IRenderer*);
+    SDL_AppResult draw_frame(IRenderer*, IScene*);
+};
+
+class IScene {
+protected:
+    constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
+
+    twogame::vk::DisplayHost& r_host;
+    IScene(DisplayHost* host)
+        : r_host(*host)
+    {
+    }
+
+    inline constexpr VkDevice device() const { return r_host.m_device; }
+    inline constexpr VmaAllocator allocator() const { return r_host.m_allocator; }
+    inline constexpr uint32_t queue_family_index(QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
+
+public:
+    virtual ~IScene() { }
+    virtual void record_draw_calls(VkCommandBuffer commands, uint32_t frame_number) = 0;
 };
 
 class IRenderer {
@@ -102,7 +123,7 @@ protected:
     inline constexpr VkExtent2D swapchain_extent() const { return r_host.m_swapchain_extent; }
     inline constexpr VkFormat swapchain_format() const { return r_host.m_swapchain_format; }
     inline constexpr VkFormat depth_format() const { return r_host.m_depth_format; }
-    inline constexpr uint32_t queue_family_index(DisplayHost::QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
+    inline constexpr uint32_t queue_family_index(QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
     inline constexpr uint32_t frame_number() const { return r_host.m_frame_number; }
 
 public:
@@ -117,11 +138,11 @@ public:
     };
 
     virtual ~IRenderer() { }
-    virtual Output draw() = 0;
+    virtual Output draw(IScene* scene) = 0;
     virtual void recreate_framebuffers(uint32_t frame_number) = 0;
 };
 
-class SimpleForwardRenderer final : public twogame::vk::IRenderer {
+class SimpleForwardRenderer final : public IRenderer {
     struct Framebuffers {
         VkImage color_buffer, depth_buffer;
         VkImageView color_buffer_view, depth_buffer_view;
@@ -150,7 +171,7 @@ public:
     SimpleForwardRenderer(DisplayHost* host);
     ~SimpleForwardRenderer();
 
-    virtual Output draw();
+    virtual Output draw(IScene* scene);
     virtual void recreate_framebuffers(uint32_t frame_number);
 };
 

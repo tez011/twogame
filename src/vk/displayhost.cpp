@@ -3,6 +3,7 @@
 #include <cmath>
 #include <limits>
 #include <set>
+#include <stdexcept>
 #include <string_view>
 #include <SDL3/SDL_vulkan.h>
 #include <volk.h>
@@ -50,24 +51,18 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
 
 namespace twogame::vk {
 
-DisplayHost* DisplayHost::create()
+DisplayHost::DisplayHost()
 {
-    DisplayHost* impl = new DisplayHost;
+    bool success = create_instance()
+        && create_debug_messenger()
+        && create_surface()
+        && pick_physical_device()
+        && create_logical_device()
+        && create_swapchain(VK_NULL_HANDLE)
+        && create_syncobjects();
 
-    bool success = impl->create_instance()
-        && impl->create_debug_messenger()
-        && impl->create_surface()
-        && impl->pick_physical_device()
-        && impl->create_logical_device()
-        && impl->create_swapchain(VK_NULL_HANDLE)
-        && impl->create_syncobjects();
-
-    if (success) {
-        return impl;
-    } else {
-        delete impl;
-        return nullptr;
-    }
+    if (!success)
+        throw std::runtime_error("twogame::vk::DisplayHost");
 }
 
 DisplayHost::~DisplayHost()
@@ -127,6 +122,7 @@ bool DisplayHost::create_instance()
 
     return true;
 }
+
 bool DisplayHost::create_debug_messenger()
 {
 #if DEBUG_BUILD
@@ -309,12 +305,11 @@ bool DisplayHost::pick_physical_device()
         }
 
         VkDeviceSize memtotal = 0;
-        VkPhysicalDeviceMemoryProperties2 mem_props {};
-        mem_props.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
-        vkGetPhysicalDeviceMemoryProperties2(hwd, &mem_props);
-        for (uint32_t i = 0; i < mem_props.memoryProperties.memoryHeapCount; i++) {
-            if (mem_props.memoryProperties.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
-                memtotal += mem_props.memoryProperties.memoryHeaps[i].size;
+        VkPhysicalDeviceMemoryProperties mem_props {};
+        vkGetPhysicalDeviceMemoryProperties(hwd, &mem_props);
+        for (uint32_t i = 0; i < mem_props.memoryHeapCount; i++) {
+            if (mem_props.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) {
+                memtotal += mem_props.memoryHeaps[i].size;
             }
         }
 
@@ -452,7 +447,7 @@ bool DisplayHost::create_logical_device()
     allocator_ci.instance = m_instance;
     allocator_ci.vulkanApiVersion = API_VERSION;
     allocator_ci.pVulkanFunctions = &vfn;
-    vfn.vkGetInstanceProcAddr = vkGetInstanceProcAddr; // provided by volk loader
+    vfn.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     vfn.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VK_DEMAND(vmaCreateAllocator(&allocator_ci, &m_allocator));
 
@@ -703,7 +698,7 @@ SDL_AppResult DisplayHost::handle_event(SDL_Event* evt)
     }
 }
 
-SDL_AppResult DisplayHost::draw_frame(vk::IRenderer* renderer)
+SDL_AppResult DisplayHost::draw_frame(IRenderer* renderer, IScene* scene)
 {
     int32_t swapchain_slot = acquire_image();
     if (swapchain_slot < 0)
@@ -711,7 +706,7 @@ SDL_AppResult DisplayHost::draw_frame(vk::IRenderer* renderer)
     if (m_swapchain_recreated)
         renderer->recreate_framebuffers(m_frame_number);
 
-    IRenderer::Output output = renderer->draw();
+    IRenderer::Output output = renderer->draw(scene);
     present_image(swapchain_slot, output.image, output.signal);
     return SDL_APP_CONTINUE;
 }
