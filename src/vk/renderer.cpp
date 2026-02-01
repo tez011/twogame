@@ -4,29 +4,41 @@
 
 namespace twogame::vk {
 
+IRenderer::~IRenderer()
+{
+    for (auto it = m_pipeline.begin(); it != m_pipeline.end(); ++it)
+        vkDestroyPipeline(device(), *it, nullptr);
+    for (auto it = m_pipeline_layout.begin(); it != m_pipeline_layout.end(); ++it)
+        vkDestroyPipelineLayout(device(), *it, nullptr);
+    vkDestroyRenderPass(device(), m_render_pass, nullptr);
+}
+
 SimpleForwardRenderer::SimpleForwardRenderer(DisplayHost* host)
     : twogame::vk::IRenderer(host)
 {
-    create_graphics_pipeline();
-    create_framebuffers();
-
-    memset(&m_fb_discard, 0, sizeof(Framebuffers));
     vkGetDeviceQueue(device(), queue_family_index(QueueType::Graphics), 0, &m_graphics_queue);
+
+    std::apply([](auto&... subpasses) {
+        (memset(&subpasses, 0, sizeof(subpasses)), ...);
+    },
+        m_pass_discard);
+    create_graphics_pipeline();
+    for (auto it = m_frame_data.begin(); it != m_frame_data.end(); ++it) {
+        memset(&it->ctx, 0, sizeof(FrameContext));
+        create_frame_data(*it);
+    }
 }
 
 SimpleForwardRenderer::~SimpleForwardRenderer()
 {
     vkDeviceWaitIdle(device());
 
-    destroy_framebuffer_sized_items(m_fb_discard);
-    for (auto it = m_framebuffers.begin(); it != m_framebuffers.end(); ++it) {
-        vkDestroySemaphore(device(), it->color_buffer_ready, nullptr);
-        vkDestroyCommandPool(device(), it->command_pool, nullptr);
-        destroy_framebuffer_sized_items(*it);
+    destroy_subpass_data(m_pass_discard);
+    for (auto it = m_frame_data.begin(); it != m_frame_data.end(); ++it) {
+        destroy_subpass_data(it->pass);
+        vkDestroySemaphore(device(), it->ctx.ready, nullptr);
+        vkDestroyCommandPool(device(), it->ctx.command_pool, nullptr);
     }
-    vkDestroyPipeline(device(), m_pipeline, nullptr);
-    vkDestroyPipelineLayout(device(), m_pipeline_layout, nullptr);
-    vkDestroyRenderPass(device(), m_render_pass, nullptr);
 }
 
 void SimpleForwardRenderer::create_graphics_pipeline()
@@ -71,6 +83,8 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     p0_depth_att.attachment = 1;
     p0_depth_att.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     VK_DEMAND(vkCreateRenderPass2(device(), &render_pass_ci, nullptr, &m_render_pass));
+    m_pipeline_layout.resize(1);
+    m_pipeline.resize(1);
 
     VkShaderModuleCreateInfo shader_ci {};
     VkShaderModule tri_vert_shader, tri_frag_shader;
@@ -161,7 +175,7 @@ void SimpleForwardRenderer::create_graphics_pipeline()
 
     VkPipelineLayoutCreateInfo pipeline_layout_info {};
     pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    VK_DEMAND(vkCreatePipelineLayout(device(), &pipeline_layout_info, nullptr, &m_pipeline_layout));
+    VK_DEMAND(vkCreatePipelineLayout(device(), &pipeline_layout_info, nullptr, &m_pipeline_layout[0]));
 
     VkGraphicsPipelineCreateInfo pipeline_info {};
     pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -175,34 +189,56 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     pipeline_info.pDepthStencilState = &depth_stencil_info;
     pipeline_info.pColorBlendState = &color_blend_info;
     pipeline_info.pDynamicState = &dynamic_state_info;
-    pipeline_info.layout = m_pipeline_layout;
+    pipeline_info.layout = m_pipeline_layout[0];
     pipeline_info.renderPass = m_render_pass;
     pipeline_info.subpass = 0;
-    VK_DEMAND(vkCreateGraphicsPipelines(device(), VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &m_pipeline));
+    VK_DEMAND(vkCreateGraphicsPipelines(device(), VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &m_pipeline[0]));
 
     vkDestroyShaderModule(device(), tri_vert_shader, nullptr);
     vkDestroyShaderModule(device(), tri_frag_shader, nullptr);
 }
 
-void SimpleForwardRenderer::create_framebuffer_sized_items()
+void SimpleForwardRenderer::create_frame_data(FrameData& frame)
 {
-    VmaAllocationCreateInfo mem_createinfo {};
-    VkImageCreateInfo i_createinfo {};
-    VkImageViewCreateInfo iv_createinfo {};
-    VkFramebufferCreateInfo fb_createinfo {};
-    std::array<VkImageView, 2> fb_attachments;
-    i_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    iv_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    fb_createinfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-    fb_createinfo.renderPass = m_render_pass;
-    fb_createinfo.attachmentCount = fb_attachments.size();
-    fb_createinfo.pAttachments = fb_attachments.data();
-    fb_createinfo.width = swapchain_extent().width;
-    fb_createinfo.height = swapchain_extent().height;
-    fb_createinfo.layers = 1;
-    mem_createinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    VkCommandPoolCreateInfo pool_info {};
+    pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    pool_info.queueFamilyIndex = queue_family_index(QueueType::Graphics);
+    VK_DEMAND(vkCreateCommandPool(device(), &pool_info, nullptr, &frame.ctx.command_pool));
 
-    for (auto it = m_framebuffers.begin(); it != m_framebuffers.end(); ++it) {
+    VkCommandBufferAllocateInfo allocinfo {};
+    allocinfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocinfo.commandPool = frame.ctx.command_pool;
+    allocinfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocinfo.commandBufferCount = 1;
+    VK_DEMAND(vkAllocateCommandBuffers(device(), &allocinfo, &frame.ctx.command_container));
+
+    VkSemaphoreCreateInfo sem_info {};
+    sem_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    VK_DEMAND(vkCreateSemaphore(device(), &sem_info, nullptr, &frame.ctx.ready));
+
+    create_subpass_data(frame.pass);
+}
+
+void SimpleForwardRenderer::create_subpass_data(AllSubpasses& subpasses)
+{
+    {
+        auto& pass = std::get<Subpass0>(subpasses);
+        VmaAllocationCreateInfo mem_createinfo {};
+        VkImageCreateInfo i_createinfo {};
+        VkImageViewCreateInfo iv_createinfo {};
+        VkFramebufferCreateInfo fb_createinfo {};
+        std::array<VkImageView, 2> fb_attachments;
+
+        fb_createinfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+        fb_createinfo.renderPass = m_render_pass;
+        fb_createinfo.attachmentCount = fb_attachments.size();
+        fb_createinfo.pAttachments = fb_attachments.data();
+        fb_createinfo.width = swapchain_extent().width;
+        fb_createinfo.height = swapchain_extent().height;
+        fb_createinfo.layers = 1;
+
+        i_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         i_createinfo.imageType = VK_IMAGE_TYPE_2D;
         i_createinfo.format = swapchain_format();
         i_createinfo.extent.width = swapchain_extent().width;
@@ -214,7 +250,10 @@ void SimpleForwardRenderer::create_framebuffer_sized_items()
         i_createinfo.tiling = VK_IMAGE_TILING_OPTIMAL;
         i_createinfo.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
         i_createinfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &it->color_buffer, &it->color_buffer_mem, nullptr));
+        mem_createinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+        mem_createinfo.flags = VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT;
+        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &pass.color_buffer, &pass.color_buffer_mem, nullptr));
+        iv_createinfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
         iv_createinfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
         iv_createinfo.format = i_createinfo.format;
         iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -222,123 +261,87 @@ void SimpleForwardRenderer::create_framebuffer_sized_items()
         iv_createinfo.subresourceRange.levelCount = 1;
         iv_createinfo.subresourceRange.baseArrayLayer = 0;
         iv_createinfo.subresourceRange.layerCount = 1;
-        iv_createinfo.image = it->color_buffer;
-        VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &it->color_buffer_view));
+        iv_createinfo.image = pass.color_buffer;
+        VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &pass.color_buffer_view));
 
         i_createinfo.format = depth_format();
         i_createinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &it->depth_buffer, &it->depth_buffer_mem, nullptr));
+        VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &pass.depth_buffer, &pass.depth_buffer_mem, nullptr));
         iv_createinfo.format = i_createinfo.format;
         iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-        iv_createinfo.image = it->depth_buffer;
-        VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &it->depth_buffer_view));
+        iv_createinfo.image = pass.depth_buffer;
+        VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &pass.depth_buffer_view));
 
-        fb_attachments[0] = it->color_buffer_view;
-        fb_attachments[1] = it->depth_buffer_view;
-        VK_DEMAND(vkCreateFramebuffer(device(), &fb_createinfo, nullptr, &it->framebuffer));
+        fb_attachments = { pass.color_buffer_view, pass.depth_buffer_view };
+        VK_DEMAND(vkCreateFramebuffer(device(), &fb_createinfo, nullptr, &pass.framebuffer));
     }
 }
 
-void SimpleForwardRenderer::create_framebuffers()
+void SimpleForwardRenderer::destroy_subpass_data(AllSubpasses& subpasses)
 {
-    VkCommandPoolCreateInfo pool_createinfo {};
-    VkCommandBufferAllocateInfo cbuf_allocinfo {};
-    VkSemaphoreCreateInfo sem_createinfo {};
-    pool_createinfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    cbuf_allocinfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    sem_createinfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    for (auto it = m_framebuffers.begin(); it != m_framebuffers.end(); ++it) {
-        pool_createinfo.queueFamilyIndex = queue_family_index(QueueType::Graphics);
-        VK_DEMAND(vkCreateCommandPool(device(), &pool_createinfo, nullptr, &it->command_pool));
-        cbuf_allocinfo.commandPool = it->command_pool;
-        cbuf_allocinfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cbuf_allocinfo.commandBufferCount = it->command_buffer.size();
-        VK_DEMAND(vkAllocateCommandBuffers(device(), &cbuf_allocinfo, it->command_buffer.data()));
-        VK_DEMAND(vkCreateSemaphore(device(), &sem_createinfo, nullptr, &it->color_buffer_ready));
+    {
+        auto& pass = std::get<Subpass0>(subpasses);
+        vkDestroyFramebuffer(device(), pass.framebuffer, nullptr);
+        vkDestroyImageView(device(), pass.depth_buffer_view, nullptr);
+        vkDestroyImage(device(), pass.depth_buffer, nullptr);
+        vmaFreeMemory(allocator(), pass.depth_buffer_mem);
+        vkDestroyImageView(device(), pass.color_buffer_view, nullptr);
+        vkDestroyImage(device(), pass.color_buffer, nullptr);
+        vmaFreeMemory(allocator(), pass.color_buffer_mem);
     }
-
-    create_framebuffer_sized_items();
 }
 
-void SimpleForwardRenderer::destroy_framebuffer_sized_items(struct Framebuffers& fb)
+IRenderer::Output SimpleForwardRenderer::draw(SceneHost* stage, uint32_t frame_number)
 {
-    vkDestroyFramebuffer(device(), fb.framebuffer, nullptr);
-    vkDestroyImageView(device(), fb.depth_buffer_view, nullptr);
-    vkDestroyImage(device(), fb.depth_buffer, nullptr);
-    vmaFreeMemory(allocator(), fb.depth_buffer_mem);
-    vkDestroyImageView(device(), fb.color_buffer_view, nullptr);
-    vkDestroyImage(device(), fb.color_buffer, nullptr);
-    vmaFreeMemory(allocator(), fb.color_buffer_mem);
-}
-
-IRenderer::Output SimpleForwardRenderer::draw(IScene* scene)
-{
-    const Framebuffers& atts = m_framebuffers[frame_number() % m_framebuffers.size()];
-    vkResetCommandPool(device(), atts.command_pool, 0);
+    const FrameData& frame = m_frame_data[frame_number % m_frame_data.size()];
+    vkResetCommandPool(device(), frame.ctx.command_pool, 0);
 
     VkCommandBufferBeginInfo begin_info {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VK_DEMAND(vkBeginCommandBuffer(atts.command_buffer[0], &begin_info));
+    VK_DEMAND(vkBeginCommandBuffer(frame.ctx.command_container, &begin_info));
 
     VkRenderPassBeginInfo render_pass_begin {};
-    VkSubpassBeginInfo subpass_begin {};
-    VkSubpassEndInfo subpass_end {};
     std::array<VkClearValue, 2> clear_values = { { { { { 0.9375f, 0.6953125f, 0.734375f, 1.0f } } }, { { { 1.0f, 0.0f } } } } };
     render_pass_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     render_pass_begin.renderPass = m_render_pass;
-    render_pass_begin.framebuffer = atts.framebuffer;
+    render_pass_begin.framebuffer = std::get<0>(frame.pass).framebuffer;
     render_pass_begin.renderArea.offset = { 0, 0 };
     render_pass_begin.renderArea.extent = swapchain_extent();
     render_pass_begin.clearValueCount = clear_values.size();
     render_pass_begin.pClearValues = clear_values.data();
-    subpass_begin.sType = VK_STRUCTURE_TYPE_SUBPASS_BEGIN_INFO;
-    subpass_begin.contents = VK_SUBPASS_CONTENTS_INLINE;
-    subpass_end.sType = VK_STRUCTURE_TYPE_SUBPASS_END_INFO;
-    vkCmdBeginRenderPass2(atts.command_buffer[0], &render_pass_begin, &subpass_begin);
-    vkCmdBindPipeline(atts.command_buffer[0], VK_PIPELINE_BIND_POINT_GRAPHICS, m_pipeline);
+    stage->wait_frame(frame_number);
 
-    VkViewport viewport {};
-    VkRect2D scissor {};
-    viewport.x = 0;
-    viewport.y = 0;
-    viewport.width = swapchain_extent().width;
-    viewport.height = swapchain_extent().height;
-    viewport.minDepth = 0.f;
-    viewport.maxDepth = 1.f;
-    scissor.offset = { 0, 0 };
-    scissor.extent = swapchain_extent();
-    vkCmdSetViewport(atts.command_buffer[0], 0, 1, &viewport);
-    vkCmdSetScissor(atts.command_buffer[0], 0, 1, &scissor);
-
-    scene->record_draw_calls(atts.command_buffer[0], frame_number());
-
-    vkCmdEndRenderPass2(atts.command_buffer[0], &subpass_end);
-    VK_DEMAND(vkEndCommandBuffer(atts.command_buffer[0]));
+    for (size_t i = 0; i < std::tuple_size<AllSubpasses>::value; i++) {
+        if (i == 0)
+            vkCmdBeginRenderPass(frame.ctx.command_container, &render_pass_begin, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+        else
+            vkCmdNextSubpass(frame.ctx.command_container, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+        stage->execute_draws(frame.ctx.command_container, frame_number, i);
+    }
+    vkCmdEndRenderPass(frame.ctx.command_container);
+    VK_DEMAND(vkEndCommandBuffer(frame.ctx.command_container));
 
     VkSubmitInfo submit {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.waitSemaphoreCount = 0;
     submit.commandBufferCount = 1;
-    submit.pCommandBuffers = &atts.command_buffer[0];
+    submit.pCommandBuffers = &frame.ctx.command_container;
     submit.signalSemaphoreCount = 1;
-    submit.pSignalSemaphores = &atts.color_buffer_ready;
+    submit.pSignalSemaphores = &frame.ctx.ready;
     VK_DEMAND(vkQueueSubmit(m_graphics_queue, 1, &submit, VK_NULL_HANDLE));
-    return IRenderer::Output(atts.color_buffer, atts.color_buffer_ready);
+    return IRenderer::Output(std::get<0>(frame.pass).color_buffer, frame.ctx.ready);
 }
 
-void SimpleForwardRenderer::recreate_framebuffers(uint32_t frame_number)
+void SimpleForwardRenderer::recreate_subpass_data(uint32_t frame_number)
 {
-    destroy_framebuffer_sized_items(m_fb_discard);
-    destroy_framebuffer_sized_items(m_framebuffers[frame_number % 2]);
-    m_fb_discard.framebuffer = m_framebuffers[(frame_number + 1) % 2].framebuffer;
-    m_fb_discard.depth_buffer_view = m_framebuffers[(frame_number + 1) % 2].depth_buffer_view;
-    m_fb_discard.depth_buffer = m_framebuffers[(frame_number + 1) % 2].depth_buffer;
-    m_fb_discard.depth_buffer_mem = m_framebuffers[(frame_number + 1) % 2].depth_buffer_mem;
-    m_fb_discard.color_buffer_view = m_framebuffers[(frame_number + 1) % 2].color_buffer_view;
-    m_fb_discard.color_buffer = m_framebuffers[(frame_number + 1) % 2].color_buffer;
-    m_fb_discard.color_buffer_mem = m_framebuffers[(frame_number + 1) % 2].color_buffer_mem;
-    create_framebuffer_sized_items();
+    destroy_subpass_data(m_pass_discard);
+    destroy_subpass_data(m_frame_data[frame_number % 2].pass);
+
+    std::swap(m_pass_discard, m_frame_data[(frame_number + 1) % 2].pass);
+    for (auto it = m_frame_data.begin(); it != m_frame_data.end(); ++it) {
+        create_subpass_data(it->pass);
+    }
 }
 
 }

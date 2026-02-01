@@ -273,6 +273,8 @@ bool DisplayHost::pick_physical_device()
     }
 
         DEMAND_FEATURE(available_features.features, depthClamp);
+        DEMAND_FEATURE(available_features12, timelineSemaphore);
+        DEMAND_FEATURE(available_features12, uniformBufferStandardLayout);
         DEMAND_FEATURE(available_features13, synchronization2);
         if (has_portability_subset) {
             DEMAND_FEATURE(portability_features, constantAlphaColorBlendFactors);
@@ -441,7 +443,7 @@ bool DisplayHost::create_logical_device()
 
     VmaAllocatorCreateInfo allocator_ci {};
     VmaVulkanFunctions vfn {};
-    allocator_ci.flags = VMA_ALLOCATOR_CREATE_EXTERNALLY_SYNCHRONIZED_BIT | VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+    allocator_ci.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     allocator_ci.physicalDevice = m_hwd;
     allocator_ci.device = m_device;
     allocator_ci.instance = m_instance;
@@ -583,9 +585,13 @@ bool DisplayHost::recreate_swapchain()
 
 int32_t DisplayHost::acquire_image()
 {
-    VkFence fence = m_fence_frame[m_frame_number % SIMULTANEOUS_FRAMES];
+    uint32_t next_frame_number = m_frame_number.load(std::memory_order_relaxed) + 1;
+    VkFence fence = m_fence_frame[next_frame_number % SIMULTANEOUS_FRAMES];
     VK_DEMAND(vkWaitForFences(m_device, 1, &fence, VK_FALSE, UINT64_MAX));
     VK_DEMAND(vkResetFences(m_device, 1, &fence));
+    SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u END", next_frame_number - 1);
+    m_frame_number.store(next_frame_number, std::memory_order_release);
+    m_frame_number.notify_all();
 
     VkResult res;
     uint32_t index;
@@ -599,6 +605,7 @@ int32_t DisplayHost::acquire_image()
     } while (res == VK_ERROR_OUT_OF_DATE_KHR);
 
     if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) {
+        SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u BEGIN -> I%u\n", m_frame_number.load(std::memory_order_relaxed), index);
         return index;
     } else {
         SDL_LogCritical(SDL_LOG_CATEGORY_GPU, "failed to acquire swapchain image: %s", string_VkResult(res));
@@ -612,8 +619,6 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
     vkGetDeviceQueue(m_device, m_queue_family_indexes[static_cast<size_t>(QueueType::Graphics)], 0, &queue);
 
     VkCommandBuffer present_commands = m_present_commands[m_frame_number % SIMULTANEOUS_FRAMES];
-    vkResetCommandBuffer(present_commands, 0);
-
     VkCommandBufferBeginInfo begin_info {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -676,38 +681,21 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
     } else if (res != VK_SUCCESS) {
         std::abort();
     }
-
-    m_frame_number++;
 }
 
-SDL_AppResult DisplayHost::handle_event(SDL_Event* evt)
-{
-    switch (evt->type) {
-    case SDL_EVENT_QUIT:
-        return SDL_APP_SUCCESS;
-    case SDL_EVENT_WINDOW_HIDDEN:
-        while (evt->type != SDL_EVENT_WINDOW_EXPOSED)
-            SDL_WaitEvent(evt);
-        return SDL_APP_CONTINUE;
-    case SDL_EVENT_WINDOW_MINIMIZED:
-        while (evt->type != SDL_EVENT_WINDOW_RESTORED)
-            SDL_WaitEvent(evt);
-        return SDL_APP_CONTINUE;
-    default:
-        return SDL_APP_CONTINUE;
-    }
-}
-
-SDL_AppResult DisplayHost::draw_frame(IRenderer* renderer, IScene* scene)
+SDL_AppResult DisplayHost::draw_frame(IRenderer* renderer, SceneHost* stage)
 {
     int32_t swapchain_slot = acquire_image();
     if (swapchain_slot < 0)
         return SDL_APP_FAILURE;
-    if (m_swapchain_recreated)
-        renderer->recreate_framebuffers(m_frame_number);
+    if (m_swapchain_recreated) {
+        renderer->recreate_subpass_data(m_frame_number);
+        m_swapchain_recreated = false;
+    }
 
-    IRenderer::Output output = renderer->draw(scene);
+    IRenderer::Output output = renderer->draw(stage, m_frame_number);
     present_image(swapchain_slot, output.image, output.signal);
+
     return SDL_APP_CONTINUE;
 }
 

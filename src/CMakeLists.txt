@@ -4,14 +4,14 @@ add_library(twogame STATIC
     "init.cpp"
     "vk/allocator.cpp"
     "vk/displayhost.cpp"
-    "vk/renderer.cpp")
+    "vk/renderer.cpp"
+    "vk/scene.cpp")
 target_include_directories(twogame PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(twogame
     embedded_shaders
     ktx_read
     physfs
     SDL3::SDL3
-    spirv-reflect-static
     Vulkan::Vulkan
     Vulkan::volk
     VulkanMemoryAllocator)

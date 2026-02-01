@@ -26,14 +26,6 @@ CPMAddPackage(NAME pugixml
               GIT_REPOSITORY https://github.com/zeux/pugixml.git
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "BUILD_SHARED_LIBS OFF")
-CPMAddPackage(NAME spirvreflect
-              VERSION 1.4.335.0
-              GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Reflect.git
-              GIT_TAG vulkan-sdk-1.4.335.0
-              EXCLUDE_FROM_ALL TRUE
-              OPTIONS "SPIRV_REFLECT_EXECUTABLE OFF"
-                      "SPIRV_REFLECT_EXAMPLES OFF"
-                      "SPIRV_REFLECT_STATIC_LIB ON")
 CPMAddPackage(NAME vulkanmemoryallocator
               VERSION 3.3.0
               GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
