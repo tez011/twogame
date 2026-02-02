@@ -1,15 +1,15 @@
 #define VK_ENABLE_BETA_EXTENSIONS
 #include <algorithm>
-#include <cmath>
-#include <limits>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <set>
-#include <stdexcept>
-#include <string_view>
+#include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
 #include <volk.h>
 #include <vulkan/vulkan_metal.h>
-#include "twogame.h"
-#include "twogame_vk.h"
+#include "render.h"
 
 #ifdef DEBUG_BUILD
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;

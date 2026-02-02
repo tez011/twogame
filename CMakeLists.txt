@@ -73,5 +73,3 @@ include_directories(SYSTEM "${Vulkan_INCLUDE_DIR}/volk")
 add_subdirectory(lib)
 add_subdirectory(shaders)
 add_subdirectory(src)
-
-add_subdirectory(demo)

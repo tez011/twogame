@@ -1,6 +1,5 @@
+#include "render.h"
 #include "shaders.h"
-#include "twogame.h"
-#include "twogame_vk.h"
 
 namespace twogame::vk {
 

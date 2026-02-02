@@ -1,12 +1,13 @@
 cmake_minimum_required(VERSION 3.31)
 
-add_library(twogame STATIC
-    "init.cpp"
+add_executable(twogame
+    "main.cpp"
     "vk/allocator.cpp"
     "vk/displayhost.cpp"
     "vk/renderer.cpp"
     "vk/scene.cpp")
 target_include_directories(twogame PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_include_directories(twogame PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(twogame
     embedded_shaders
     ktx_read

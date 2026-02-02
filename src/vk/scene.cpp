@@ -1,6 +1,5 @@
-#include "twogame.h"
-#include "twogame_vk.h"
 #include <cinttypes>
+#include "render.h"
 
 namespace twogame::vk {
 
