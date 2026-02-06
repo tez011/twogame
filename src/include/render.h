@@ -2,10 +2,10 @@
 #define VK_NO_PROTOTYPES
 #include <array>
 #include <atomic>
+#include <list>
 #include <queue>
 #include <span>
 #include <thread>
-#include <unordered_map>
 #include <vector>
 #include <SDL3/SDL.h>
 #include <volk.h>
@@ -100,16 +100,20 @@ public:
 
 class SceneHost final {
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
+    struct QData {
+        IScene* scene;
+        uint64_t ticket;
+        VkCommandBuffer commands;
+    };
 
     std::atomic<IScene*> m_active_scene;
     std::atomic_uint32_t m_frame_number = 0;
-    IScene* m_requested_scene;
+    QData* m_requested_scene = nullptr;
 
     // Owned by scene thread
     std::thread m_scene_host;
-    std::unordered_map<IScene*, uint64_t> m_backlog;
-    std::queue<std::pair<IScene*, uint64_t>> m_purge_queue;
-    std::queue<std::pair<uint64_t, VkCommandBuffer>> m_inuse_commands;
+    std::list<QData> m_prepare_scenes;
+    std::queue<std::pair<IScene*, uint64_t>> m_purge_queue; /** Scenes are purged if the frame number has advanced past the given frame. */
     std::stack<VkCommandBuffer> m_spare_commands;
     uint64_t m_max_ticket;
     bool m_active;
@@ -121,12 +125,6 @@ class SceneHost final {
     VkSemaphore m_timeline;
 
     std::array<std::thread, 2> m_builders;
-
-    struct QData {
-        IScene* scene;
-        uint64_t ticket;
-        VkCommandBuffer commands;
-    };
     MPMCQ<QData, 8> m_worker_queue, m_render_queue;
     MPMCQ<SDL_Event, 320> m_event_queue;
 
@@ -137,8 +135,11 @@ public:
     SceneHost(IRenderer* renderer, IScene* initial);
     ~SceneHost();
 
-    bool add(IScene* scene);
-    void switch_to(IScene*);
+    /** Enqueue a scene for preparation.
+     * @return the ticket number, or 0 if enqueueing failed.
+     */
+    uint64_t add(IScene* scene);
+    void set_next_scene(uint64_t ticket);
     void wait_frame(uint32_t frame_number);
     void push_event(SDL_Event*);
     void tick();
@@ -209,6 +210,7 @@ protected:
 public:
     virtual ~IScene() { }
     virtual void construct(IRenderer*, VkCommandBuffer prepare_commands) = 0;
+    virtual void cleanup_staging() = 0;
     virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
     virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
     virtual void record_commands(IRenderer*, uint32_t frame_number) = 0;

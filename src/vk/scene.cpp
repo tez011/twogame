@@ -1,11 +1,12 @@
 #include <cinttypes>
+#include <set>
 #include "render.h"
 
 namespace twogame::vk {
 
 SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     : m_active_scene(nullptr)
-    , m_requested_scene(initial)
+    , m_requested_scene(nullptr)
     , m_max_ticket(1)
     , m_active(true)
     , r_renderer(renderer)
@@ -43,8 +44,7 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     VK_DEMAND(vkBeginCommandBuffer(spare_commands[0], &begin_info));
     initial->construct(r_renderer, spare_commands[0]);
     vkEndCommandBuffer(spare_commands[0]);
-    m_backlog[initial] = 1;
-    m_inuse_commands.emplace(1, spare_commands[0]);
+    m_requested_scene = &m_prepare_scenes.emplace_back(initial, 1, spare_commands[0]);
 
     VkSubmitInfo submit {};
     VkTimelineSemaphoreSubmitInfo timeline_info {};
@@ -67,24 +67,28 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
 
 SceneHost::~SceneHost()
 {
+    VkDevice device = r_renderer->r_host.m_device;
     QData terminate_payload { nullptr, 0, VK_NULL_HANDLE };
     m_active = false;
     r_renderer->r_host.m_frame_number = UINT32_MAX;
     r_renderer->r_host.m_frame_number.notify_all();
     for (size_t i = 0; i < 2 * m_builders.size(); i++)
         m_worker_queue.push(terminate_payload);
+
+    std::set<IScene*> deleted_scenes;
+    if (m_requested_scene && m_requested_scene->scene)
+        deleted_scenes.insert(m_requested_scene->scene);
+    if (m_active_scene)
+        deleted_scenes.insert(m_active_scene);
+    for (auto it = m_prepare_scenes.begin(); it != m_prepare_scenes.end(); ++it)
+        deleted_scenes.insert(it->scene);
     for (auto it = m_builders.begin(); it != m_builders.end(); ++it)
         it->join();
     m_scene_host.join();
 
-    VkDevice device = r_renderer->r_host.m_device;
     vkDeviceWaitIdle(device);
-    if (m_requested_scene != nullptr && m_backlog.count(m_requested_scene) == 0)
-        delete m_requested_scene;
-    if (m_active_scene != nullptr && m_backlog.count(m_active_scene) == 0)
-        delete m_active_scene;
-    for (auto it = m_backlog.begin(); it != m_backlog.end(); ++it)
-        delete it->first;
+    for (auto it = deleted_scenes.begin(); it != deleted_scenes.end(); ++it)
+        delete *it;
 
     vkDestroyCommandPool(device, m_command_pool, nullptr);
     vkDestroySemaphore(device, m_timeline, nullptr);
@@ -93,7 +97,7 @@ SceneHost::~SceneHost()
 void SceneHost::scene_loop()
 {
     DisplayHost& host = r_renderer->r_host;
-    std::array<Uint64, 2> frame_time = { SDL_GetTicks(), 0 };
+    std::array<uint64_t, 2> frame_time = { SDL_GetTicks(), 0 };
     while (m_active) {
         uint32_t frame_number = m_frame_number.load(std::memory_order_relaxed) + 1;
         uint64_t timeline_value = 0;
@@ -109,12 +113,9 @@ void SceneHost::scene_loop()
         SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "scene  thread: F%u BEGIN", frame_number);
 
         IScene* scene = m_active_scene.load(std::memory_order_acquire);
-        if (m_requested_scene) {
-            auto requested_scene_ticket = m_backlog.find(m_requested_scene);
-            if (requested_scene_ticket != m_backlog.end() && requested_scene_ticket->second <= timeline_value) {
-                // The requested scene is ready. Execute that one.
-                scene = requested_scene_ticket->first;
-            }
+        if (m_requested_scene && m_requested_scene->ticket <= timeline_value) {
+            // The requested scene is ready. Execute that one.
+            scene = m_requested_scene->scene;
         }
         if (scene) {
             // Execute the current scene, and update the frame number and notify the render thread when commands are recorded
@@ -126,7 +127,7 @@ void SceneHost::scene_loop()
             scene->record_commands(r_renderer, frame_number);
             frame_time[0] = frame_time[1];
         }
-        if (scene == m_requested_scene) {
+        if (m_requested_scene && scene == m_requested_scene->scene) {
             // If we executed the requested scene, it should now be active.
             IScene* last_scene = m_active_scene.exchange(scene, std::memory_order_release);
             m_requested_scene = nullptr;
@@ -137,16 +138,19 @@ void SceneHost::scene_loop()
         m_frame_number.store(frame_number, std::memory_order_release);
         m_frame_number.notify_all();
 
-        while (m_inuse_commands.empty() == false && m_inuse_commands.front().first <= timeline_value) {
-            vkResetCommandBuffer(m_inuse_commands.front().second, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
-            m_spare_commands.push(m_inuse_commands.front().second);
-            m_inuse_commands.pop();
+        for (auto it = m_prepare_scenes.begin(); it != m_prepare_scenes.end(); ++it) {
+            if (it->ticket <= timeline_value && it->commands != VK_NULL_HANDLE) {
+                vkResetCommandBuffer(it->commands, VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
+                m_spare_commands.push(it->commands);
+                it->scene->cleanup_staging();
+                it->commands = VK_NULL_HANDLE;
+            }
         }
-
         while (m_purge_queue.empty() == false && m_purge_queue.front().second < frame_number) {
-            QData payload = { m_purge_queue.front().first, 0, VK_NULL_HANDLE };
-            m_backlog.erase(payload.scene);
+            IScene* purge_scene = m_purge_queue.front().first;
+            QData payload = { purge_scene, 0, VK_NULL_HANDLE };
             m_worker_queue.push(payload);
+            std::erase_if(m_prepare_scenes, [purge_scene](const QData& stored) { return stored.scene == purge_scene; });
             m_purge_queue.pop();
         }
     }
@@ -176,24 +180,31 @@ void SceneHost::worker_loop()
     }
 }
 
-bool SceneHost::add(IScene* scene)
+uint64_t SceneHost::add(IScene* scene)
 {
     VkCommandBuffer prepare_commands = m_spare_commands.top();
     uint64_t ticket = m_max_ticket++;
     QData payload = { scene, ticket, prepare_commands };
-    m_backlog[scene] = ticket;
     if (m_worker_queue.try_push(payload)) {
         m_spare_commands.pop();
-        m_inuse_commands.emplace(ticket, prepare_commands);
-        return true;
+        m_prepare_scenes.push_back(std::move(payload));
+        return ticket;
     } else {
-        return false;
+        return 0;
     }
 }
 
-void SceneHost::switch_to(IScene* scene)
+void SceneHost::set_next_scene(uint64_t ticket)
 {
-    m_requested_scene = scene;
+    if (ticket == 0)
+        m_requested_scene = nullptr;
+    else {
+        auto it = std::find_if(m_prepare_scenes.begin(), m_prepare_scenes.end(), [ticket](const QData& it) {
+            return it.ticket == ticket;
+        });
+        if (it != m_prepare_scenes.end())
+            m_requested_scene = &*it;
+    }
 }
 
 void SceneHost::wait_frame(uint32_t frame_number)

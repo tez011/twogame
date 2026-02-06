@@ -141,6 +141,7 @@ public:
     virtual ~DuckScene();
 
     virtual void construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prepare_commands);
+    virtual void cleanup_staging();
     virtual void handle_event(const SDL_Event& evt, twogame::vk::SceneHost* stage);
     virtual void tick(uint64_t frame_time, uint64_t delta_time, twogame::vk::SceneHost* stage);
     virtual void record_commands(twogame::vk::IRenderer* renderer, uint32_t frame_number);
@@ -150,10 +151,6 @@ public:
 
 DuckScene::~DuckScene()
 {
-    // TODO can we do this after the scene is ready?
-    vmaDestroyBuffer(r_allocator, m_image_staging_buffer, m_image_staging_buffer_mem);
-    vmaDestroyBuffer(r_allocator, m_staging_buffer, m_staging_mem);
-
     vkDestroySampler(r_device, m_sampler, nullptr);
     vkDestroyImageView(r_device, m_image_view, nullptr);
     vmaDestroyImage(r_allocator, m_image, m_image_mem);
@@ -346,12 +343,6 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
     sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     VK_DEMAND(vkCreateSampler(r_device, &sampler_info, nullptr, &m_sampler));
 
-#if 0
-    VkImageFormatProperties ifmt;
-    if (vkGetPhysicalDeviceImageFormatProperties(m_renderer.hwd(), i_createinfo.format, i_createinfo.imageType, i_createinfo.tiling, i_createinfo.usage, i_createinfo.flags, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED)
-        throw MalformedException(info.name(), "image format not supported by hardware");
-#endif
-
     ktx_mip_iterate_userdata mip_data(image_info.arrayLayers);
     SDL_assert(ktxTexture_IterateLevels(ktx, ktx_mip_iterate, &mip_data) == KTX_SUCCESS);
 
@@ -426,6 +417,16 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
     ktxTexture_Destroy(ktx);
     PHYSFS_close(duckdata);
     PHYSFS_close(imagedata);
+}
+
+void DuckScene::cleanup_staging() {
+    vmaDestroyBuffer(r_allocator, m_image_staging_buffer, m_image_staging_buffer_mem);
+    vmaDestroyBuffer(r_allocator, m_staging_buffer, m_staging_mem);
+
+    m_image_staging_buffer = VK_NULL_HANDLE;
+    m_image_staging_buffer_mem = VK_NULL_HANDLE;
+    m_staging_buffer = VK_NULL_HANDLE;
+    m_staging_mem = VK_NULL_HANDLE;
 }
 
 void DuckScene::handle_event(const SDL_Event& evt, twogame::vk::SceneHost* stage)
