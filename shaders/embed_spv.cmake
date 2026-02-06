@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.31)
-set(HEADER_FILE "${GROOT}/shaders/shaders.h")
-set(CPP_FILE    "${GROOT}/shaders/shaders.cpp")
+set(HEADER_FILE "${GROOT}/shaders/embedded_shaders.h")
+set(CPP_FILE    "${GROOT}/shaders/embedded_shaders.cpp")
 
 file(WRITE "${HEADER_FILE}"
 "// Generated file - DO NOT EDIT
@@ -11,7 +11,7 @@ namespace twogame::shaders {
 ")
 file(WRITE "${CPP_FILE}"
 "// Generated file - DO NOT EDIT
-#include \"shaders.h\"
+#include \"embedded_shaders.h\"
 namespace twogame::shaders {
 ")
 

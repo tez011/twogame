@@ -14,20 +14,20 @@
 
 #ifdef DEBUG_BUILD
 #include <vulkan/vk_enum_string_helper.h>
-#define VK_DEMAND(X) VK_DEMAND_3P(X, __FILE__, __LINE__)
-#define VK_DEMAND_3P(X, F, L)                                                                                 \
+#define VK_DEMAND(X) VK_DEMAND_4P(X, SDL_FUNCTION, SDL_FILE, SDL_LINE)
+#define VK_DEMAND_4P(X, N, F, L)                                                                                 \
     do {                                                                                                      \
         VkResult __r;                                                                                         \
         if ((__r = (X)) != VK_SUCCESS) {                                                                      \
-            SDL_LogCritical(SDL_LOG_CATEGORY_GPU, "assert at %s:%d: %s: %s", F, L, #X, string_VkResult(__r)); \
-            std::abort();                                                                                     \
+            SDL_LogCritical(SDL_LOG_CATEGORY_GPU, "assert in %s at %s:%d: %s: %s", N, F, L, #X, string_VkResult(__r)); \
+            SDL_TriggerBreakpoint();                                                                                     \
         }                                                                                                     \
     } while (0)
 #else
 #define VK_DEMAND(X)             \
     do {                         \
         if ((X) != VK_SUCCESS) { \
-            std::abort();        \
+            SDL_TriggerBreakpoint();        \
         }                        \
     } while (0)
 #endif
@@ -115,7 +115,7 @@ class SceneHost final {
     bool m_active;
 
     // Owned by render thread
-    DisplayHost& r_host;
+    IRenderer* r_renderer;
     VkCommandPool m_command_pool;
     VkQueue m_transfer_queue;
     VkSemaphore m_timeline;
@@ -134,7 +134,7 @@ class SceneHost final {
     void worker_loop();
 
 public:
-    SceneHost(DisplayHost* host, IScene* initial);
+    SceneHost(IRenderer* renderer, IScene* initial);
     ~SceneHost();
 
     bool add(IScene* scene);
@@ -147,11 +147,13 @@ public:
 };
 
 class IRenderer {
+    friend class SceneHost;
 protected:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
 
     twogame::vk::DisplayHost& r_host;
     VkRenderPass m_render_pass;
+    std::vector<VkDescriptorSetLayout> m_descriptor_layout;
     std::vector<VkPipelineLayout> m_pipeline_layout;
     std::vector<VkPipeline> m_pipeline;
 
@@ -160,12 +162,6 @@ protected:
         , m_render_pass(VK_NULL_HANDLE)
     {
     }
-
-    inline constexpr VkDevice device() const { return r_host.m_device; }
-    inline constexpr VmaAllocator allocator() const { return r_host.m_allocator; }
-    inline constexpr VkFormat swapchain_format() const { return r_host.m_swapchain_format; }
-    inline constexpr VkFormat depth_format() const { return r_host.m_depth_format; }
-    inline constexpr uint32_t queue_family_index(QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
 
 public:
     struct Output {
@@ -180,9 +176,17 @@ public:
 
     virtual ~IRenderer();
 
+
+    inline constexpr VkDevice device() const { return r_host.m_device; }
+    inline constexpr VmaAllocator allocator() const { return r_host.m_allocator; }
+    inline constexpr VkFormat swapchain_format() const { return r_host.m_swapchain_format; }
     inline constexpr VkExtent2D swapchain_extent() const { return r_host.m_swapchain_extent; }
+    inline constexpr VkFormat depth_format() const { return r_host.m_depth_format; }
+    inline constexpr uint32_t queue_family_index(QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
     inline VkRenderPass render_pass() const { return m_render_pass; }
     inline VkPipeline pipeline(size_t i) const { return m_pipeline[i]; }
+    inline VkPipelineLayout pipeline_layout(size_t i) const { return m_pipeline_layout[i]; }
+    inline VkDescriptorSetLayout descriptor_set_layout(size_t i) const { return m_descriptor_layout[i]; }
 
     virtual Output draw(SceneHost*, uint32_t frame_number) = 0;
     virtual void recreate_subpass_data(uint32_t frame_number) = 0;
@@ -194,23 +198,20 @@ class IScene {
 protected:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
 
-    twogame::vk::DisplayHost* r_host;
-    twogame::vk::IRenderer* r_renderer;
+    VkDevice r_device;
     VmaAllocator r_allocator;
-
-    IScene(DisplayHost* host, IRenderer* renderer)
-        : r_host(host)
-        , r_renderer(renderer)
+    IScene(DisplayHost* host)
+        : r_device(host->device())
         , r_allocator(host->allocator())
     {
     }
 
 public:
     virtual ~IScene() { }
-    virtual void construct(VkCommandBuffer prepare_commands) = 0;
+    virtual void construct(IRenderer*, VkCommandBuffer prepare_commands) = 0;
     virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
-    virtual void tick(Uint64 delta_ms, SceneHost*) = 0;
-    virtual void record_commands(uint32_t frame_number) = 0;
+    virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
+    virtual void record_commands(IRenderer*, uint32_t frame_number) = 0;
 
     virtual std::span<VkCommandBuffer> draw_commands(uint32_t frame_number, int subpass) = 0;
 };
