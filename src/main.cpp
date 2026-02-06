@@ -173,18 +173,6 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
     SDL_assert(duckdata);
     SDL_assert(imagedata);
 
-    // proj should come from renderer
-    // TODO update proj per frame - what if swapchain is resized?
-    float cot_vertical_fov = 1.0f / glm::tan(glm::radians(45.0) * 0.5);
-    glm::mat4 proj(0.0f);
-    proj[0][0] = cot_vertical_fov * renderer->swapchain_extent().height / renderer->swapchain_extent().width;
-    proj[1][1] = -cot_vertical_fov;
-    proj[2][2] = -1.0f;
-    proj[2][3] = -1.0f;
-    proj[3][2] = -0.1f;
-    glm::mat4 view = glm::lookAt(glm::vec3(0, 250, -400), glm::vec3(0, 100, 0), glm::vec3(0, 1, 0));
-    glm::mat4 proj_view = proj * view;
-
     VkCommandPoolCreateInfo pool_info {};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
@@ -239,16 +227,8 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     mem_createinfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
     mem_createinfo.usage = VMA_MEMORY_USAGE_AUTO;
-    for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++) {
-        VkMemoryPropertyFlags mem_type_flags;
-        VK_DEMAND(vmaCreateBuffer(r_allocator, &buffer_info, &mem_createinfo, &m_uniform_buffer[i], &m_uniform_buffer_mem[i], &mem_info));
-        vmaGetMemoryTypeProperties(r_allocator, mem_info.memoryType, &mem_type_flags);
-        vmaMapMemory(r_allocator, m_uniform_buffer_mem[i], &mapped_buffer);
-        memcpy(mapped_buffer, &proj_view, sizeof(glm::mat4));
-        vmaUnmapMemory(r_allocator, m_uniform_buffer_mem[i]);
-        if ((mem_type_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
-            vmaFlushAllocation(r_allocator, m_uniform_buffer_mem[i], 0, VK_WHOLE_SIZE);
-    }
+    for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++)
+        VK_DEMAND(vmaCreateBuffer(r_allocator, &buffer_info, &mem_createinfo, &m_uniform_buffer[i], &m_uniform_buffer_mem[i], nullptr));
 
     buffer_info.size = 102040;
     buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
@@ -459,6 +439,23 @@ void DuckScene::tick(uint64_t frame_time, uint64_t delta_time, twogame::vk::Scen
 void DuckScene::record_commands(twogame::vk::IRenderer* renderer, uint32_t frame_number)
 {
     vkResetCommandPool(r_device, m_draw_cmd_pool[frame_number % SIMULTANEOUS_FRAMES], 0);
+
+    // proj should come from renderer
+    float cot_vertical_fov = 1.0f / glm::tan(glm::radians(45.0) * 0.5);
+    glm::mat4 proj(0.0f);
+    proj[0][0] = cot_vertical_fov * renderer->swapchain_extent().height / renderer->swapchain_extent().width;
+    proj[1][1] = -cot_vertical_fov;
+    proj[2][2] = -1.0f;
+    proj[2][3] = -1.0f;
+    proj[3][2] = -0.1f;
+    glm::mat4 view = glm::lookAt(glm::vec3(0, 250, -400), glm::vec3(0, 100, 0), glm::vec3(0, 1, 0));
+    glm::mat4 proj_view = proj * view;
+
+    void* mapped_buffer;
+    vmaMapMemory(r_allocator, m_uniform_buffer_mem[frame_number % SIMULTANEOUS_FRAMES], &mapped_buffer);
+    memcpy(mapped_buffer, &proj_view, sizeof(glm::mat4));
+    vmaUnmapMemory(r_allocator, m_uniform_buffer_mem[frame_number % SIMULTANEOUS_FRAMES]);
+    vmaFlushAllocation(r_allocator, m_uniform_buffer_mem[frame_number % SIMULTANEOUS_FRAMES], 0, VK_WHOLE_SIZE);
 
     VkCommandBuffer cmd = m_draw_cmd[frame_number % SIMULTANEOUS_FRAMES][0];
     VkCommandBufferBeginInfo begin_info {};
