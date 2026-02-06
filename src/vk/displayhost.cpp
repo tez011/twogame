@@ -9,7 +9,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <volk.h>
 #include <vulkan/vulkan_metal.h>
-#include "render.h"
+#include "display.h"
 
 #ifdef DEBUG_BUILD
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;
@@ -22,9 +22,9 @@ constexpr static uint32_t INSTANCE_LAYERS_COUNT = 0;
 #endif
 
 constexpr static auto s_depth_candidates = std::to_array<VkFormat>({
-    VK_FORMAT_D32_SFLOAT_S8_UINT,
-    VK_FORMAT_D24_UNORM_S8_UINT,
-    VK_FORMAT_D16_UNORM_S8_UINT,
+    VK_FORMAT_D32_SFLOAT,
+    VK_FORMAT_D16_UNORM,
+    VK_FORMAT_S8_UINT,
 });
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* cb_data, void* user_data)
@@ -49,7 +49,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
     return VK_FALSE;
 }
 
-namespace twogame::vk {
+namespace twogame {
 
 DisplayHost::DisplayHost()
 {
@@ -62,7 +62,7 @@ DisplayHost::DisplayHost()
         && create_syncobjects();
 
     if (!success)
-        throw std::runtime_error("twogame::vk::DisplayHost");
+        throw std::runtime_error("twogame::DisplayHost");
 }
 
 DisplayHost::~DisplayHost()
@@ -293,7 +293,11 @@ bool DisplayHost::pick_physical_device()
             SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no supported surface present modes", hwd_props.properties.deviceName);
             return 0.f;
         }
-        if (vkGetPhysicalDeviceImageFormatProperties(hwd, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+        if (vkGetPhysicalDeviceImageFormatProperties(hwd, VK_FORMAT_B8G8R8A8_SRGB, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 0, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: required image format BGRA8_SRGB is not supported", hwd_props.properties.deviceName);
+            return 0.f;
+        }
+        if (vkGetPhysicalDeviceImageFormatProperties(hwd, VK_FORMAT_R32G32B32A32_SFLOAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT, 0, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED) {
             SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: required image format RGBA32F is not supported", hwd_props.properties.deviceName);
             return 0.f;
         }
@@ -302,7 +306,7 @@ bool DisplayHost::pick_physical_device()
                 VkImageFormatProperties props {};
                 return vkGetPhysicalDeviceImageFormatProperties(hwd, fmt, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &props) == VK_SUCCESS;
             })) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no available depth/stencil formats", hwd_props.properties.deviceName);
+            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no available depth buffer formats", hwd_props.properties.deviceName);
             return 0.f;
         }
 
@@ -497,11 +501,6 @@ bool DisplayHost::create_swapchain(VkSwapchainKHR old_swapchain)
     auto fmt_it = std::find_if(formats.begin(), formats.end(), [](const VkSurfaceFormatKHR& fmt) {
         return fmt.format == VK_FORMAT_B8G8R8A8_SRGB && fmt.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
     });
-    if (fmt_it == formats.end()) {
-        fmt_it = std::find_if(formats.begin(), formats.end(), [](const VkSurfaceFormatKHR& fmt) {
-            return fmt.format == VK_FORMAT_B8G8R8A8_SRGB && fmt.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR;
-        });
-    }
     if (fmt_it == formats.end())
         fmt_it = formats.begin();
 

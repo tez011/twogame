@@ -2,36 +2,31 @@
 #define VK_NO_PROTOTYPES
 #include <array>
 #include <atomic>
-#include <queue>
-#include <span>
-#include <thread>
-#include <unordered_map>
 #include <vector>
 #include <SDL3/SDL.h>
 #include <volk.h>
-#include "mpmc.h"
 #include "vk_mem_alloc.h"
 
 #ifdef DEBUG_BUILD
 #include <vulkan/vk_enum_string_helper.h>
-#define VK_DEMAND(X) VK_DEMAND_3P(X, __FILE__, __LINE__)
-#define VK_DEMAND_3P(X, F, L)                                                                                 \
-    do {                                                                                                      \
-        VkResult __r;                                                                                         \
-        if ((__r = (X)) != VK_SUCCESS) {                                                                      \
-            SDL_LogCritical(SDL_LOG_CATEGORY_GPU, "assert at %s:%d: %s: %s", F, L, #X, string_VkResult(__r)); \
-            std::abort();                                                                                     \
-        }                                                                                                     \
+#define VK_DEMAND(X) VK_DEMAND_4P(X, SDL_FUNCTION, SDL_FILE, SDL_LINE)
+#define VK_DEMAND_4P(X, N, F, L)                                                                                       \
+    do {                                                                                                               \
+        VkResult __r;                                                                                                  \
+        if ((__r = (X)) != VK_SUCCESS) {                                                                               \
+            SDL_LogCritical(SDL_LOG_CATEGORY_GPU, "assert in %s at %s:%d: %s: %s", N, F, L, #X, string_VkResult(__r)); \
+            SDL_TriggerBreakpoint();                                                                                   \
+        }                                                                                                              \
     } while (0)
 #else
-#define VK_DEMAND(X)             \
-    do {                         \
-        if ((X) != VK_SUCCESS) { \
-            std::abort();        \
-        }                        \
+#define VK_DEMAND(X)                 \
+    do {                             \
+        if ((X) != VK_SUCCESS) {     \
+            SDL_TriggerBreakpoint(); \
+        }                            \
     } while (0)
 #endif
-namespace twogame::vk {
+namespace twogame {
 
 class IRenderer;
 class IScene;
@@ -98,60 +93,15 @@ public:
     SDL_AppResult draw_frame(IRenderer*, SceneHost*);
 };
 
-class SceneHost final {
-    constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
-
-    std::atomic<IScene*> m_active_scene;
-    std::atomic_uint32_t m_frame_number = 0;
-    IScene* m_requested_scene;
-
-    // Owned by scene thread
-    std::thread m_scene_host;
-    std::unordered_map<IScene*, uint64_t> m_backlog;
-    std::queue<std::pair<IScene*, uint64_t>> m_purge_queue;
-    std::queue<std::pair<uint64_t, VkCommandBuffer>> m_inuse_commands;
-    std::stack<VkCommandBuffer> m_spare_commands;
-    uint64_t m_max_ticket;
-    bool m_active;
-
-    // Owned by render thread
-    DisplayHost& r_host;
-    VkCommandPool m_command_pool;
-    VkQueue m_transfer_queue;
-    VkSemaphore m_timeline;
-
-    std::array<std::thread, 2> m_builders;
-
-    struct QData {
-        IScene* scene;
-        uint64_t ticket;
-        VkCommandBuffer commands;
-    };
-    MPMCQ<QData, 8> m_worker_queue, m_render_queue;
-    MPMCQ<SDL_Event, 320> m_event_queue;
-
-    void scene_loop();
-    void worker_loop();
-
-public:
-    SceneHost(DisplayHost* host, IScene* initial);
-    ~SceneHost();
-
-    bool add(IScene* scene);
-    void switch_to(IScene*);
-    void wait_frame(uint32_t frame_number);
-    void push_event(SDL_Event*);
-    void tick();
-
-    void execute_draws(VkCommandBuffer container, uint32_t frame_number, int subpass);
-};
-
 class IRenderer {
+    friend class SceneHost;
+
 protected:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
 
-    twogame::vk::DisplayHost& r_host;
+    DisplayHost& r_host;
     VkRenderPass m_render_pass;
+    std::vector<VkDescriptorSetLayout> m_descriptor_layout;
     std::vector<VkPipelineLayout> m_pipeline_layout;
     std::vector<VkPipeline> m_pipeline;
 
@@ -160,12 +110,6 @@ protected:
         , m_render_pass(VK_NULL_HANDLE)
     {
     }
-
-    inline constexpr VkDevice device() const { return r_host.m_device; }
-    inline constexpr VmaAllocator allocator() const { return r_host.m_allocator; }
-    inline constexpr VkFormat swapchain_format() const { return r_host.m_swapchain_format; }
-    inline constexpr VkFormat depth_format() const { return r_host.m_depth_format; }
-    inline constexpr uint32_t queue_family_index(QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
 
 public:
     struct Output {
@@ -180,39 +124,20 @@ public:
 
     virtual ~IRenderer();
 
+    inline constexpr VkPhysicalDevice hardware_device() const { return r_host.m_hwd; }
+    inline constexpr VkDevice device() const { return r_host.m_device; }
+    inline constexpr VmaAllocator allocator() const { return r_host.m_allocator; }
+    inline constexpr VkFormat swapchain_format() const { return r_host.m_swapchain_format; }
     inline constexpr VkExtent2D swapchain_extent() const { return r_host.m_swapchain_extent; }
+    inline constexpr VkFormat depth_format() const { return r_host.m_depth_format; }
+    inline constexpr uint32_t queue_family_index(QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
     inline VkRenderPass render_pass() const { return m_render_pass; }
     inline VkPipeline pipeline(size_t i) const { return m_pipeline[i]; }
+    inline VkPipelineLayout pipeline_layout(size_t i) const { return m_pipeline_layout[i]; }
+    inline VkDescriptorSetLayout descriptor_set_layout(size_t i) const { return m_descriptor_layout[i]; }
 
     virtual Output draw(SceneHost*, uint32_t frame_number) = 0;
     virtual void recreate_subpass_data(uint32_t frame_number) = 0;
-};
-
-class IScene {
-    friend class SceneHost;
-
-protected:
-    constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
-
-    twogame::vk::DisplayHost* r_host;
-    twogame::vk::IRenderer* r_renderer;
-    VmaAllocator r_allocator;
-
-    IScene(DisplayHost* host, IRenderer* renderer)
-        : r_host(host)
-        , r_renderer(renderer)
-        , r_allocator(host->allocator())
-    {
-    }
-
-public:
-    virtual ~IScene() { }
-    virtual void construct(VkCommandBuffer prepare_commands) = 0;
-    virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
-    virtual void tick(Uint64 delta_ms, SceneHost*) = 0;
-    virtual void record_commands(uint32_t frame_number) = 0;
-
-    virtual std::span<VkCommandBuffer> draw_commands(uint32_t frame_number, int subpass) = 0;
 };
 
 class SimpleForwardRenderer final : public IRenderer {
