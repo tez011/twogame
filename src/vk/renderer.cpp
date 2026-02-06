@@ -1,10 +1,13 @@
-#include "render.h"
-#include "shaders.h"
+#include "display.h"
+#include "embedded_shaders.h"
+#include "scene.h"
 
-namespace twogame::vk {
+namespace twogame {
 
 IRenderer::~IRenderer()
 {
+    for (auto it = m_descriptor_layout.begin(); it != m_descriptor_layout.end(); ++it)
+        vkDestroyDescriptorSetLayout(device(), *it, nullptr);
     for (auto it = m_pipeline.begin(); it != m_pipeline.end(); ++it)
         vkDestroyPipeline(device(), *it, nullptr);
     for (auto it = m_pipeline_layout.begin(); it != m_pipeline_layout.end(); ++it)
@@ -13,7 +16,7 @@ IRenderer::~IRenderer()
 }
 
 SimpleForwardRenderer::SimpleForwardRenderer(DisplayHost* host)
-    : twogame::vk::IRenderer(host)
+    : IRenderer(host)
 {
     vkGetDeviceQueue(device(), queue_family_index(QueueType::Graphics), 0, &m_graphics_queue);
 
@@ -82,18 +85,46 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     p0_depth_att.attachment = 1;
     p0_depth_att.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     VK_DEMAND(vkCreateRenderPass2(device(), &render_pass_ci, nullptr, &m_render_pass));
+    m_descriptor_layout.resize(2);
     m_pipeline_layout.resize(1);
     m_pipeline.resize(1);
 
     VkShaderModuleCreateInfo shader_ci {};
-    VkShaderModule tri_vert_shader, tri_frag_shader;
+    VkShaderModule basic_vert_shader, basic_frag_shader;
     shader_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shader_ci.codeSize = twogame::shaders::tri_vert_size;
-    shader_ci.pCode = twogame::shaders::tri_vert_spv;
-    VK_DEMAND(vkCreateShaderModule(device(), &shader_ci, nullptr, &tri_vert_shader));
-    shader_ci.codeSize = twogame::shaders::tri_frag_size;
-    shader_ci.pCode = twogame::shaders::tri_frag_spv;
-    VK_DEMAND(vkCreateShaderModule(device(), &shader_ci, nullptr, &tri_frag_shader));
+    shader_ci.codeSize = twogame::shaders::basic_vert_size;
+    shader_ci.pCode = twogame::shaders::basic_vert_spv;
+    VK_DEMAND(vkCreateShaderModule(device(), &shader_ci, nullptr, &basic_vert_shader));
+    shader_ci.codeSize = twogame::shaders::basic_frag_size;
+    shader_ci.pCode = twogame::shaders::basic_frag_spv;
+    VK_DEMAND(vkCreateShaderModule(device(), &shader_ci, nullptr, &basic_frag_shader));
+
+    auto descriptor_bindings = std::to_array<VkDescriptorSetLayoutBinding>({
+        // set 0
+        { 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr },
+        // set 1
+        { 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr },
+    });
+
+    auto push_constant_ranges = std::to_array<VkPushConstantRange>({
+        { VK_SHADER_STAGE_VERTEX_BIT, 0, 32 },
+    });
+
+    VkDescriptorSetLayoutCreateInfo descriptor_set_info {};
+    descriptor_set_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    descriptor_set_info.bindingCount = 1;
+    descriptor_set_info.pBindings = descriptor_bindings.data() + 0;
+    VK_DEMAND(vkCreateDescriptorSetLayout(device(), &descriptor_set_info, nullptr, &m_descriptor_layout[0]));
+    descriptor_set_info.pBindings = descriptor_bindings.data() + 1;
+    VK_DEMAND(vkCreateDescriptorSetLayout(device(), &descriptor_set_info, nullptr, &m_descriptor_layout[1]));
+
+    VkPipelineLayoutCreateInfo pipeline_layout_info {};
+    pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_info.setLayoutCount = 2;
+    pipeline_layout_info.pSetLayouts = m_descriptor_layout.data() + 0;
+    pipeline_layout_info.pushConstantRangeCount = 1;
+    pipeline_layout_info.pPushConstantRanges = push_constant_ranges.data() + 0;
+    VK_DEMAND(vkCreatePipelineLayout(device(), &pipeline_layout_info, nullptr, &m_pipeline_layout[0]));
 
     std::array<VkPipelineShaderStageCreateInfo, 2> shader_info {};
     for (auto it = shader_info.begin(); it != shader_info.end(); ++it) {
@@ -101,9 +132,9 @@ void SimpleForwardRenderer::create_graphics_pipeline()
         it->pName = "main";
     }
     shader_info[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-    shader_info[0].module = tri_vert_shader;
+    shader_info[0].module = basic_vert_shader;
     shader_info[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-    shader_info[1].module = tri_frag_shader;
+    shader_info[1].module = basic_frag_shader;
 
     VkPipelineDynamicStateCreateInfo dynamic_state_info {};
     auto dynamic_state_set = std::to_array<VkDynamicState>({ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR });
@@ -112,14 +143,17 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     dynamic_state_info.pDynamicStates = dynamic_state_set.data();
 
     VkPipelineVertexInputStateCreateInfo vertex_input_info {};
-    std::array<VkVertexInputBindingDescription, 2> vertex_bindings;
-    std::array<VkVertexInputAttributeDescription, 2> vertex_attributes;
+    std::array<VkVertexInputBindingDescription, 3> vertex_bindings;
+    std::array<VkVertexInputAttributeDescription, 3> vertex_attributes;
     vertex_bindings[0].binding = 0;
     vertex_bindings[0].stride = 3 * sizeof(float);
     vertex_bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     vertex_bindings[1].binding = 1;
     vertex_bindings[1].stride = 3 * sizeof(float);
     vertex_bindings[1].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    vertex_bindings[2].binding = 2;
+    vertex_bindings[2].stride = 2 * sizeof(float);
+    vertex_bindings[2].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
     vertex_attributes[0].binding = 0;
     vertex_attributes[0].location = 0;
     vertex_attributes[0].format = VK_FORMAT_R32G32B32_SFLOAT;
@@ -128,6 +162,10 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     vertex_attributes[1].location = 1;
     vertex_attributes[1].format = VK_FORMAT_R32G32B32_SFLOAT;
     vertex_attributes[1].offset = 0;
+    vertex_attributes[2].binding = 2;
+    vertex_attributes[2].location = 2;
+    vertex_attributes[2].format = VK_FORMAT_R32G32_SFLOAT;
+    vertex_attributes[2].offset = 0;
     vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
     vertex_input_info.vertexBindingDescriptionCount = vertex_bindings.size();
     vertex_input_info.pVertexBindingDescriptions = vertex_bindings.data();
@@ -148,7 +186,7 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     rasterizer_info.depthClampEnable = VK_FALSE;
     rasterizer_info.polygonMode = VK_POLYGON_MODE_FILL;
     rasterizer_info.cullMode = VK_CULL_MODE_BACK_BIT;
-    rasterizer_info.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    rasterizer_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     rasterizer_info.lineWidth = 1.0f;
 
     VkPipelineMultisampleStateCreateInfo multisample_info {};
@@ -172,10 +210,6 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     color_blend_atts[0].blendEnable = VK_FALSE;
     color_blend_atts[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
 
-    VkPipelineLayoutCreateInfo pipeline_layout_info {};
-    pipeline_layout_info.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    VK_DEMAND(vkCreatePipelineLayout(device(), &pipeline_layout_info, nullptr, &m_pipeline_layout[0]));
-
     VkGraphicsPipelineCreateInfo pipeline_info {};
     pipeline_info.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     pipeline_info.stageCount = shader_info.size();
@@ -193,8 +227,8 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     pipeline_info.subpass = 0;
     VK_DEMAND(vkCreateGraphicsPipelines(device(), VK_NULL_HANDLE, 1, &pipeline_info, nullptr, &m_pipeline[0]));
 
-    vkDestroyShaderModule(device(), tri_vert_shader, nullptr);
-    vkDestroyShaderModule(device(), tri_frag_shader, nullptr);
+    vkDestroyShaderModule(device(), basic_vert_shader, nullptr);
+    vkDestroyShaderModule(device(), basic_frag_shader, nullptr);
 }
 
 void SimpleForwardRenderer::create_frame_data(FrameData& frame)
@@ -267,7 +301,7 @@ void SimpleForwardRenderer::create_subpass_data(AllSubpasses& subpasses)
         i_createinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &pass.depth_buffer, &pass.depth_buffer_mem, nullptr));
         iv_createinfo.format = i_createinfo.format;
-        iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
         iv_createinfo.image = pass.depth_buffer;
         VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &pass.depth_buffer_view));
 
