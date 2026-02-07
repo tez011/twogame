@@ -177,7 +177,6 @@ public:
 
     virtual ~IRenderer();
 
-
     inline constexpr VkDevice device() const { return r_host.m_device; }
     inline constexpr VmaAllocator allocator() const { return r_host.m_allocator; }
     inline constexpr VkFormat swapchain_format() const { return r_host.m_swapchain_format; }

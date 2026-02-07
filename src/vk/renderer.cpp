@@ -300,7 +300,7 @@ void SimpleForwardRenderer::create_subpass_data(AllSubpasses& subpasses)
         i_createinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         VK_DEMAND(vmaCreateImage(allocator(), &i_createinfo, &mem_createinfo, &pass.depth_buffer, &pass.depth_buffer_mem, nullptr));
         iv_createinfo.format = i_createinfo.format;
-        iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+        iv_createinfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
         iv_createinfo.image = pass.depth_buffer;
         VK_DEMAND(vkCreateImageView(device(), &iv_createinfo, nullptr, &pass.depth_buffer_view));
 

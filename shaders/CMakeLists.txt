@@ -20,6 +20,8 @@ add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/shaders.pk2"
                    COMMAND ${CMAKE_COMMAND} -E tar c "${CMAKE_BINARY_DIR}/shaders.pk2" --format=zip -- "${SPV_OUTPUTS}"
                    DEPENDS ${SPV_OUTPUTS}
                    COMMAND_EXPAND_LISTS)
+add_custom_target(shaders DEPENDS ${SPV_OUTPUTS}
+                                  "${CMAKE_BINARY_DIR}/shaders.pk2")
 
 foreach(GLSL ${INTERNAL_SHADERS})
     list(APPEND INTERNAL_SPV_OUTPUTS "${CMAKE_BINARY_DIR}/shaders/${GLSL}.internal.spv")
@@ -28,7 +30,7 @@ foreach(GLSL ${INTERNAL_SHADERS})
                        DEPENDS ${GLSL})
 endforeach()
 add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/shaders/embedded_shaders.h" "${CMAKE_BINARY_DIR}/shaders/embedded_shaders.cpp"
-                   COMMAND ${CMAKE_COMMAND} -D "GROOT=${CMAKE_BINARY_DIR}"
+                   COMMAND ${CMAKE_COMMAND} -D "GROOT=${CMAKE_BINARY_DIR}/shaders"
                                             -D "SHADERS=${INTERNAL_SHADERS}"
                                             -P "${CMAKE_SOURCE_DIR}/shaders/embed_spv.cmake"
                    DEPENDS "${CMAKE_SOURCE_DIR}/shaders/embed_spv.cmake" ${INTERNAL_SPV_OUTPUTS}
@@ -36,6 +38,3 @@ add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/shaders/embedded_shaders.h" "${CM
 add_library(embedded_shaders STATIC EXCLUDE_FROM_ALL "${CMAKE_BINARY_DIR}/shaders/embedded_shaders.cpp")
 target_include_directories(embedded_shaders INTERFACE "${CMAKE_BINARY_DIR}/shaders")
 set_source_files_properties("${CMAKE_BINARY_DIR}/shaders/embedded_shaders.cpp" PROPERTIES GENERATED TRUE)
-
-add_custom_target(shaders DEPENDS ${SPV_OUTPUTS}
-                                  "${CMAKE_BINARY_DIR}/shaders.pk2")
