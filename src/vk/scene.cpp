@@ -31,7 +31,7 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     for (size_t i = 0; i < BUILDER_THREAD_COUNT; i++) {
         VmaAllocationInfo staging_meminfo;
         VK_DEMAND(vmaCreateBuffer(host.m_allocator, &staging_createinfo, &staging_allocinfo, &m_staging_buffers[i].buffer, &m_staging_buffers[i].mem, &staging_meminfo));
-        m_staging_buffers[i].ptr = staging_meminfo.pMappedData;
+        m_staging_buffers[i].ptr = static_cast<unsigned char*>(staging_meminfo.pMappedData);
     }
 
     VkCommandPoolCreateInfo pool_createinfo {};

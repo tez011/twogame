@@ -48,7 +48,7 @@ private:
     struct StagingBuffer {
         VkBuffer buffer;
         VmaAllocation mem;
-        void* ptr;
+        unsigned char* ptr;
     };
     constexpr static int BUILDER_THREAD_COUNT = 2;
     std::array<std::thread, BUILDER_THREAD_COUNT> m_builders;
@@ -97,7 +97,7 @@ protected:
 
 public:
     virtual ~IScene() { }
-    virtual bool construct(IRenderer*, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, void* staging_data) = 0;
+    virtual bool construct(IRenderer*, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, unsigned char* staging_data) = 0;
     virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
     virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
     virtual void record_commands(IRenderer*, uint32_t frame_number) = 0;

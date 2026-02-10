@@ -21,9 +21,9 @@ private:
     VkDeviceSize m_offset;
 
 public:
-    ktx_mip_iterate_userdata(uint32_t layer_count)
+    ktx_mip_iterate_userdata(uint32_t layer_count, VkDeviceSize offset)
         : m_layer_count(layer_count)
-        , m_offset(0)
+        , m_offset(offset)
     {
         m_regions.reserve(layer_count);
     }
@@ -129,11 +129,11 @@ class DuckScene : public twogame::IScene {
     std::array<VkBuffer, SIMULTANEOUS_FRAMES> m_uniform_buffer;
     std::array<VmaAllocation, SIMULTANEOUS_FRAMES> m_uniform_buffer_mem;
 
-    VkBuffer m_buffer, m_staging_buffer, m_image_staging_buffer;
+    VkBuffer m_buffer;
     VkImage m_image;
     VkImageView m_image_view;
     VkSampler m_sampler;
-    VmaAllocation m_mem, m_image_mem, m_staging_mem, m_image_staging_buffer_mem;
+    VmaAllocation m_mem, m_image_mem;
     std::array<VkCommandPool, SIMULTANEOUS_FRAMES> m_draw_cmd_pool;
     std::array<std::array<VkCommandBuffer, 1>, SIMULTANEOUS_FRAMES> m_draw_cmd;
 
@@ -144,7 +144,7 @@ public:
     }
     virtual ~DuckScene();
 
-    virtual bool construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, void* staging_data);
+    virtual bool construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, unsigned char* staging_data);
     virtual void handle_event(const SDL_Event& evt, twogame::SceneHost* stage);
     virtual void tick(uint64_t frame_time, uint64_t delta_time, twogame::SceneHost* stage);
     virtual void record_commands(twogame::IRenderer* renderer, uint32_t frame_number);
@@ -154,9 +154,6 @@ public:
 
 DuckScene::~DuckScene()
 {
-    vmaDestroyBuffer(r_allocator, m_image_staging_buffer, m_image_staging_buffer_mem);
-    vmaDestroyBuffer(r_allocator, m_staging_buffer, m_staging_mem);
-
     vkDestroySampler(r_device, m_sampler, nullptr);
     vkDestroyImageView(r_device, m_image_view, nullptr);
     vmaDestroyImage(r_allocator, m_image, m_image_mem);
@@ -169,8 +166,9 @@ DuckScene::~DuckScene()
     vkDestroyDescriptorPool(r_device, m_descriptor_pool, nullptr);
 }
 
-bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, void* staging_ptr)
+bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, unsigned char* staging_data)
 {
+    size_t staging_offset = 0;
     PHYSFS_File* duckdata = PHYSFS_openRead("/data/duck.bin");
     PHYSFS_File* imagedata = PHYSFS_openRead("/data/duck.i0.ktx2");
     SDL_assert(duckdata);
@@ -243,28 +241,19 @@ bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_
     VkMemoryPropertyFlags mem_type_flags;
     vmaGetMemoryTypeProperties(r_allocator, mem_info.memoryType, &mem_type_flags);
     if (mem_type_flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-        m_staging_buffer = VK_NULL_HANDLE;
-        m_staging_mem = VK_NULL_HANDLE;
-
         VK_DEMAND(vmaMapMemory(r_allocator, m_mem, &mapped_buffer));
         PHYSFS_readBytes(duckdata, mapped_buffer, buffer_info.size);
         vmaUnmapMemory(r_allocator, m_mem);
         if ((mem_type_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
             vmaFlushAllocation(r_allocator, m_mem, 0, VK_WHOLE_SIZE);
     } else {
-        buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-        mem_createinfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-        mem_createinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-        VK_DEMAND(vmaCreateBuffer(r_allocator, &buffer_info, &mem_createinfo, &m_staging_buffer, &m_staging_mem, nullptr));
-        VK_DEMAND(vmaMapMemory(r_allocator, m_staging_mem, &mapped_buffer));
-        PHYSFS_readBytes(duckdata, mapped_buffer, buffer_info.size);
-        vmaUnmapMemory(r_allocator, m_staging_mem);
-
         VkBufferCopy copy {};
         copy.srcOffset = 0;
         copy.dstOffset = 0;
-        copy.size = 19 * sizeof(float);
-        vkCmdCopyBuffer(prepare_commands, m_staging_buffer, m_buffer, 1, &copy);
+        copy.size = buffer_info.size;
+        PHYSFS_readBytes(duckdata, staging_data + staging_offset, buffer_info.size);
+        vkCmdCopyBuffer(prepare_commands, staging_buffer, m_buffer, 1, &copy);
+        staging_offset += (buffer_info.size + 15) & ~15;
 
         if (renderer->queue_family_index(twogame::QueueType::Graphics) != renderer->queue_family_index(twogame::QueueType::Transfer)) {
             VkDependencyInfo dep {};
@@ -296,14 +285,6 @@ bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_
     ktxTexture* ktx = reinterpret_cast<ktxTexture*>(ktx2);
     SDL_assert(ktx->numDimensions > 0 && ktx->numDimensions < 4);
     SDL_assert(ktx->generateMipmaps == false);
-    buffer_info.size = ktxTexture_GetDataSizeUncompressed(ktx);
-    buffer_info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    mem_createinfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
-    mem_createinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-    VK_DEMAND(vmaCreateBuffer(r_allocator, &buffer_info, &mem_createinfo, &m_image_staging_buffer, &m_image_staging_buffer_mem, nullptr));
-    VK_DEMAND(vmaMapMemory(r_allocator, m_image_staging_buffer_mem, &mapped_buffer));
-    SDL_assert(ktxTexture_LoadImageData(ktx, static_cast<ktx_uint8_t*>(mapped_buffer), buffer_info.size) == KTX_SUCCESS);
-    vmaUnmapMemory(r_allocator, m_image_staging_buffer_mem);
 
     image_info.flags = 0;
     image_info.imageType = static_cast<VkImageType>(ktx->numDimensions - 1);
@@ -349,8 +330,10 @@ bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_
     sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     VK_DEMAND(vkCreateSampler(r_device, &sampler_info, nullptr, &m_sampler));
 
-    ktx_mip_iterate_userdata mip_data(image_info.arrayLayers);
+    SDL_assert(ktxTexture_LoadImageData(ktx, staging_data + staging_offset, twogame::SceneHost::STAGING_BUFFER_SIZE - staging_offset) == KTX_SUCCESS);
+    ktx_mip_iterate_userdata mip_data(image_info.arrayLayers, staging_offset);
     SDL_assert(ktxTexture_IterateLevels(ktx, ktx_mip_iterate, &mip_data) == KTX_SUCCESS);
+    staging_offset += (ktxTexture_GetDataSizeUncompressed(ktx) + 15) & ~15;
 
     VkImageMemoryBarrier barrier {};
     barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
@@ -367,7 +350,7 @@ bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_
     barrier.srcAccessMask = 0;
     barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     vkCmdPipelineBarrier(prepare_commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    vkCmdCopyBufferToImage(prepare_commands, m_image_staging_buffer, m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mip_data.regions().size(), mip_data.regions().data());
+    vkCmdCopyBufferToImage(prepare_commands, staging_buffer, m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mip_data.regions().size(), mip_data.regions().data());
 
     barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
