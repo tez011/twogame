@@ -9,7 +9,7 @@
 #include <SDL3/SDL_vulkan.h>
 #include <volk.h>
 #include <vulkan/vulkan_metal.h>
-#include "render.h"
+#include "display.h"
 
 #ifdef DEBUG_BUILD
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;
@@ -49,7 +49,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
     return VK_FALSE;
 }
 
-namespace twogame::vk {
+namespace twogame {
 
 DisplayHost::DisplayHost()
 {
@@ -62,7 +62,7 @@ DisplayHost::DisplayHost()
         && create_syncobjects();
 
     if (!success)
-        throw std::runtime_error("twogame::vk::DisplayHost");
+        throw std::runtime_error("twogame::DisplayHost");
 }
 
 DisplayHost::~DisplayHost()

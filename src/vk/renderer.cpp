@@ -1,7 +1,8 @@
+#include "display.h"
 #include "embedded_shaders.h"
-#include "render.h"
+#include "scene.h"
 
-namespace twogame::vk {
+namespace twogame {
 
 IRenderer::~IRenderer()
 {
@@ -15,7 +16,7 @@ IRenderer::~IRenderer()
 }
 
 SimpleForwardRenderer::SimpleForwardRenderer(DisplayHost* host)
-    : twogame::vk::IRenderer(host)
+    : IRenderer(host)
 {
     vkGetDeviceQueue(device(), queue_family_index(QueueType::Graphics), 0, &m_graphics_queue);
 

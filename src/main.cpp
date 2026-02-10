@@ -6,8 +6,9 @@
 #include <ktx.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include "display.h"
 #include "physfs.h"
-#include "render.h"
+#include "scene.h"
 #define APP_NAME "twogame demo"
 #define ORG_NAME "tez011"
 #define SHORT_APP_NAME "twogame_demo"
@@ -21,14 +22,16 @@ private:
 
 public:
     ktx_mip_iterate_userdata(uint32_t layer_count)
-    : m_layer_count(layer_count), m_offset(0)
+        : m_layer_count(layer_count)
+        , m_offset(0)
     {
         m_regions.reserve(layer_count);
     }
 
     const std::vector<VkBufferImageCopy>& regions() const { return m_regions; }
 
-    void add_region(int miplevel, int face, int width, int height, int depth, ktx_uint64_t face_lod_size) {
+    void add_region(int miplevel, int face, int width, int height, int depth, ktx_uint64_t face_lod_size)
+    {
         VkBufferImageCopy& region = m_regions.emplace_back();
         region.bufferOffset = m_offset;
         region.bufferRowLength = 0;
@@ -47,7 +50,7 @@ public:
 
 ktxStream ktx_physfs_istream(PHYSFS_File* fh)
 {
-    ktxStream stream{};
+    ktxStream stream {};
     stream.type = eStreamTypeCustom;
     stream.read = [](ktxStream* self, void* dst, const ktx_size_t count) {
         PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
@@ -109,14 +112,15 @@ ktxStream ktx_physfs_istream(PHYSFS_File* fh)
     return stream;
 }
 
-static ktx_error_code_e ktx_mip_iterate(int miplevel, int face, int width, int height, int depth, ktx_uint64_t face_lod_size, void* pixels, void* userdata) {
+static ktx_error_code_e ktx_mip_iterate(int miplevel, int face, int width, int height, int depth, ktx_uint64_t face_lod_size, void* pixels, void* userdata)
+{
     ktx_mip_iterate_userdata* mip_data = reinterpret_cast<ktx_mip_iterate_userdata*>(userdata);
     mip_data->add_region(miplevel, face, width, height, depth, face_lod_size);
     (void)(pixels);
     return KTX_SUCCESS;
 }
 
-class DuckScene : public twogame::vk::IScene {
+class DuckScene : public twogame::IScene {
     // Descriptor info, from renderer/shaders. It is not clear to me that this belongs to the scene,
     // but the scene totally does define the data written to these buffers
     static constexpr size_t DESCRIPTOR_SET_COUNT = 2;
@@ -134,23 +138,25 @@ class DuckScene : public twogame::vk::IScene {
     std::array<std::array<VkCommandBuffer, 1>, SIMULTANEOUS_FRAMES> m_draw_cmd;
 
 public:
-    DuckScene(twogame::vk::DisplayHost* host)
-        : twogame::vk::IScene(host)
+    DuckScene(twogame::DisplayHost* host)
+        : twogame::IScene(host)
     {
     }
     virtual ~DuckScene();
 
-    virtual void construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prepare_commands);
-    virtual void cleanup_staging();
-    virtual void handle_event(const SDL_Event& evt, twogame::vk::SceneHost* stage);
-    virtual void tick(uint64_t frame_time, uint64_t delta_time, twogame::vk::SceneHost* stage);
-    virtual void record_commands(twogame::vk::IRenderer* renderer, uint32_t frame_number);
+    virtual bool construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, void* staging_data);
+    virtual void handle_event(const SDL_Event& evt, twogame::SceneHost* stage);
+    virtual void tick(uint64_t frame_time, uint64_t delta_time, twogame::SceneHost* stage);
+    virtual void record_commands(twogame::IRenderer* renderer, uint32_t frame_number);
 
     virtual std::span<VkCommandBuffer> draw_commands(uint32_t frame_number, int subpass);
 };
 
 DuckScene::~DuckScene()
 {
+    vmaDestroyBuffer(r_allocator, m_image_staging_buffer, m_image_staging_buffer_mem);
+    vmaDestroyBuffer(r_allocator, m_staging_buffer, m_staging_mem);
+
     vkDestroySampler(r_device, m_sampler, nullptr);
     vkDestroyImageView(r_device, m_image_view, nullptr);
     vmaDestroyImage(r_allocator, m_image, m_image_mem);
@@ -163,7 +169,7 @@ DuckScene::~DuckScene()
     vkDestroyDescriptorPool(r_device, m_descriptor_pool, nullptr);
 }
 
-void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prepare_commands)
+bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, void* staging_ptr)
 {
     PHYSFS_File* duckdata = PHYSFS_openRead("/data/duck.bin");
     PHYSFS_File* imagedata = PHYSFS_openRead("/data/duck.i0.ktx2");
@@ -173,7 +179,7 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
     VkCommandPoolCreateInfo pool_info {};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pool_info.queueFamilyIndex = renderer->queue_family_index(twogame::vk::QueueType::Graphics);
+    pool_info.queueFamilyIndex = renderer->queue_family_index(twogame::QueueType::Graphics);
 
     VkCommandBufferAllocateInfo alloc_info {};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -260,7 +266,7 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
         copy.size = 19 * sizeof(float);
         vkCmdCopyBuffer(prepare_commands, m_staging_buffer, m_buffer, 1, &copy);
 
-        if (renderer->queue_family_index(twogame::vk::QueueType::Graphics) != renderer->queue_family_index(twogame::vk::QueueType::Transfer)) {
+        if (renderer->queue_family_index(twogame::QueueType::Graphics) != renderer->queue_family_index(twogame::QueueType::Transfer)) {
             VkDependencyInfo dep {};
             VkBufferMemoryBarrier2 barrier {};
 
@@ -272,8 +278,8 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
             barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
             barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
             barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-            barrier.srcQueueFamilyIndex = renderer->queue_family_index(twogame::vk::QueueType::Transfer);
-            barrier.dstQueueFamilyIndex = renderer->queue_family_index(twogame::vk::QueueType::Graphics);
+            barrier.srcQueueFamilyIndex = renderer->queue_family_index(twogame::QueueType::Transfer);
+            barrier.dstQueueFamilyIndex = renderer->queue_family_index(twogame::QueueType::Graphics);
             barrier.buffer = m_buffer;
             barrier.offset = mem_info.offset;
             barrier.size = mem_info.size;
@@ -367,9 +373,9 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
     barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    if (renderer->queue_family_index(twogame::vk::QueueType::Graphics) != renderer->queue_family_index(twogame::vk::QueueType::Transfer)) {
-        barrier.srcQueueFamilyIndex = renderer->queue_family_index(twogame::vk::QueueType::Transfer);
-        barrier.dstQueueFamilyIndex = renderer->queue_family_index(twogame::vk::QueueType::Graphics);
+    if (renderer->queue_family_index(twogame::QueueType::Graphics) != renderer->queue_family_index(twogame::QueueType::Transfer)) {
+        barrier.srcQueueFamilyIndex = renderer->queue_family_index(twogame::QueueType::Transfer);
+        barrier.dstQueueFamilyIndex = renderer->queue_family_index(twogame::QueueType::Graphics);
     }
     vkCmdPipelineBarrier(prepare_commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
     // TODO many things:  - Use the pipeline barrier 2 interface
@@ -417,27 +423,18 @@ void DuckScene::construct(twogame::vk::IRenderer* renderer, VkCommandBuffer prep
     ktxTexture_Destroy(ktx);
     PHYSFS_close(duckdata);
     PHYSFS_close(imagedata);
+    return true;
 }
 
-void DuckScene::cleanup_staging() {
-    vmaDestroyBuffer(r_allocator, m_image_staging_buffer, m_image_staging_buffer_mem);
-    vmaDestroyBuffer(r_allocator, m_staging_buffer, m_staging_mem);
-
-    m_image_staging_buffer = VK_NULL_HANDLE;
-    m_image_staging_buffer_mem = VK_NULL_HANDLE;
-    m_staging_buffer = VK_NULL_HANDLE;
-    m_staging_mem = VK_NULL_HANDLE;
-}
-
-void DuckScene::handle_event(const SDL_Event& evt, twogame::vk::SceneHost* stage)
+void DuckScene::handle_event(const SDL_Event& evt, twogame::SceneHost* stage)
 {
 }
 
-void DuckScene::tick(uint64_t frame_time, uint64_t delta_time, twogame::vk::SceneHost* stage)
+void DuckScene::tick(uint64_t frame_time, uint64_t delta_time, twogame::SceneHost* stage)
 {
 }
 
-void DuckScene::record_commands(twogame::vk::IRenderer* renderer, uint32_t frame_number)
+void DuckScene::record_commands(twogame::IRenderer* renderer, uint32_t frame_number)
 {
     vkResetCommandPool(r_device, m_draw_cmd_pool[frame_number % SIMULTANEOUS_FRAMES], 0);
 
@@ -509,9 +506,9 @@ std::span<VkCommandBuffer> DuckScene::draw_commands(uint32_t frame_number, int s
 
 // fields that could be part of appstate
 struct AppState {
-    twogame::vk::DisplayHost* host;
-    twogame::vk::SimpleForwardRenderer* renderer;
-    twogame::vk::SceneHost* stage;
+    twogame::DisplayHost* host;
+    twogame::SimpleForwardRenderer* renderer;
+    twogame::SceneHost* stage;
 
     AppState()
         : host(nullptr)
@@ -594,9 +591,9 @@ SDL_AppResult SDL_AppInit(void** _appstate, int argc, char** argv)
 #endif
 
     try {
-        appstate.host = new twogame::vk::DisplayHost;
-        appstate.renderer = new twogame::vk::SimpleForwardRenderer(appstate.host);
-        appstate.stage = new twogame::vk::SceneHost(appstate.renderer, new DuckScene(appstate.host));
+        appstate.host = new twogame::DisplayHost;
+        appstate.renderer = new twogame::SimpleForwardRenderer(appstate.host);
+        appstate.stage = new twogame::SceneHost(appstate.renderer, new DuckScene(appstate.host));
     } catch (...) {
         return SDL_APP_FAILURE;
     }
