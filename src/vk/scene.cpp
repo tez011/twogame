@@ -10,7 +10,6 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     , m_active(true)
     , r_renderer(renderer)
 {
-    DisplayHost& host = renderer->r_host;
     VkSemaphoreCreateInfo sem_createinfo {};
     VkSemaphoreTypeCreateInfo sem_typeinfo {};
     sem_createinfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
@@ -18,7 +17,7 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     sem_typeinfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
     sem_typeinfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     sem_typeinfo.initialValue = 0;
-    VK_DEMAND(vkCreateSemaphore(host.m_device, &sem_createinfo, nullptr, &m_timeline));
+    VK_DEMAND(vkCreateSemaphore(DisplayHost::instance().device(), &sem_createinfo, nullptr, &m_timeline));
 
     VkBufferCreateInfo staging_createinfo {};
     VmaAllocationCreateInfo staging_allocinfo {};
@@ -30,16 +29,16 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     staging_allocinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     for (size_t i = 0; i < BUILDER_THREAD_COUNT; i++) {
         VmaAllocationInfo staging_meminfo;
-        VK_DEMAND(vmaCreateBuffer(host.m_allocator, &staging_createinfo, &staging_allocinfo, &m_staging_buffers[i].buffer, &m_staging_buffers[i].mem, &staging_meminfo));
-        m_staging_buffers[i].ptr = static_cast<unsigned char*>(staging_meminfo.pMappedData);
+        VK_DEMAND(vmaCreateBuffer(DisplayHost::instance().allocator(), &staging_createinfo, &staging_allocinfo, &m_staging_buffers[i].buffer, &m_staging_buffers[i].mem, &staging_meminfo));
+        m_staging_buffers[i].ptr = static_cast<std::byte*>(staging_meminfo.pMappedData);
     }
 
     VkCommandPoolCreateInfo pool_createinfo {};
     pool_createinfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_createinfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool_createinfo.queueFamilyIndex = host.queue_family_index(QueueType::Transfer);
-    VK_DEMAND(vkCreateCommandPool(host.m_device, &pool_createinfo, nullptr, &m_command_pool));
-    vkGetDeviceQueue(host.m_device, host.queue_family_index(QueueType::Transfer), 0, &m_transfer_queue);
+    pool_createinfo.queueFamilyIndex = DisplayHost::instance().queue_family_index(QueueType::Transfer);
+    VK_DEMAND(vkCreateCommandPool(DisplayHost::instance().device(), &pool_createinfo, nullptr, &m_command_pool));
+    vkGetDeviceQueue(DisplayHost::instance().device(), DisplayHost::instance().queue_family_index(QueueType::Transfer), 0, &m_transfer_queue);
 
     VkCommandBufferAllocateInfo cmd_allocinfo {};
     std::array<VkCommandBuffer, 8> spare_commands;
@@ -47,7 +46,7 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     cmd_allocinfo.commandPool = m_command_pool;
     cmd_allocinfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmd_allocinfo.commandBufferCount = spare_commands.size();
-    VK_DEMAND(vkAllocateCommandBuffers(host.m_device, &cmd_allocinfo, spare_commands.data()));
+    VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::instance().device(), &cmd_allocinfo, spare_commands.data()));
     for (auto it = spare_commands.begin() + 1; it != spare_commands.end(); ++it)
         m_spare_commands.push(*it);
 
@@ -80,7 +79,7 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
         wait_info.semaphoreCount = 1;
         wait_info.pSemaphores = &m_timeline;
         wait_info.pValues = &pass;
-        VK_DEMAND(vkWaitSemaphores(host.m_device, &wait_info, UINT64_MAX));
+        VK_DEMAND(vkWaitSemaphores(DisplayHost::instance().device(), &wait_info, UINT64_MAX));
     }
     vkResetCommandBuffer(spare_commands[0], VK_COMMAND_BUFFER_RESET_RELEASE_RESOURCES_BIT);
     m_spare_commands.push(spare_commands[0]);
@@ -95,28 +94,27 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
 
 SceneHost::~SceneHost()
 {
-    VkDevice device = r_renderer->r_host.m_device;
     QData terminate_payload { nullptr, VK_NULL_HANDLE, 0 };
     m_active = false;
-    r_renderer->r_host.m_frame_number = UINT32_MAX;
-    r_renderer->r_host.m_frame_number.notify_all();
+    DisplayHost::s_self->m_frame_number = UINT32_MAX;
+    DisplayHost::s_self->m_frame_number.notify_all();
     for (size_t i = 0; i < 2 * m_builders.size(); i++)
         m_builder_queue.push(terminate_payload);
     for (auto it = m_builders.begin(); it != m_builders.end(); ++it)
         it->join();
     m_scene_host.join();
 
-    vkDeviceWaitIdle(device);
+    vkDeviceWaitIdle(DisplayHost::instance().device());
     for (auto it = m_scenes.begin(); it != m_scenes.end(); ++it)
         delete it->first;
 
-    vkDestroyCommandPool(device, m_command_pool, nullptr);
-    vkDestroySemaphore(device, m_timeline, nullptr);
+    vkDestroyCommandPool(DisplayHost::instance().device(), m_command_pool, nullptr);
+    vkDestroySemaphore(DisplayHost::instance().device(), m_timeline, nullptr);
 }
 
 void SceneHost::scene_loop()
 {
-    DisplayHost& host = r_renderer->r_host;
+    const DisplayHost& host = DisplayHost::instance();
     std::array<uint64_t, 2> frame_time = { SDL_GetTicks(), 0 };
     while (m_active) {
         uint32_t frame_number = m_frame_number.load(std::memory_order_relaxed) + 1;
@@ -184,7 +182,7 @@ void SceneHost::builder_loop(int thread_id)
         QData job;
         m_builder_queue.pop(job);
         if (job.scene == nullptr && job.ticket == 0) {
-            vmaDestroyBuffer(r_renderer->r_host.m_allocator, m_staging_buffers[thread_id].buffer, m_staging_buffers[thread_id].mem);
+            vmaDestroyBuffer(DisplayHost::instance().allocator(), m_staging_buffers[thread_id].buffer, m_staging_buffers[thread_id].mem);
             return;
         }
 
@@ -213,7 +211,7 @@ void SceneHost::builder_loop(int thread_id)
 
                 // Because the builder thread blocks until the command buffer we just submitted is complete, we don't need any GPU waiting.
                 wait_info.pValues = &job.ticket;
-                VK_DEMAND(vkWaitSemaphores(r_renderer->device(), &wait_info, UINT64_MAX));
+                VK_DEMAND(vkWaitSemaphores(DisplayHost::instance().device(), &wait_info, UINT64_MAX));
             }
             SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup complete", job.scene, job.ticket);
             m_return_queue.push(job);

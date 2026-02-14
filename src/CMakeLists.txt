@@ -4,15 +4,18 @@ add_executable(twogame
     "main.cpp"
     "vk/allocator.cpp"
     "vk/displayhost.cpp"
+    "vk/pipeline.cpp"
     "vk/renderer.cpp"
     "vk/scene.cpp")
 target_include_directories(twogame PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_include_directories(twogame PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_link_libraries(twogame
     embedded_shaders
+    glm::glm
     ktx_read
     physfs
     SDL3::SDL3
+    spirv-reflect-static
     Vulkan::Vulkan
     Vulkan::volk
     VulkanMemoryAllocator)

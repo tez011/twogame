@@ -1,6 +1,7 @@
 #define VK_ENABLE_BETA_EXTENSIONS
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -51,6 +52,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
 
 namespace twogame {
 
+std::unique_ptr<DisplayHost> DisplayHost::s_self;
+
 DisplayHost::DisplayHost()
 {
     bool success = create_instance()
@@ -58,6 +61,7 @@ DisplayHost::DisplayHost()
         && create_surface()
         && pick_physical_device()
         && create_logical_device()
+        && create_pipeline_artifacts()
         && create_swapchain(VK_NULL_HANDLE)
         && create_syncobjects();
 
@@ -76,6 +80,11 @@ DisplayHost::~DisplayHost()
     for (auto it = m_sem_acquire_image.begin(); it != m_sem_acquire_image.end(); ++it)
         vkDestroySemaphore(m_device, *it, nullptr);
     vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+    vkDestroySampler(m_device, m_null_image_sampler, nullptr);
+    vkDestroyImageView(m_device, m_null_image_view, nullptr);
+    vmaDestroyImage(m_allocator, m_null_image, m_null_image_mem);
+    vkDestroyDescriptorSetLayout(m_device, m_empty_descriptor_set_layout, nullptr);
+    vkDestroyPipelineCache(m_device, m_pipeline_cache, nullptr);
     vkDestroyCommandPool(m_device, m_present_command_pool, nullptr);
     vmaDestroyAllocator(m_allocator);
     vkDestroyDevice(m_device, nullptr);
@@ -86,6 +95,18 @@ DisplayHost::~DisplayHost()
         vkDestroyDebugUtilsMessengerEXT(m_instance, m_debug_messenger, nullptr);
     }
     vkDestroyInstance(m_instance, nullptr);
+}
+
+void DisplayHost::init()
+{
+    SDL_assert(!s_self);
+    s_self = std::unique_ptr<DisplayHost> { new DisplayHost };
+}
+
+void DisplayHost::drop()
+{
+    SDL_assert(s_self);
+    s_self.reset();
 }
 
 bool DisplayHost::create_instance()
@@ -275,6 +296,7 @@ bool DisplayHost::pick_physical_device()
         DEMAND_FEATURE(available_features.features, depthClamp);
         DEMAND_FEATURE(available_features12, timelineSemaphore);
         DEMAND_FEATURE(available_features12, uniformBufferStandardLayout);
+        DEMAND_FEATURE(available_features13, inlineUniformBlock);
         DEMAND_FEATURE(available_features13, synchronization2);
         if (has_portability_subset) {
             DEMAND_FEATURE(portability_features, constantAlphaColorBlendFactors);
@@ -467,10 +489,15 @@ bool DisplayHost::create_logical_device()
         return false;
     });
 
+    return true;
+}
+
+bool DisplayHost::create_pipeline_artifacts()
+{
     VkCommandPoolCreateInfo pool_ci {};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool_ci.queueFamilyIndex = qf_graphics - 1;
+    pool_ci.queueFamilyIndex = m_queue_family_indexes[static_cast<size_t>(QueueType::Graphics)];
     VK_DEMAND(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_present_command_pool));
 
     VkCommandBufferAllocateInfo command_allocinfo {};
@@ -479,6 +506,67 @@ bool DisplayHost::create_logical_device()
     command_allocinfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     command_allocinfo.commandBufferCount = m_present_commands.size();
     VK_DEMAND(vkAllocateCommandBuffers(m_device, &command_allocinfo, m_present_commands.data()));
+
+    VkPipelineCacheCreateInfo pipeline_cache_createinfo {};
+    pipeline_cache_createinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    pipeline_cache_createinfo.flags = VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
+    VK_DEMAND(vkCreatePipelineCache(m_device, &pipeline_cache_createinfo, nullptr, &m_pipeline_cache));
+
+    VkDescriptorSetLayoutCreateInfo descriptor_set_layout_createinfo {};
+    descriptor_set_layout_createinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    VK_DEMAND(vkCreateDescriptorSetLayout(m_device, &descriptor_set_layout_createinfo, nullptr, &m_empty_descriptor_set_layout));
+
+    VkPhysicalDeviceFeatures2 device_features {};
+    VkPhysicalDeviceRobustness2FeaturesEXT device_features_robustness2 {};
+    device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+    device_features.pNext = &device_features_robustness2;
+    device_features_robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
+    vkGetPhysicalDeviceFeatures2(m_hwd, &device_features);
+    if (device_features_robustness2.nullDescriptor) {
+        m_null_image = VK_NULL_HANDLE;
+        m_null_image_view = VK_NULL_HANDLE;
+        m_null_image_mem = VK_NULL_HANDLE;
+        m_null_image_sampler = VK_NULL_HANDLE;
+    } else {
+        VkImageCreateInfo image_ci {};
+        VmaAllocationCreateInfo alloc_ci {};
+        image_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        image_ci.imageType = VK_IMAGE_TYPE_2D;
+        image_ci.format = VK_FORMAT_R8G8B8A8_UINT;
+        image_ci.extent.width = image_ci.extent.height = image_ci.extent.depth = 1;
+        image_ci.mipLevels = 1;
+        image_ci.arrayLayers = 1;
+        image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
+        image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
+        image_ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
+        image_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
+        VK_DEMAND(vmaCreateImage(m_allocator, &image_ci, &alloc_ci, &m_null_image, &m_null_image_mem, nullptr));
+
+        VkImageViewCreateInfo view_ci {};
+        view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+        view_ci.image = m_null_image;
+        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        view_ci.format = image_ci.format;
+        view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+        view_ci.subresourceRange.baseArrayLayer = 0;
+        view_ci.subresourceRange.layerCount = 1;
+        view_ci.subresourceRange.baseMipLevel = 0;
+        view_ci.subresourceRange.levelCount = 1;
+        VK_DEMAND(vkCreateImageView(m_device, &view_ci, nullptr, &m_null_image_view));
+
+        VkSamplerCreateInfo sampler_ci {};
+        sampler_ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+        sampler_ci.magFilter = sampler_ci.minFilter = VK_FILTER_NEAREST;
+        sampler_ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+        sampler_ci.addressModeU = sampler_ci.addressModeV = sampler_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+        sampler_ci.anisotropyEnable = VK_FALSE;
+        sampler_ci.minLod = 0;
+        sampler_ci.maxLod = VK_LOD_CLAMP_NONE;
+        sampler_ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
+        VK_DEMAND(vkCreateSampler(m_device, &sampler_ci, nullptr, &m_null_image_sampler));
+    }
 
     return true;
 }
@@ -696,6 +784,151 @@ SDL_AppResult DisplayHost::draw_frame(IRenderer* renderer, SceneHost* stage)
     present_image(swapchain_slot, output.image, output.signal);
 
     return SDL_APP_CONTINUE;
+}
+
+#define VK_FORMATS                      \
+    X(R4G4_UNORM_PACK8, 1, 2)           \
+    X(R4G4B4A4_UNORM_PACK16, 2, 4)      \
+    X(B4G4R4A4_UNORM_PACK16, 2, 4)      \
+    X(R5G6B5_UNORM_PACK16, 2, 3)        \
+    X(B5G6R5_UNORM_PACK16, 2, 3)        \
+    X(R5G5B5A1_UNORM_PACK16, 2, 4)      \
+    X(B5G5R5A1_UNORM_PACK16, 2, 4)      \
+    X(A1R5G5B5_UNORM_PACK16, 2, 4)      \
+    X(R8_UNORM, 1, 1)                   \
+    X(R8_SNORM, 1, 1)                   \
+    X(R8_USCALED, 1, 1)                 \
+    X(R8_SSCALED, 1, 1)                 \
+    X(R8_UINT, 1, 1)                    \
+    X(R8_SINT, 1, 1)                    \
+    X(R8_SRGB, 1, 1)                    \
+    X(R8G8_UNORM, 2, 2)                 \
+    X(R8G8_SNORM, 2, 2)                 \
+    X(R8G8_USCALED, 2, 2)               \
+    X(R8G8_SSCALED, 2, 2)               \
+    X(R8G8_UINT, 2, 2)                  \
+    X(R8G8_SINT, 2, 2)                  \
+    X(R8G8_SRGB, 2, 2)                  \
+    X(R8G8B8_UNORM, 3, 3)               \
+    X(R8G8B8_SNORM, 3, 3)               \
+    X(R8G8B8_USCALED, 3, 3)             \
+    X(R8G8B8_SSCALED, 3, 3)             \
+    X(R8G8B8_UINT, 3, 3)                \
+    X(R8G8B8_SINT, 3, 3)                \
+    X(R8G8B8_SRGB, 3, 3)                \
+    X(B8G8R8_UNORM, 3, 3)               \
+    X(B8G8R8_SNORM, 3, 3)               \
+    X(B8G8R8_USCALED, 3, 3)             \
+    X(B8G8R8_SSCALED, 3, 3)             \
+    X(B8G8R8_UINT, 3, 3)                \
+    X(B8G8R8_SINT, 3, 3)                \
+    X(B8G8R8_SRGB, 3, 3)                \
+    X(R8G8B8A8_UNORM, 4, 4)             \
+    X(R8G8B8A8_SNORM, 4, 4)             \
+    X(R8G8B8A8_USCALED, 4, 4)           \
+    X(R8G8B8A8_SSCALED, 4, 4)           \
+    X(R8G8B8A8_UINT, 4, 4)              \
+    X(R8G8B8A8_SINT, 4, 4)              \
+    X(R8G8B8A8_SRGB, 4, 4)              \
+    X(B8G8R8A8_UNORM, 4, 4)             \
+    X(B8G8R8A8_SNORM, 4, 4)             \
+    X(B8G8R8A8_USCALED, 4, 4)           \
+    X(B8G8R8A8_SSCALED, 4, 4)           \
+    X(B8G8R8A8_UINT, 4, 4)              \
+    X(B8G8R8A8_SINT, 4, 4)              \
+    X(B8G8R8A8_SRGB, 4, 4)              \
+    X(A8B8G8R8_UNORM_PACK32, 4, 4)      \
+    X(A8B8G8R8_SNORM_PACK32, 4, 4)      \
+    X(A8B8G8R8_USCALED_PACK32, 4, 4)    \
+    X(A8B8G8R8_SSCALED_PACK32, 4, 4)    \
+    X(A8B8G8R8_UINT_PACK32, 4, 4)       \
+    X(A8B8G8R8_SINT_PACK32, 4, 4)       \
+    X(A8B8G8R8_SRGB_PACK32, 4, 4)       \
+    X(A2R10G10B10_UNORM_PACK32, 4, 4)   \
+    X(A2R10G10B10_SNORM_PACK32, 4, 4)   \
+    X(A2R10G10B10_USCALED_PACK32, 4, 4) \
+    X(A2R10G10B10_SSCALED_PACK32, 4, 4) \
+    X(A2R10G10B10_UINT_PACK32, 4, 4)    \
+    X(A2R10G10B10_SINT_PACK32, 4, 4)    \
+    X(A2B10G10R10_UNORM_PACK32, 4, 4)   \
+    X(A2B10G10R10_SNORM_PACK32, 4, 4)   \
+    X(A2B10G10R10_USCALED_PACK32, 4, 4) \
+    X(A2B10G10R10_SSCALED_PACK32, 4, 4) \
+    X(A2B10G10R10_UINT_PACK32, 4, 4)    \
+    X(A2B10G10R10_SINT_PACK32, 4, 4)    \
+    X(R16_UNORM, 2, 1)                  \
+    X(R16_SNORM, 2, 1)                  \
+    X(R16_USCALED, 2, 1)                \
+    X(R16_SSCALED, 2, 1)                \
+    X(R16_UINT, 2, 1)                   \
+    X(R16_SINT, 2, 1)                   \
+    X(R16_SFLOAT, 2, 1)                 \
+    X(R16G16_UNORM, 4, 2)               \
+    X(R16G16_SNORM, 4, 2)               \
+    X(R16G16_USCALED, 4, 2)             \
+    X(R16G16_SSCALED, 4, 2)             \
+    X(R16G16_UINT, 4, 2)                \
+    X(R16G16_SINT, 4, 2)                \
+    X(R16G16_SFLOAT, 4, 2)              \
+    X(R16G16B16_UNORM, 6, 3)            \
+    X(R16G16B16_SNORM, 6, 3)            \
+    X(R16G16B16_USCALED, 6, 3)          \
+    X(R16G16B16_SSCALED, 6, 3)          \
+    X(R16G16B16_UINT, 6, 3)             \
+    X(R16G16B16_SINT, 6, 3)             \
+    X(R16G16B16_SFLOAT, 6, 3)           \
+    X(R16G16B16A16_UNORM, 8, 4)         \
+    X(R16G16B16A16_SNORM, 8, 4)         \
+    X(R16G16B16A16_USCALED, 8, 4)       \
+    X(R16G16B16A16_SSCALED, 8, 4)       \
+    X(R16G16B16A16_UINT, 8, 4)          \
+    X(R16G16B16A16_SINT, 8, 4)          \
+    X(R16G16B16A16_SFLOAT, 8, 4)        \
+    X(R32_UINT, 4, 1)                   \
+    X(R32_SINT, 4, 1)                   \
+    X(R32_SFLOAT, 4, 1)                 \
+    X(R32G32_UINT, 8, 2)                \
+    X(R32G32_SINT, 8, 2)                \
+    X(R32G32_SFLOAT, 8, 2)              \
+    X(R32G32B32_UINT, 12, 3)            \
+    X(R32G32B32_SINT, 12, 3)            \
+    X(R32G32B32_SFLOAT, 12, 3)          \
+    X(R32G32B32A32_UINT, 16, 4)         \
+    X(R32G32B32A32_SINT, 16, 4)         \
+    X(R32G32B32A32_SFLOAT, 16, 4)       \
+    X(R64_UINT, 8, 1)                   \
+    X(R64_SINT, 8, 1)                   \
+    X(R64_SFLOAT, 8, 1)                 \
+    X(R64G64_UINT, 16, 2)               \
+    X(R64G64_SINT, 16, 2)               \
+    X(R64G64_SFLOAT, 16, 2)             \
+    X(R64G64B64_UINT, 24, 3)            \
+    X(R64G64B64_SINT, 24, 3)            \
+    X(R64G64B64_SFLOAT, 24, 3)          \
+    X(R64G64B64A64_UINT, 32, 4)         \
+    X(R64G64B64A64_SINT, 32, 4)         \
+    X(R64G64B64A64_SFLOAT, 32, 4)       \
+    X(B10G11R11_UFLOAT_PACK32, 4, 3)    \
+    X(E5B9G9R9_UFLOAT_PACK32, 4, 3)     \
+    X(D16_UNORM, 2, 1)                  \
+    X(X8_D24_UNORM_PACK32, 4, 1)        \
+    X(D32_SFLOAT, 4, 1)                 \
+    X(S8_UINT, 1, 1)                    \
+    X(D16_UNORM_S8_UINT, 3, 2)          \
+    X(D24_UNORM_S8_UINT, 4, 2)          \
+    X(D32_SFLOAT_S8_UINT, 8, 2)
+
+size_t DisplayHost::format_width(VkFormat fmt)
+{
+#define X(FMT, SIZE, COMPONENTS) \
+    case VK_FORMAT_##FMT:        \
+        return SIZE;
+    switch (fmt) {
+        VK_FORMATS
+    default:
+        return 0;
+    }
+#undef X
 }
 
 }
