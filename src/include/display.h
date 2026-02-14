@@ -2,6 +2,11 @@
 #define VK_NO_PROTOTYPES
 #include <array>
 #include <atomic>
+#include <deque>
+#include <list>
+#include <map>
+#include <memory>
+#include <span>
 #include <vector>
 #include <SDL3/SDL.h>
 #include <volk.h>
@@ -29,9 +34,9 @@
 namespace twogame {
 
 class IRenderer;
-class IScene;
 class DisplayHost;
 class SceneHost;
+class Pipeline;
 
 enum class QueueType {
     Graphics,
@@ -41,8 +46,8 @@ enum class QueueType {
 };
 
 class DisplayHost final {
-    friend class IRenderer;
     friend class SceneHost;
+    static std::unique_ptr<DisplayHost> s_self;
 
 public:
     constexpr static uint32_t API_VERSION = VK_API_VERSION_1_3;
@@ -57,6 +62,7 @@ private:
     VkPhysicalDevice m_hwd = VK_NULL_HANDLE;
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
+    VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
     std::array<uint32_t, static_cast<size_t>(QueueType::MAX_VALUE)> m_queue_family_indexes;
     VkSwapchainKHR m_swapchain;
     VkExtent2D m_swapchain_extent;
@@ -64,6 +70,12 @@ private:
     bool m_swapchain_recreated = false;
     VkFormat m_swapchain_format, m_depth_format;
     VkCommandPool m_present_command_pool;
+
+    VkDescriptorSetLayout m_empty_descriptor_set_layout;
+    VkImage m_null_image;
+    VkImageView m_null_image_view;
+    VmaAllocation m_null_image_mem;
+    VkSampler m_null_image_sampler;
 
     std::vector<VkSemaphore> m_sem_submit_image;
     std::array<VkSemaphore, SIMULTANEOUS_FRAMES> m_sem_acquire_image;
@@ -75,22 +87,216 @@ private:
     bool create_surface();
     bool pick_physical_device();
     bool create_logical_device();
+    bool create_pipeline_artifacts();
     bool create_swapchain(VkSwapchainKHR old_swapchain);
     bool create_syncobjects();
     bool recreate_swapchain();
 
+    DisplayHost();
     int32_t acquire_image();
     void present_image(uint32_t index, VkImage image, VkSemaphore signal);
 
 public:
-    DisplayHost();
+    static void init();
+    static void drop();
+    static DisplayHost& owned()
+    {
+        return *s_self;
+    }
+    static const DisplayHost& instance()
+    {
+        return *s_self;
+    }
     ~DisplayHost();
+    DisplayHost(DisplayHost&) = delete;
+    DisplayHost& operator=(const DisplayHost&) = delete;
+    DisplayHost(DisplayHost&&) = delete;
+    DisplayHost& operator=(DisplayHost&&) = delete;
 
-    inline constexpr VkDevice device() const { return m_device; }
-    inline constexpr VmaAllocator allocator() const { return m_allocator; }
-    inline constexpr uint32_t queue_family_index(QueueType t) { return m_queue_family_indexes[static_cast<size_t>(t)]; }
+    static size_t format_width(VkFormat);
+
+    inline VkDevice device() const { return m_device; }
+    inline VmaAllocator allocator() const { return m_allocator; }
+    inline VkPhysicalDevice hardware_device() const { return m_hwd; }
+    inline VkFormat swapchain_format() const { return m_swapchain_format; }
+    inline VkExtent2D swapchain_extent() const { return m_swapchain_extent; }
+    inline VkFormat depth_format() const { return m_depth_format; }
+    inline uint32_t queue_family_index(QueueType t) const { return m_queue_family_indexes[static_cast<size_t>(t)]; }
+    inline VkPipelineCache pipeline_cache() const { return m_pipeline_cache; }
+
+    inline VkDescriptorSetLayout empty_descriptor_set_layout() const { return m_empty_descriptor_set_layout; }
+    inline VkImageView null_image_view() const { return m_null_image_view; }
+    inline VkSampler null_sampler() const { return m_null_image_sampler; }
 
     SDL_AppResult draw_frame(IRenderer*, SceneHost*);
+};
+
+class BufferPool {
+    std::vector<std::tuple<VkBuffer, VmaAllocation, VmaAllocationInfo>> m_buffers;
+    std::vector<bool> m_bits;
+    std::vector<bool>::iterator m_bits_it;
+    size_t m_unit_size, m_count;
+    VkBufferUsageFlags m_usage;
+    VmaAllocationCreateFlags m_alloc_flags;
+
+    std::vector<bool>::iterator extend();
+
+public:
+    using index_t = uint32_t;
+    BufferPool(VkBufferUsageFlags usage, VmaAllocationCreateFlags alloc_flags, size_t unit_size, index_t count = 0x1000);
+    ~BufferPool();
+
+    index_t allocate();
+    void free(index_t);
+
+    std::tuple<VkBuffer, VkDeviceAddress, VkDeviceSize> buffer_handle(index_t);
+    std::span<std::byte> buffer_memory(index_t);
+};
+
+struct DescriptorBindingInfo : public VkDescriptorSetLayoutBinding {
+    VkDeviceSize uniform_buffer_size;
+};
+
+class DescriptorPool;
+class DescriptorSet {
+    DescriptorPool* r_pool;
+    VkDescriptorSet m_set;
+
+public:
+    class Update {
+    public:
+        class Set {
+        public:
+            class Binding {
+                Set& r_update;
+                VkWriteDescriptorSet& m_write;
+
+            public:
+                Binding(Set& update, VkWriteDescriptorSet& write, uint32_t binding, uint32_t array_element);
+                Update& write_image(VkImageView, VkSampler, VkImageLayout);
+                Update& write_buffer(VkBuffer, VkDeviceAddress, VkDeviceSize);
+                Update& write_buffer(std::tuple<VkBuffer, VkDeviceAddress, VkDeviceSize>);
+            };
+
+        private:
+            Update& r_update;
+            DescriptorSet& r_set;
+            VkWriteDescriptorSet& m_write;
+
+        public:
+            Set(Update& update, VkWriteDescriptorSet& write, DescriptorSet& set);
+            Binding binding(uint32_t binding, uint32_t array_element = 0);
+        };
+
+    private:
+        std::vector<VkWriteDescriptorSet> m_writes;
+        std::list<VkDescriptorBufferInfo> m_buffers;
+        std::list<VkDescriptorImageInfo> m_images;
+
+    public:
+        Update()
+        {
+        }
+        Set set(DescriptorSet& set);
+        void finish();
+
+        friend class Binding;
+    };
+
+    DescriptorSet()
+        : r_pool(nullptr)
+        , m_set(VK_NULL_HANDLE)
+    {
+    }
+    DescriptorSet(DescriptorPool& pool, VkDescriptorSet set)
+        : r_pool(&pool)
+        , m_set(set)
+    {
+    }
+    ~DescriptorSet();
+
+    inline operator VkDescriptorSet() const { return m_set; }
+};
+
+class DescriptorPool {
+    friend class DescriptorSet;
+    constexpr static size_t DESCRIPTOR_SETS_PER_POOL = 1024;
+
+    VkDescriptorSetLayout r_layout;
+    std::vector<DescriptorBindingInfo> m_bindings;
+
+    VkDescriptorPool m_pool;
+    std::deque<DescriptorSet> m_free_sets;
+    size_t m_alloc_count;
+
+public:
+    DescriptorPool(VkDescriptorSetLayout layout, const std::vector<DescriptorBindingInfo>& bindings);
+    DescriptorPool(const DescriptorPool&) = delete;
+    ~DescriptorPool();
+
+    inline const DescriptorBindingInfo& bindings(size_t i) const { return m_bindings[i]; }
+    inline bool full() const { return m_alloc_count == DESCRIPTOR_SETS_PER_POOL && m_free_sets.empty(); }
+
+    DescriptorSet allocate();
+    void free(DescriptorSet&& set);
+};
+
+class Pipeline {
+    friend class IRenderer;
+    friend class PipelineBuilder;
+
+    std::array<std::vector<DescriptorBindingInfo>, 4> m_descriptor_bindings;
+    std::array<VkDescriptorSetLayout, 4> m_descriptor_set_layouts;
+    std::array<std::list<DescriptorPool>, 4> m_descriptor_pools;
+
+    VkPipelineLayout m_layout;
+    VkPipeline m_pipeline;
+
+    Pipeline()
+        : m_layout(VK_NULL_HANDLE)
+        , m_pipeline(VK_NULL_HANDLE)
+    {
+    }
+    void create_layout(const std::array<std::vector<DescriptorBindingInfo>, 4>& descriptor_bindings,
+        const std::vector<VkPushConstantRange>& push_constant_ranges);
+    void create_pipeline(VkGraphicsPipelineCreateInfo&, VkPipelineCache cache = VK_NULL_HANDLE);
+    void create_pipeline(VkComputePipelineCreateInfo&, VkPipelineCache cache = VK_NULL_HANDLE);
+
+public:
+    Pipeline(const Pipeline&) = delete;
+    Pipeline(Pipeline&&);
+    ~Pipeline();
+
+    constexpr inline operator VkPipeline() const { return m_pipeline; }
+    constexpr inline VkPipelineLayout layout() const { return m_layout; }
+    constexpr inline VkDescriptorSetLayout descriptor_set_layout(size_t i) const { return m_descriptor_set_layouts[i]; }
+
+    DescriptorSet allocate_descriptor_set(int set);
+};
+
+class PipelineBuilder {
+    friend class IRenderer;
+
+    bool m_is_graphics;
+    VkPrimitiveTopology m_primitive_topology;
+    VkBool32 m_depth_clamp;
+    std::pair<VkRenderPass, uint32_t> m_render_pass;
+    std::vector<VkShaderModuleCreateInfo> m_shader_modules_ci;
+    std::vector<VkPipelineShaderStageCreateInfo> m_pipeline_shaders;
+    std::vector<VkSpecializationInfo> m_shader_specializations;
+
+    PipelineBuilder(const PipelineBuilder&) = delete;
+    void reset(bool is_graphics);
+
+public:
+    PipelineBuilder() { }
+    PipelineBuilder& new_graphics(VkRenderPass render_pass, uint32_t subpass);
+    PipelineBuilder& new_compute();
+    PipelineBuilder& with_shader(const uint32_t* text, size_t size, VkShaderStageFlagBits stage, const void* specialization = nullptr, size_t specialization_size = 0, std::span<const VkSpecializationMapEntry> specialization_map = {});
+    PipelineBuilder& with_depth_clamp(bool);
+    PipelineBuilder& with_primitive_topology(VkPrimitiveTopology);
+
+    Pipeline build();
 };
 
 class IRenderer {
@@ -99,17 +305,10 @@ class IRenderer {
 protected:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
 
-    DisplayHost& r_host;
     VkRenderPass m_render_pass;
-    std::vector<VkDescriptorSetLayout> m_descriptor_layout;
-    std::vector<VkPipelineLayout> m_pipeline_layout;
-    std::vector<VkPipeline> m_pipeline;
+    std::vector<Pipeline> m_pipelines;
 
-    IRenderer(DisplayHost* host)
-        : r_host(*host)
-        , m_render_pass(VK_NULL_HANDLE)
-    {
-    }
+    IRenderer();
 
 public:
     struct Output {
@@ -124,17 +323,8 @@ public:
 
     virtual ~IRenderer();
 
-    inline constexpr VkPhysicalDevice hardware_device() const { return r_host.m_hwd; }
-    inline constexpr VkDevice device() const { return r_host.m_device; }
-    inline constexpr VmaAllocator allocator() const { return r_host.m_allocator; }
-    inline constexpr VkFormat swapchain_format() const { return r_host.m_swapchain_format; }
-    inline constexpr VkExtent2D swapchain_extent() const { return r_host.m_swapchain_extent; }
-    inline constexpr VkFormat depth_format() const { return r_host.m_depth_format; }
-    inline constexpr uint32_t queue_family_index(QueueType t) { return r_host.m_queue_family_indexes[static_cast<size_t>(t)]; }
     inline VkRenderPass render_pass() const { return m_render_pass; }
-    inline VkPipeline pipeline(size_t i) const { return m_pipeline[i]; }
-    inline VkPipelineLayout pipeline_layout(size_t i) const { return m_pipeline_layout[i]; }
-    inline VkDescriptorSetLayout descriptor_set_layout(size_t i) const { return m_descriptor_layout[i]; }
+    inline Pipeline& pipeline(size_t i) { return m_pipelines[i]; }
 
     virtual Output draw(SceneHost*, uint32_t frame_number) = 0;
     virtual void recreate_subpass_data(uint32_t frame_number) = 0;
@@ -170,7 +360,7 @@ class SimpleForwardRenderer final : public IRenderer {
     void destroy_subpass_data(AllSubpasses&);
 
 public:
-    SimpleForwardRenderer(DisplayHost* host);
+    SimpleForwardRenderer();
     ~SimpleForwardRenderer();
 
     virtual Output draw(SceneHost*, uint32_t frame_number);

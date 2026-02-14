@@ -11,6 +11,8 @@
 
 namespace twogame {
 
+class IScene;
+
 class SceneHost final {
 public:
     constexpr static VkDeviceSize STAGING_BUFFER_SIZE = 1 << 29;
@@ -48,7 +50,7 @@ private:
     struct StagingBuffer {
         VkBuffer buffer;
         VmaAllocation mem;
-        unsigned char* ptr;
+        std::byte* ptr;
     };
     constexpr static int BUILDER_THREAD_COUNT = 2;
     std::array<std::thread, BUILDER_THREAD_COUNT> m_builders;
@@ -87,17 +89,11 @@ class IScene {
 protected:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
 
-    VkDevice r_device;
-    VmaAllocator r_allocator;
-    IScene(DisplayHost* host)
-        : r_device(host->device())
-        , r_allocator(host->allocator())
-    {
-    }
+    IScene() { }
 
 public:
     virtual ~IScene() { }
-    virtual bool construct(IRenderer*, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, unsigned char* staging_data) = 0;
+    virtual bool construct(IRenderer*, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, std::byte* staging_data) = 0;
     virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
     virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
     virtual void record_commands(IRenderer*, uint32_t frame_number) = 0;
