@@ -1,8 +1,6 @@
 #define SDL_MAIN_USE_CALLBACKS
 #include <iostream>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/gtc/quaternion.hpp>
+#include <cglm/cglm.h>
 #include <ktx.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
@@ -14,112 +12,6 @@
 #define SHORT_APP_NAME "twogame_demo"
 #define SHORT_ORG_NAME "tez011"
 
-class ktx_mip_iterate_userdata {
-private:
-    std::vector<VkBufferImageCopy> m_regions;
-    uint32_t m_layer_count;
-    VkDeviceSize m_offset;
-
-public:
-    ktx_mip_iterate_userdata(uint32_t layer_count, VkDeviceSize offset)
-        : m_layer_count(layer_count)
-        , m_offset(offset)
-    {
-        m_regions.reserve(layer_count);
-    }
-
-    const std::vector<VkBufferImageCopy>& regions() const { return m_regions; }
-
-    void add_region(int miplevel, int face, int width, int height, int depth, ktx_uint64_t face_lod_size)
-    {
-        VkBufferImageCopy& region = m_regions.emplace_back();
-        region.bufferOffset = m_offset;
-        region.bufferRowLength = 0;
-        region.bufferImageHeight = 0;
-        region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        region.imageSubresource.mipLevel = miplevel;
-        region.imageSubresource.baseArrayLayer = face;
-        region.imageSubresource.layerCount = m_layer_count;
-        region.imageOffset = { 0, 0, 0 };
-        region.imageExtent.width = width;
-        region.imageExtent.height = height;
-        region.imageExtent.depth = depth;
-        m_offset += face_lod_size;
-    }
-};
-
-ktxStream ktx_physfs_istream(PHYSFS_File* fh)
-{
-    ktxStream stream {};
-    stream.type = eStreamTypeCustom;
-    stream.read = [](ktxStream* self, void* dst, const ktx_size_t count) {
-        PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-        PHYSFS_sint64 rs = PHYSFS_readBytes(fh, dst, count);
-        if (rs < 0)
-            return KTX_FILE_READ_ERROR;
-        else if (static_cast<ktx_size_t>(rs) < count && PHYSFS_eof(fh))
-            return KTX_FILE_UNEXPECTED_EOF;
-        else
-            return KTX_SUCCESS;
-    };
-    stream.skip = [](ktxStream* self, const ktx_size_t count) {
-        PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-        PHYSFS_sint64 tell = PHYSFS_tell(fh);
-        if (tell == -1)
-            return KTX_FILE_SEEK_ERROR;
-        if (PHYSFS_seek(fh, tell + count))
-            return KTX_SUCCESS;
-        if (PHYSFS_getLastErrorCode() == PHYSFS_ERR_PAST_EOF)
-            return KTX_FILE_UNEXPECTED_EOF;
-        else
-            return KTX_FILE_SEEK_ERROR;
-    };
-    stream.write = nullptr;
-    stream.getpos = [](ktxStream* self, ktx_off_t* const offset) {
-        if (offset) {
-            PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-            PHYSFS_sint64 tell = PHYSFS_tell(fh);
-            if (tell == -1)
-                return KTX_FILE_SEEK_ERROR;
-            *offset = tell;
-        }
-        return KTX_SUCCESS;
-    };
-    stream.setpos = [](ktxStream* self, const ktx_off_t offset) {
-        PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-        if (PHYSFS_seek(fh, offset))
-            return KTX_SUCCESS;
-        if (PHYSFS_getLastErrorCode() == PHYSFS_ERR_PAST_EOF)
-            return KTX_FILE_UNEXPECTED_EOF;
-        else
-            return KTX_FILE_SEEK_ERROR;
-    };
-    stream.getsize = [](ktxStream* self, ktx_size_t* const size) {
-        PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-        PHYSFS_sint64 sz = PHYSFS_fileLength(fh);
-        if (sz == -1)
-            return KTX_FILE_DATA_ERROR;
-        if (size)
-            *size = sz;
-        return KTX_SUCCESS;
-    };
-    stream.destruct = [](ktxStream* self) {
-        PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-        PHYSFS_close(fh);
-    };
-    stream.data.custom_ptr.address = fh;
-    stream.closeOnDestruct = KTX_TRUE;
-    return stream;
-}
-
-static ktx_error_code_e ktx_mip_iterate(int miplevel, int face, int width, int height, int depth, ktx_uint64_t face_lod_size, void* pixels, void* userdata)
-{
-    ktx_mip_iterate_userdata* mip_data = reinterpret_cast<ktx_mip_iterate_userdata*>(userdata);
-    mip_data->add_region(miplevel, face, width, height, depth, face_lod_size);
-    (void)(pixels);
-    return KTX_SUCCESS;
-}
-
 class DuckScene : public twogame::IScene {
     // Descriptor info, from renderer/shaders. It is not clear to me that this belongs to the scene,
     // but the scene totally does define the data written to these buffers
@@ -130,10 +22,9 @@ class DuckScene : public twogame::IScene {
     std::array<VmaAllocation, SIMULTANEOUS_FRAMES> m_uniform_buffer_mem;
 
     VkBuffer m_buffer;
-    VkImage m_image;
-    VkImageView m_image_view;
     VkSampler m_sampler;
-    VmaAllocation m_mem, m_image_mem;
+    VmaAllocation m_mem;
+    twogame::asset::Image m_image;
     std::array<VkCommandPool, SIMULTANEOUS_FRAMES> m_draw_cmd_pool;
     std::array<std::array<VkCommandBuffer, 1>, SIMULTANEOUS_FRAMES> m_draw_cmd;
 
@@ -143,7 +34,7 @@ public:
     }
     virtual ~DuckScene();
 
-    virtual bool construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, std::byte* staging_data);
+    virtual bool construct(twogame::IRenderer* renderer, int pass, twogame::SceneHost::StagingBuffer& staging);
     virtual void handle_event(const SDL_Event& evt, twogame::SceneHost* stage);
     virtual void tick(uint64_t frame_time, uint64_t delta_time, twogame::SceneHost* stage);
     virtual void record_commands(twogame::IRenderer* renderer, uint32_t frame_number);
@@ -154,8 +45,6 @@ public:
 DuckScene::~DuckScene()
 {
     vkDestroySampler(twogame::DisplayHost::instance().device(), m_sampler, nullptr);
-    vkDestroyImageView(twogame::DisplayHost::instance().device(), m_image_view, nullptr);
-    vmaDestroyImage(twogame::DisplayHost::instance().allocator(), m_image, m_image_mem);
     vmaDestroyBuffer(twogame::DisplayHost::instance().allocator(), m_buffer, m_mem);
     for (auto it = m_draw_cmd_pool.begin(); it != m_draw_cmd_pool.end(); ++it)
         vkDestroyCommandPool(twogame::DisplayHost::instance().device(), *it, nullptr);
@@ -165,18 +54,16 @@ DuckScene::~DuckScene()
     vkDestroyDescriptorPool(twogame::DisplayHost::instance().device(), m_descriptor_pool, nullptr);
 }
 
-bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_commands, int pass, VkBuffer staging_buffer, std::byte* staging_data)
+bool DuckScene::construct(twogame::IRenderer* renderer, int pass, twogame::SceneHost::StagingBuffer& staging)
 {
     size_t staging_offset = 0;
     PHYSFS_File* duckdata = PHYSFS_openRead("/data/duck.bin");
-    PHYSFS_File* imagedata = PHYSFS_openRead("/data/duck.i0.ktx2");
     SDL_assert(duckdata);
-    SDL_assert(imagedata);
 
     VkCommandPoolCreateInfo pool_info {};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pool_info.queueFamilyIndex = twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Graphics);
+    pool_info.queueFamilyIndex = twogame::DisplayHost::instance().queue_family_index();
 
     VkCommandBufferAllocateInfo alloc_info {};
     alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
@@ -194,17 +81,12 @@ bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_
         m_descriptor_sets[i][1] = renderer->pipeline(0).allocate_descriptor_set(1);
     }
 
-    VkImageCreateInfo image_info {};
-    VkImageViewCreateInfo image_view_info {};
     VkBufferCreateInfo buffer_info {};
     VmaAllocationCreateInfo mem_createinfo {};
     VmaAllocationInfo mem_info;
     void* mapped_buffer;
     buffer_info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    image_info.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    image_view_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-
-    buffer_info.size = sizeof(glm::mat4);
+    buffer_info.size = sizeof(mat4);
     buffer_info.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     buffer_info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     mem_createinfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT;
@@ -228,77 +110,17 @@ bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_
         if ((mem_type_flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
             vmaFlushAllocation(twogame::DisplayHost::instance().allocator(), m_mem, 0, VK_WHOLE_SIZE);
     } else {
-        VkBufferCopy copy {};
-        copy.srcOffset = 0;
-        copy.dstOffset = 0;
+        VkBufferCopy2 copy {};
+        copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
+        copy.srcOffset = copy.dstOffset = 0;
         copy.size = buffer_info.size;
-        PHYSFS_readBytes(duckdata, staging_data + staging_offset, buffer_info.size);
-        vkCmdCopyBuffer(prepare_commands, staging_buffer, m_buffer, 1, &copy);
+        PHYSFS_readBytes(duckdata, staging.window(staging_offset).data(), buffer_info.size);
+        staging.copy_buffer(m_buffer, buffer_info.size, std::span(&copy, 1), VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
         staging_offset += (buffer_info.size + 15) & ~15;
-
-        if (twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Graphics) != twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Transfer)) {
-            VkDependencyInfo dep {};
-            VkBufferMemoryBarrier2 barrier {};
-
-            dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
-            dep.bufferMemoryBarrierCount = 1;
-            dep.pBufferMemoryBarriers = &barrier;
-            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2;
-            barrier.srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
-            barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
-            barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
-            barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-            barrier.srcQueueFamilyIndex = twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Transfer);
-            barrier.dstQueueFamilyIndex = twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Graphics);
-            barrier.buffer = m_buffer;
-            barrier.offset = mem_info.offset;
-            barrier.size = mem_info.size;
-            vkCmdPipelineBarrier2(prepare_commands, &dep);
-        }
     }
 
-    ktxTexture2* ktx2 = nullptr;
-    ktxStream kstream = ktx_physfs_istream(imagedata);
-    ktx_error_code_e k_res = ktxTexture2_CreateFromStream(&kstream, 0, &ktx2);
-    SDL_assert(k_res == KTX_SUCCESS);
-    SDL_assert(ktx2->vkFormat);
-
-    ktxTexture* ktx = reinterpret_cast<ktxTexture*>(ktx2);
-    SDL_assert(ktx->numDimensions > 0 && ktx->numDimensions < 4);
-    SDL_assert(ktx->generateMipmaps == false);
-
-    image_info.flags = 0;
-    image_info.imageType = static_cast<VkImageType>(ktx->numDimensions - 1);
-    image_info.format = static_cast<VkFormat>(ktx2->vkFormat);
-    image_info.extent.width = ktx->baseWidth;
-    image_info.extent.height = ktx->baseHeight;
-    image_info.extent.depth = ktx->baseDepth;
-    image_info.mipLevels = ktx->numLevels;
-    image_info.samples = VK_SAMPLE_COUNT_1_BIT;
-    image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-    image_info.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
-    if (ktx->isArray) {
-        image_info.arrayLayers = ktx->numLayers;
-        image_info.flags |= VK_IMAGE_CREATE_2D_ARRAY_COMPATIBLE_BIT;
-    } else {
-        image_info.arrayLayers = 1;
-    }
-    if (ktx->isCubemap) {
-        image_info.arrayLayers *= 6;
-        image_info.flags |= VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    }
-    mem_createinfo.flags = 0;
-    mem_createinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    VK_DEMAND(vmaCreateImage(twogame::DisplayHost::instance().allocator(), &image_info, &mem_createinfo, &m_image, &m_image_mem, nullptr));
-    image_view_info.image = m_image;
-    image_view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    image_view_info.format = image_info.format;
-    image_view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    image_view_info.subresourceRange.baseMipLevel = 0;
-    image_view_info.subresourceRange.levelCount = image_info.mipLevels;
-    image_view_info.subresourceRange.baseArrayLayer = 0;
-    image_view_info.subresourceRange.layerCount = image_info.arrayLayers;
-    VK_DEMAND(vkCreateImageView(twogame::DisplayHost::instance().device(), &image_view_info, nullptr, &m_image_view));
+    m_image.prepare(staging, staging_offset);
+    staging_offset += m_image.prepare_needs();
 
     VkSamplerCreateInfo sampler_info {};
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -311,51 +133,14 @@ bool DuckScene::construct(twogame::IRenderer* renderer, VkCommandBuffer prepare_
     sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     VK_DEMAND(vkCreateSampler(twogame::DisplayHost::instance().device(), &sampler_info, nullptr, &m_sampler));
 
-    SDL_assert(ktxTexture_LoadImageData(ktx, (ktx_uint8_t*)staging_data + staging_offset, twogame::SceneHost::STAGING_BUFFER_SIZE - staging_offset) == KTX_SUCCESS);
-    ktx_mip_iterate_userdata mip_data(image_info.arrayLayers, staging_offset);
-    SDL_assert(ktxTexture_IterateLevels(ktx, ktx_mip_iterate, &mip_data) == KTX_SUCCESS);
-    staging_offset += (ktxTexture_GetDataSizeUncompressed(ktx) + 15) & ~15;
-
-    VkImageMemoryBarrier barrier {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = m_image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = image_info.mipLevels;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = image_info.arrayLayers;
-    barrier.srcAccessMask = 0;
-    barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    vkCmdPipelineBarrier(prepare_commands, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    vkCmdCopyBufferToImage(prepare_commands, staging_buffer, m_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, mip_data.regions().size(), mip_data.regions().data());
-
-    barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-    barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-    if (twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Graphics) != twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Transfer)) {
-        barrier.srcQueueFamilyIndex = twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Transfer);
-        barrier.dstQueueFamilyIndex = twogame::DisplayHost::instance().queue_family_index(twogame::QueueType::Graphics);
-    }
-    vkCmdPipelineBarrier(prepare_commands, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    // TODO many things:  - Use the pipeline barrier 2 interface
-    // - Submit all image layout transitions batched together first, then do all buffer/image copies, then all QF/post barriers together after
-    // but this is fine for now
-
     twogame::DescriptorSet::Update update;
     for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++) {
-        update.set(m_descriptor_sets[i][0]).binding(0).write_buffer(m_uniform_buffer[0], 0, sizeof(glm::mat4))
-            .set(m_descriptor_sets[i][1]).binding(0).write_image(m_image_view, m_sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        update.set(m_descriptor_sets[i][0]).binding(0).write_buffer(m_uniform_buffer[0], 0, sizeof(mat4));
+        update.set(m_descriptor_sets[i][1]).binding(0).write_image(m_image.view(), m_sampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     }
     update.finish();
 
-    ktxTexture_Destroy(ktx);
     PHYSFS_close(duckdata);
-    PHYSFS_close(imagedata);
     return true;
 }
 
@@ -372,19 +157,20 @@ void DuckScene::record_commands(twogame::IRenderer* renderer, uint32_t frame_num
     vkResetCommandPool(twogame::DisplayHost::instance().device(), m_draw_cmd_pool[frame_number % SIMULTANEOUS_FRAMES], 0);
 
     // proj should come from renderer
-    float cot_vertical_fov = 1.0f / glm::tan(glm::radians(45.0) * 0.5);
-    glm::mat4 proj(0.0f);
+    float cot_vertical_fov = 1.0f / SDL_tanf(35 * SDL_PI_F / 360.f);
+    mat4 proj = GLM_MAT4_ZERO_INIT, view, proj_view;
+    vec3 eye = { 0, 250, -400 }, toward = { 0, 100, 0 };
+    glm_lookat(eye, toward, GLM_YUP, view);
     proj[0][0] = cot_vertical_fov * twogame::DisplayHost::instance().swapchain_extent().height / twogame::DisplayHost::instance().swapchain_extent().width;
     proj[1][1] = -cot_vertical_fov;
     proj[2][2] = -1.0f;
     proj[2][3] = -1.0f;
     proj[3][2] = -0.1f;
-    glm::mat4 view = glm::lookAt(glm::vec3(0, 250, -400), glm::vec3(0, 100, 0), glm::vec3(0, 1, 0));
-    glm::mat4 proj_view = proj * view;
+    glm_mat4_mul(proj, view, proj_view);
 
     void* mapped_buffer;
     vmaMapMemory(twogame::DisplayHost::instance().allocator(), m_uniform_buffer_mem[frame_number % SIMULTANEOUS_FRAMES], &mapped_buffer);
-    memcpy(mapped_buffer, &proj_view, sizeof(glm::mat4));
+    memcpy(mapped_buffer, proj_view, sizeof(mat4));
     vmaUnmapMemory(twogame::DisplayHost::instance().allocator(), m_uniform_buffer_mem[frame_number % SIMULTANEOUS_FRAMES]);
     vmaFlushAllocation(twogame::DisplayHost::instance().allocator(), m_uniform_buffer_mem[frame_number % SIMULTANEOUS_FRAMES], 0, VK_WHOLE_SIZE);
 
@@ -445,7 +231,7 @@ struct AppState {
     twogame::SceneHost* stage;
 
     AppState()
-        :renderer(nullptr)
+        : renderer(nullptr)
         , stage(nullptr)
     {
     }
@@ -459,7 +245,7 @@ SDL_AppResult SDL_AppInit(void** _appstate, int argc, char** argv)
     SDL_SetAppMetadata(APP_NAME, "0.0", "gh." SHORT_ORG_NAME "." SHORT_APP_NAME);
     SDL_SetAppMetadataProperty(SDL_PROP_APP_METADATA_CREATOR_STRING, ORG_NAME);
 #ifdef DEBUG_BUILD
-    SDL_SetLogPriorities(SDL_LOG_PRIORITY_DEBUG);
+    SDL_SetLogPriorities(SDL_LOG_PRIORITY_TRACE);
 #endif
     Uint32 init_flags = SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_JOYSTICK | SDL_INIT_HAPTIC | SDL_INIT_GAMEPAD | SDL_INIT_EVENTS | SDL_INIT_SENSOR;
     if (volkInitialize() != VK_SUCCESS) {
@@ -547,7 +333,7 @@ SDL_AppResult SDL_AppEvent(void* _appstate, SDL_Event* evt)
 SDL_AppResult SDL_AppIterate(void* _appstate)
 {
     AppState* appstate = reinterpret_cast<AppState*>(_appstate);
-    appstate->stage->tick();
+    appstate->stage->tick(); // TODO remove
     twogame::DisplayHost::owned().draw_frame(appstate->renderer, appstate->stage);
     return SDL_APP_CONTINUE;
 }

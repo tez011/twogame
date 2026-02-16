@@ -17,7 +17,7 @@ IRenderer::~IRenderer()
 
 SimpleForwardRenderer::SimpleForwardRenderer()
 {
-    vkGetDeviceQueue(DisplayHost::instance().device(), DisplayHost::instance().queue_family_index(QueueType::Graphics), 0, &m_graphics_queue);
+    vkGetDeviceQueue(DisplayHost::instance().device(), DisplayHost::instance().queue_family_index(), 0, &m_graphics_queue);
 
     std::apply([](auto&... subpasses) {
         (memset(&subpasses, 0, sizeof(subpasses)), ...);
@@ -64,7 +64,7 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     attachments[1].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
-    attachments[1].format = DisplayHost::instance().depth_format();
+    attachments[1].format = DisplayHost::DEPTH_FORMAT;
     attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -97,7 +97,7 @@ void SimpleForwardRenderer::create_frame_data(FrameData& frame)
     VkCommandPoolCreateInfo pool_info {};
     pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_info.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
-    pool_info.queueFamilyIndex = DisplayHost::instance().queue_family_index(QueueType::Graphics);
+    pool_info.queueFamilyIndex = DisplayHost::instance().queue_family_index();
     VK_DEMAND(vkCreateCommandPool(DisplayHost::instance().device(), &pool_info, nullptr, &frame.ctx.command_pool));
 
     VkCommandBufferAllocateInfo allocinfo {};
@@ -158,7 +158,7 @@ void SimpleForwardRenderer::create_subpass_data(AllSubpasses& subpasses)
         iv_createinfo.image = pass.color_buffer;
         VK_DEMAND(vkCreateImageView(DisplayHost::instance().device(), &iv_createinfo, nullptr, &pass.color_buffer_view));
 
-        i_createinfo.format = DisplayHost::instance().depth_format();
+        i_createinfo.format = DisplayHost::DEPTH_FORMAT;
         i_createinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         VK_DEMAND(vmaCreateImage(DisplayHost::instance().allocator(), &i_createinfo, &mem_createinfo, &pass.depth_buffer, &pass.depth_buffer_mem, nullptr));
         iv_createinfo.format = i_createinfo.format;

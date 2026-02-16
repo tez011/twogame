@@ -22,12 +22,6 @@ constexpr static const char** INSTANCE_LAYERS = nullptr;
 constexpr static uint32_t INSTANCE_LAYERS_COUNT = 0;
 #endif
 
-constexpr static auto s_depth_candidates = std::to_array<VkFormat>({
-    VK_FORMAT_D32_SFLOAT,
-    VK_FORMAT_D16_UNORM,
-    VK_FORMAT_S8_UINT,
-});
-
 static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* cb_data, void* user_data)
 {
     SDL_LogPriority priority;
@@ -225,30 +219,20 @@ bool DisplayHost::pick_physical_device()
             queue_family_props[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
         vkGetPhysicalDeviceQueueFamilyProperties2(hwd, &count, queue_family_props.data());
 
-        int graphics_queue = -1, compute_queue = -1;
+        int qfi = -1;
         for (uint32_t i = 0; i < count; i++) {
             const auto& props = queue_family_props[i].queueFamilyProperties;
-            if (graphics_queue == -1) {
-                if (props.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            if (qfi == -1) {
+                if ((props.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
                     VkBool32 can_present = VK_FALSE;
                     vkGetPhysicalDeviceSurfaceSupportKHR(hwd, i, m_surface, &can_present);
                     if (can_present && props.queueCount > 0)
-                        graphics_queue = i;
-                }
-            }
-            if (compute_queue == -1) {
-                if (props.queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                    if (props.queueCount > 0)
-                        compute_queue = i;
+                        qfi = i;
                 }
             }
         }
-        if (graphics_queue == -1) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no queue capable of graphics and presentation", hwd_props.properties.deviceName);
-            return 0.f;
-        }
-        if (compute_queue == -1) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no queue capable of asynchronous compute", hwd_props.properties.deviceName);
+        if (qfi == -1) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no queue capable of graphics, compute, and presentation", hwd_props.properties.deviceName);
             return 0.f;
         }
 
@@ -323,12 +307,8 @@ bool DisplayHost::pick_physical_device()
             SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: required image format RGBA32F is not supported", hwd_props.properties.deviceName);
             return 0.f;
         }
-
-        if (std::none_of(s_depth_candidates.begin(), s_depth_candidates.end(), [hwd](VkFormat fmt) {
-                VkImageFormatProperties props {};
-                return vkGetPhysicalDeviceImageFormatProperties(hwd, fmt, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &props) == VK_SUCCESS;
-            })) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no available depth buffer formats", hwd_props.properties.deviceName);
+        if (vkGetPhysicalDeviceImageFormatProperties(hwd, DEPTH_FORMAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: required depth format D32F is not supported", hwd_props.properties.deviceName);
             return 0.f;
         }
 
@@ -410,49 +390,38 @@ bool DisplayHost::create_logical_device()
 
     float queue_priority = 1.0f;
     int queue_createinfo_count = 0;
-    std::array<VkDeviceQueueCreateInfo, 3> queue_createinfos {};
+    std::array<VkDeviceQueueCreateInfo, 2> queue_createinfos {};
     std::vector<VkQueueFamilyProperties> queue_families(count);
     vkGetPhysicalDeviceQueueFamilyProperties(m_hwd, &count, queue_families.data());
 
-    uint32_t qf_graphics = 0, qf_compute = 0, qf_transfer = 0;
+    uint32_t qfi = 0, qfi_dma = 0;
     VkDeviceSize image_transfer_granularity = UINT64_MAX;
     for (uint32_t i = 0; i < count; i++) {
         if (queue_families[i].queueCount == 0)
             continue;
-        if (qf_graphics == 0 && (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+        if (qfi == 0 && (queue_families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
             VkBool32 can_present = VK_FALSE;
             vkGetPhysicalDeviceSurfaceSupportKHR(m_hwd, i, m_surface, &can_present);
             if (can_present)
-                qf_graphics = i + 1;
+                qfi = i + 1;
         }
-        if (qf_compute == 0 && (queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
-            qf_compute = i + 1;
-        }
-        if (queue_families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) {
+        if ((queue_families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && qfi != i + 1) {
             VkDeviceSize gr = queue_families[i].minImageTransferGranularity.width * queue_families[i].minImageTransferGranularity.height * queue_families[i].minImageTransferGranularity.depth;
             if (image_transfer_granularity > gr) {
                 image_transfer_granularity = gr;
-                qf_transfer = i + 1;
+                qfi_dma = i + 1;
             }
         }
     }
-
-    m_queue_family_indexes[static_cast<size_t>(QueueType::Graphics)] = qf_graphics - 1;
-    m_queue_family_indexes[static_cast<size_t>(QueueType::Compute)] = qf_compute - 1;
-    m_queue_family_indexes[static_cast<size_t>(QueueType::Transfer)] = qf_transfer - 1;
+    m_queue_family_index = qfi - 1;
+    m_dma_queue_family_index = (qfi_dma ? qfi_dma : qfi) - 1;
     queue_createinfos[queue_createinfo_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_createinfos[queue_createinfo_count].queueFamilyIndex = qf_graphics - 1;
+    queue_createinfos[queue_createinfo_count].queueFamilyIndex = m_queue_family_index;
     queue_createinfos[queue_createinfo_count].queueCount = 1;
     queue_createinfos[queue_createinfo_count].pQueuePriorities = &queue_priority;
-    if (qf_compute != qf_graphics) {
+    if (qfi_dma != qfi) {
         queue_createinfos[++queue_createinfo_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_createinfos[queue_createinfo_count].queueFamilyIndex = qf_compute - 1;
-        queue_createinfos[queue_createinfo_count].queueCount = 1;
-        queue_createinfos[queue_createinfo_count].pQueuePriorities = &queue_priority;
-    }
-    if (qf_transfer != qf_graphics && qf_transfer != qf_compute) {
-        queue_createinfos[++queue_createinfo_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_createinfos[queue_createinfo_count].queueFamilyIndex = qf_transfer - 1;
+        queue_createinfos[queue_createinfo_count].queueFamilyIndex = m_dma_queue_family_index;
         queue_createinfos[queue_createinfo_count].queueCount = 1;
         queue_createinfos[queue_createinfo_count].pQueuePriorities = &queue_priority;
     }
@@ -479,16 +448,6 @@ bool DisplayHost::create_logical_device()
     vfn.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VK_DEMAND(vmaCreateAllocator(&allocator_ci, &m_allocator));
 
-    m_depth_format = *std::find_if(s_depth_candidates.begin(), s_depth_candidates.end(), [this](VkFormat depth_format) {
-        VkImageFormatProperties props {};
-        VkResult res = vkGetPhysicalDeviceImageFormatProperties(m_hwd, depth_format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &props);
-        if (res == VK_SUCCESS)
-            return true;
-        else if (res != VK_ERROR_FORMAT_NOT_SUPPORTED)
-            VK_DEMAND(res);
-        return false;
-    });
-
     return true;
 }
 
@@ -497,7 +456,7 @@ bool DisplayHost::create_pipeline_artifacts()
     VkCommandPoolCreateInfo pool_ci {};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool_ci.queueFamilyIndex = m_queue_family_indexes[static_cast<size_t>(QueueType::Graphics)];
+    pool_ci.queueFamilyIndex = m_queue_family_index;
     VK_DEMAND(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_present_command_pool));
 
     VkCommandBufferAllocateInfo command_allocinfo {};
@@ -703,7 +662,7 @@ int32_t DisplayHost::acquire_image()
 void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signal)
 {
     VkQueue queue;
-    vkGetDeviceQueue(m_device, m_queue_family_indexes[static_cast<size_t>(QueueType::Graphics)], 0, &queue);
+    vkGetDeviceQueue(m_device, m_queue_family_index, 0, &queue);
 
     VkCommandBuffer present_commands = m_present_commands[m_frame_number % SIMULTANEOUS_FRAMES];
     VkCommandBufferBeginInfo begin_info {};

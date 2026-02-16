@@ -38,13 +38,6 @@ class DisplayHost;
 class SceneHost;
 class Pipeline;
 
-enum class QueueType {
-    Graphics,
-    Compute,
-    Transfer,
-    MAX_VALUE,
-};
-
 class DisplayHost final {
     friend class SceneHost;
     static std::unique_ptr<DisplayHost> s_self;
@@ -52,6 +45,7 @@ class DisplayHost final {
 public:
     constexpr static uint32_t API_VERSION = VK_API_VERSION_1_3;
     constexpr static int SIMULTANEOUS_FRAMES = 2;
+    constexpr static VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
 
 private:
     std::atomic_uint32_t m_frame_number = 0;
@@ -63,12 +57,12 @@ private:
     VkDevice m_device = VK_NULL_HANDLE;
     VmaAllocator m_allocator = VK_NULL_HANDLE;
     VkPipelineCache m_pipeline_cache = VK_NULL_HANDLE;
-    std::array<uint32_t, static_cast<size_t>(QueueType::MAX_VALUE)> m_queue_family_indexes;
+    uint32_t m_queue_family_index, m_dma_queue_family_index;
     VkSwapchainKHR m_swapchain;
     VkExtent2D m_swapchain_extent;
     std::vector<VkImage> m_swapchain_images;
     bool m_swapchain_recreated = false;
-    VkFormat m_swapchain_format, m_depth_format;
+    VkFormat m_swapchain_format;
     VkCommandPool m_present_command_pool;
 
     VkDescriptorSetLayout m_empty_descriptor_set_layout;
@@ -120,8 +114,9 @@ public:
     inline VkPhysicalDevice hardware_device() const { return m_hwd; }
     inline VkFormat swapchain_format() const { return m_swapchain_format; }
     inline VkExtent2D swapchain_extent() const { return m_swapchain_extent; }
-    inline VkFormat depth_format() const { return m_depth_format; }
-    inline uint32_t queue_family_index(QueueType t) const { return m_queue_family_indexes[static_cast<size_t>(t)]; }
+    inline uint32_t queue_family_index() const { return m_queue_family_index; }
+    inline uint32_t queue_family_index_dma() const { return m_dma_queue_family_index; }
+    inline bool distinct_dma_queue_family() const { return m_dma_queue_family_index != m_queue_family_index; }
     inline VkPipelineCache pipeline_cache() const { return m_pipeline_cache; }
 
     inline VkDescriptorSetLayout empty_descriptor_set_layout() const { return m_empty_descriptor_set_layout; }
