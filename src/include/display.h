@@ -8,6 +8,7 @@
 #include <memory>
 #include <span>
 #include <vector>
+#include <cglm/struct.h>
 #include <SDL3/SDL.h>
 #include <volk.h>
 #include "vk_mem_alloc.h"
@@ -30,6 +31,8 @@
             SDL_TriggerBreakpoint(); \
         }                            \
     } while (0)
+#define SDL_LogTrace(...) ((void)0)
+#define SDL_LogDebug(...) ((void)0)
 #endif
 namespace twogame {
 
@@ -107,23 +110,20 @@ public:
     DisplayHost(DisplayHost&&) = delete;
     DisplayHost& operator=(DisplayHost&&) = delete;
 
+    static inline VkDevice device() { return s_self->m_device; }
+    static inline VmaAllocator allocator() { return s_self->m_allocator; }
+    static inline VkPhysicalDevice hardware_device() { return s_self->m_hwd; }
+    static inline VkFormat swapchain_format() { return s_self->m_swapchain_format; }
+    static inline VkExtent2D swapchain_extent() { return s_self->m_swapchain_extent; }
+    static inline uint32_t queue_family_index() { return s_self->m_queue_family_index; }
+    static inline uint32_t queue_family_index_dma() { return s_self->m_dma_queue_family_index; }
+    static inline VkPipelineCache pipeline_cache() { return s_self->m_pipeline_cache; }
+    static inline VkDescriptorSetLayout empty_descriptor_set_layout() { return s_self->m_empty_descriptor_set_layout; }
+    static inline VkImageView null_image_view() { return s_self->m_null_image_view; }
+    static inline VkSampler null_sampler() { return s_self->m_null_image_sampler; }
     static size_t format_width(VkFormat);
 
-    inline VkDevice device() const { return m_device; }
-    inline VmaAllocator allocator() const { return m_allocator; }
-    inline VkPhysicalDevice hardware_device() const { return m_hwd; }
-    inline VkFormat swapchain_format() const { return m_swapchain_format; }
-    inline VkExtent2D swapchain_extent() const { return m_swapchain_extent; }
-    inline uint32_t queue_family_index() const { return m_queue_family_index; }
-    inline uint32_t queue_family_index_dma() const { return m_dma_queue_family_index; }
-    inline bool distinct_dma_queue_family() const { return m_dma_queue_family_index != m_queue_family_index; }
-    inline VkPipelineCache pipeline_cache() const { return m_pipeline_cache; }
-
-    inline VkDescriptorSetLayout empty_descriptor_set_layout() const { return m_empty_descriptor_set_layout; }
-    inline VkImageView null_image_view() const { return m_null_image_view; }
-    inline VkSampler null_sampler() const { return m_null_image_sampler; }
-
-    SDL_AppResult draw_frame(IRenderer*, SceneHost*);
+    SDL_AppResult draw_frame();
 };
 
 class BufferPool {
@@ -138,7 +138,12 @@ class BufferPool {
 
 public:
     using index_t = uint32_t;
+    BufferPool() = default;
     BufferPool(VkBufferUsageFlags usage, VmaAllocationCreateFlags alloc_flags, size_t unit_size, index_t count = 0x1000);
+    BufferPool(const BufferPool&) = delete;
+    BufferPool& operator=(const BufferPool&) = delete;
+    BufferPool(BufferPool&&);
+    BufferPool& operator=(BufferPool&&) = default;
     ~BufferPool();
 
     index_t allocate();
@@ -146,6 +151,7 @@ public:
 
     std::tuple<VkBuffer, VkDeviceAddress, VkDeviceSize> buffer_handle(index_t);
     std::span<std::byte> buffer_memory(index_t);
+    void flush_memory(std::initializer_list<index_t> indexes = {});
 };
 
 struct DescriptorBindingInfo : public VkDescriptorSetLayoutBinding {
@@ -262,9 +268,10 @@ public:
     Pipeline(Pipeline&&);
     ~Pipeline();
 
-    constexpr inline operator VkPipeline() const { return m_pipeline; }
-    constexpr inline VkPipelineLayout layout() const { return m_layout; }
-    constexpr inline VkDescriptorSetLayout descriptor_set_layout(size_t i) const { return m_descriptor_set_layouts[i]; }
+    inline operator VkPipeline() const { return m_pipeline; }
+    inline VkPipelineLayout layout() const { return m_layout; }
+    inline VkDescriptorSetLayout descriptor_set_layout(size_t i) const { return m_descriptor_set_layouts[i]; }
+    inline const std::vector<DescriptorBindingInfo>& binding_infos(int set) const { return m_descriptor_bindings[set]; }
 
     DescriptorSet allocate_descriptor_set(int set);
 };
@@ -297,6 +304,9 @@ public:
 class IRenderer {
     friend class SceneHost;
 
+    mat4s m_perspective_projection, m_ortho_projection;
+    VkSampler m_sampler;
+
 protected:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
 
@@ -320,9 +330,14 @@ public:
 
     inline VkRenderPass render_pass() const { return m_render_pass; }
     inline Pipeline& pipeline(size_t i) { return m_pipelines[i]; }
+    inline mat4s projection() { return m_perspective_projection; }
+    inline mat4s ortho_projection() { return m_ortho_projection; }
+    inline VkSampler sampler() { return m_sampler; }
 
-    virtual Output draw(SceneHost*, uint32_t frame_number) = 0;
+    virtual Output draw(uint32_t frame_number) = 0;
     virtual void recreate_subpass_data(uint32_t frame_number) = 0;
+
+    void resize_frames(VkExtent2D surface_extent);
 };
 
 class SimpleForwardRenderer final : public IRenderer {
@@ -358,7 +373,7 @@ public:
     SimpleForwardRenderer();
     ~SimpleForwardRenderer();
 
-    virtual Output draw(SceneHost*, uint32_t frame_number);
+    virtual Output draw(uint32_t frame_number);
     virtual void recreate_subpass_data(uint32_t frame_number);
 };
 

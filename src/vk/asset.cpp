@@ -141,7 +141,7 @@ namespace image {
 
             if (ktxTexture2_NeedsTranscoding(ktx2)) {
                 VkPhysicalDeviceFeatures device_features {};
-                vkGetPhysicalDeviceFeatures(DisplayHost::instance().hardware_device(), &device_features);
+                vkGetPhysicalDeviceFeatures(DisplayHost::hardware_device(), &device_features);
 
                 khr_df_model_e color_model = ktxTexture2_GetColorModel_e(ktx2);
                 ktx_transcode_fmt_e tf;
@@ -172,6 +172,46 @@ namespace image {
 
 }
 
+namespace mesh {
+
+    struct prep {
+        PHYSFS_File* fh;
+        struct buffer {
+            VkBuffer handle;
+            VmaAllocation mem;
+            VkMemoryPropertyFlags flags;
+        } vertex_buffer, index_buffer;
+
+        prep(std::string_view path)
+        {
+            fh = PHYSFS_openRead(path.data());
+
+            VmaAllocationInfo alloc_info;
+            VmaAllocationCreateInfo alloc_ci {};
+            alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
+            alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+            VkBufferCreateInfo buffer_ci {};
+            buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+            buffer_ci.size = 25272;
+            buffer_ci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+            buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &index_buffer.handle, &index_buffer.mem, &alloc_info));
+            vmaGetMemoryTypeProperties(twogame::DisplayHost::allocator(), alloc_info.memoryType, &index_buffer.flags);
+
+            buffer_ci.size = 76768;
+            buffer_ci.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+            VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &vertex_buffer.handle, &vertex_buffer.mem, &alloc_info));
+            vmaGetMemoryTypeProperties(twogame::DisplayHost::allocator(), alloc_info.memoryType, &vertex_buffer.flags);
+        }
+        ~prep()
+        {
+            PHYSFS_close(fh);
+        }
+    };
+
+}
+
 Image::Image()
     : m_image(VK_NULL_HANDLE)
     , m_mem(VK_NULL_HANDLE)
@@ -182,8 +222,8 @@ Image::Image()
 
 Image::~Image()
 {
-    vkDestroyImageView(DisplayHost::instance().device(), m_image_view, nullptr);
-    vmaDestroyImage(DisplayHost::instance().allocator(), m_image, m_mem);
+    vkDestroyImageView(DisplayHost::device(), m_image_view, nullptr);
+    vmaDestroyImage(DisplayHost::allocator(), m_image, m_mem);
 }
 
 size_t Image::prepare_needs() const
@@ -198,7 +238,7 @@ size_t Image::prepare_needs() const
     }
 }
 
-void Image::prepare(SceneHost::StagingBuffer& commands, VkDeviceSize staging_offset)
+size_t Image::prepare(SceneHost::StagingBuffer& commands, VkDeviceSize staging_offset)
 {
     image::prep* prepare_data = static_cast<image::prep*>(std::get<std::shared_ptr<void>>(m_prepared).get());
     ktxTexture* ktx = reinterpret_cast<ktxTexture*>(prepare_data->ktx2);
@@ -241,7 +281,7 @@ void Image::prepare(SceneHost::StagingBuffer& commands, VkDeviceSize staging_off
         image_info.arrayLayers = 1;
         image_view_info.viewType = static_cast<VkImageViewType>(image_info.imageType);
     }
-    VK_DEMAND(vmaCreateImage(DisplayHost::instance().allocator(), &image_info, &alloc_info, &m_image, &m_mem, nullptr));
+    VK_DEMAND(vmaCreateImage(DisplayHost::allocator(), &image_info, &alloc_info, &m_image, &m_mem, nullptr));
 
     image_view_info.image = m_image;
     image_view_info.format = image_info.format;
@@ -250,7 +290,7 @@ void Image::prepare(SceneHost::StagingBuffer& commands, VkDeviceSize staging_off
     image_view_info.subresourceRange.levelCount = image_info.mipLevels;
     image_view_info.subresourceRange.baseArrayLayer = 0;
     image_view_info.subresourceRange.layerCount = image_info.arrayLayers;
-    VK_DEMAND(vkCreateImageView(DisplayHost::instance().device(), &image_view_info, nullptr, &m_image_view));
+    VK_DEMAND(vkCreateImageView(DisplayHost::device(), &image_view_info, nullptr, &m_image_view));
 
     std::span<std::byte> staging_data = commands.window(staging_offset);
     image::ktx_mip_iterate_userdata mip_data(image_info, staging_offset);
@@ -259,6 +299,115 @@ void Image::prepare(SceneHost::StagingBuffer& commands, VkDeviceSize staging_off
     res = ktxTexture_IterateLevels(ktx, image::ktx_mip_iterate, &mip_data);
     SDL_assert_release(res == KTX_SUCCESS);
     commands.copy_image(m_image, image_info, mip_data.regions(), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    return (ktxTexture_GetDataSizeUncompressed(ktx) + 15) & ~15;
+}
+
+Material::Material()
+{
+    m_base_color_texture = std::make_shared<Image>();
+}
+
+Material::~Material()
+{
+}
+
+void Material::dependencies(LoadQueue& out) const
+{
+    out.push(m_base_color_texture);
+}
+
+size_t Material::prepare_needs() const
+{
+    return 0;
+}
+
+size_t Material::prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset)
+{
+    return 0;
+}
+
+Mesh::Mesh()
+{
+    auto prep = std::make_shared<mesh::prep>("/data/duck.bin");
+    m_prepared = prep;
+    m_materials.emplace_back();
+
+    m_vertex_buffer = prep->vertex_buffer.handle;
+    m_vertex_mem = prep->vertex_buffer.mem;
+    m_index_buffer = prep->index_buffer.handle;
+    m_index_mem = prep->index_buffer.mem;
+}
+
+Mesh::~Mesh()
+{
+    vmaDestroyBuffer(DisplayHost::allocator(), m_vertex_buffer, m_vertex_mem);
+    vmaDestroyBuffer(DisplayHost::allocator(), m_index_buffer, m_index_mem);
+}
+
+void Mesh::dependencies(LoadQueue& out) const
+{
+    out.push_range(std::ranges::subrange(m_materials.begin(), m_materials.end()));
+}
+
+size_t Mesh::prepare_needs() const
+{
+    size_t needs = 0;
+    auto p_prepare_data = std::get_if<std::shared_ptr<void>>(&m_prepared);
+    if (p_prepare_data) {
+        mesh::prep* prepare_data = static_cast<mesh::prep*>(p_prepare_data->get());
+        if ((prepare_data->vertex_buffer.flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0)
+            needs += 76768;
+        if (prepare_data->index_buffer.handle && (prepare_data->index_buffer.flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) == 0)
+            needs += 25272;
+    }
+    return needs;
+}
+
+size_t Mesh::prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset)
+{
+    mesh::prep* prep = static_cast<mesh::prep*>(std::get<std::shared_ptr<void>>(m_prepared).get());
+    size_t staged_size = 0;
+    if (prep->vertex_buffer.flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        void* vertex_buffer_ptr;
+        VK_DEMAND(vmaMapMemory(DisplayHost::allocator(), m_vertex_mem, &vertex_buffer_ptr));
+        PHYSFS_seek(prep->fh, 0);
+        PHYSFS_readBytes(prep->fh, vertex_buffer_ptr, 76768);
+        vmaUnmapMemory(DisplayHost::allocator(), m_vertex_mem);
+        if ((prep->vertex_buffer.flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
+            vmaFlushAllocation(DisplayHost::allocator(), m_vertex_mem, 0, VK_WHOLE_SIZE);
+    } else {
+        VkBufferCopy2 copy {};
+        copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
+        copy.srcOffset = offset;
+        copy.dstOffset = 0;
+        copy.size = 76768;
+
+        PHYSFS_seek(prep->fh, 0);
+        PHYSFS_readBytes(prep->fh, commands.window(offset).data(), 76768);
+        commands.copy_buffer(m_vertex_buffer, 76768, std::span(&copy, 1), VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+        staged_size += 76768;
+    }
+    if (prep->index_buffer.handle && (prep->index_buffer.flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)) {
+        void* index_buffer_ptr;
+        VK_DEMAND(vmaMapMemory(DisplayHost::allocator(), m_index_mem, &index_buffer_ptr));
+        PHYSFS_seek(prep->fh, 76768);
+        PHYSFS_readBytes(prep->fh, index_buffer_ptr, 25272);
+        vmaUnmapMemory(DisplayHost::allocator(), m_index_mem);
+        if ((prep->index_buffer.flags & VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) == 0)
+            vmaFlushAllocation(DisplayHost::allocator(), m_index_mem, 0, VK_WHOLE_SIZE);
+    } else {
+        VkBufferCopy2 copy {};
+        copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
+        copy.srcOffset = offset;
+        copy.dstOffset = 0;
+        copy.size = 25272;
+
+        PHYSFS_seek(prep->fh, 76768);
+        PHYSFS_readBytes(prep->fh, commands.window(offset).data(), 25272);
+        commands.copy_buffer(m_vertex_buffer, 25272, std::span(&copy, 1), VK_PIPELINE_STAGE_2_INDEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT);
+        staged_size += 25272;
+    }
+    return staged_size;
 }
 
 }

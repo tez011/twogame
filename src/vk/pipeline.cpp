@@ -30,7 +30,19 @@ BufferPool::BufferPool(VkBufferUsageFlags usage, VmaAllocationCreateFlags alloc_
 BufferPool::~BufferPool()
 {
     for (auto it = m_buffers.begin(); it != m_buffers.end(); ++it)
-        vmaDestroyBuffer(DisplayHost::instance().allocator(), std::get<VkBuffer>(*it), std::get<VmaAllocation>(*it));
+        vmaDestroyBuffer(DisplayHost::allocator(), std::get<VkBuffer>(*it), std::get<VmaAllocation>(*it));
+}
+
+BufferPool::BufferPool(BufferPool&& other)
+    : m_buffers(std::move(other.m_buffers))
+    , m_bits(std::move(other.m_bits))
+    , m_unit_size(other.m_unit_size)
+    , m_count(other.m_count)
+    , m_usage(other.m_usage)
+    , m_alloc_flags(other.m_alloc_flags)
+{
+    m_bits_it = m_bits.begin();
+    other.m_buffers.clear();
 }
 
 std::vector<bool>::iterator BufferPool::extend()
@@ -45,7 +57,7 @@ std::vector<bool>::iterator BufferPool::extend()
     alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
 
     auto& out = m_buffers.emplace_back();
-    VK_DEMAND(vmaCreateBuffer(DisplayHost::instance().allocator(), &buffer_ci, &alloc_ci, &std::get<VkBuffer>(out), &std::get<VmaAllocation>(out), &std::get<VmaAllocationInfo>(out)));
+    VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &std::get<VkBuffer>(out), &std::get<VmaAllocation>(out), &std::get<VmaAllocationInfo>(out)));
     m_bits.resize(m_bits.size() + m_count);
     return m_bits.end() - m_count;
 }
@@ -59,13 +71,14 @@ BufferPool::index_t BufferPool::allocate()
         if (m_bits_it == m_bits.end())
             m_bits_it = extend();
     }
+    *m_bits_it = true;
     return static_cast<BufferPool::index_t>(std::distance(m_bits.begin(), m_bits_it++));
 }
 
 void BufferPool::free(BufferPool::index_t i)
 {
-    m_bits[i] = false;
     m_bits_it = m_bits.begin() + i;
+    *m_bits_it = false;
 }
 
 std::tuple<VkBuffer, VkDeviceAddress, VkDeviceSize> BufferPool::buffer_handle(BufferPool::index_t i)
@@ -79,6 +92,23 @@ std::span<std::byte> BufferPool::buffer_memory(BufferPool::index_t i)
 {
     std::byte* address = static_cast<std::byte*>(std::get<VmaAllocationInfo>(m_buffers[i / m_count]).pMappedData);
     return std::span<std::byte>(address + (m_unit_size * (i % m_count)), m_unit_size);
+}
+
+void BufferPool::flush_memory(std::initializer_list<BufferPool::index_t> indexes)
+{
+    std::vector<VmaAllocation> allocations;
+    std::vector<VkDeviceSize> offsets, sizes;
+    allocations.reserve(indexes.size());
+    offsets.reserve(indexes.size());
+    sizes.resize(indexes.size());
+    std::transform(indexes.begin(), indexes.end(), std::back_inserter(allocations), [this](BufferPool::index_t i) {
+        return std::get<VmaAllocation>(m_buffers[i / m_count]);
+    });
+    std::transform(indexes.begin(), indexes.end(), std::back_inserter(offsets), [this](BufferPool::index_t i) {
+        return m_unit_size * (i % m_count);
+    });
+    std::fill(sizes.begin(), sizes.end(), m_unit_size);
+    vmaFlushAllocations(DisplayHost::allocator(), allocations.size(), allocations.data(), offsets.data(), sizes.data());
 }
 
 DescriptorSet::~DescriptorSet()
@@ -100,8 +130,8 @@ DescriptorSet::Update& DescriptorSet::Update::Set::Binding::write_image(VkImageV
 {
     VkDescriptorImageInfo& image_info = r_update.r_update.m_images.emplace_back();
     if (image == VK_NULL_HANDLE) {
-        image_info.sampler = DisplayHost::instance().null_sampler();
-        image_info.imageView = DisplayHost::instance().null_image_view();
+        image_info.sampler = DisplayHost::null_sampler();
+        image_info.imageView = DisplayHost::null_image_view();
         image_info.imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL;
     } else {
         image_info.sampler = sampler;
@@ -152,7 +182,7 @@ DescriptorSet::Update::Set DescriptorSet::Update::set(DescriptorSet& set)
 
 void DescriptorSet::Update::finish()
 {
-    vkUpdateDescriptorSets(DisplayHost::instance().device(), m_writes.size(), m_writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(DisplayHost::device(), m_writes.size(), m_writes.data(), 0, nullptr);
 }
 
 DescriptorPool::DescriptorPool(VkDescriptorSetLayout layout, const std::vector<DescriptorBindingInfo>& bindings)
@@ -174,12 +204,12 @@ DescriptorPool::DescriptorPool(VkDescriptorSetLayout layout, const std::vector<D
     pool_ci.maxSets = DESCRIPTOR_SETS_PER_POOL;
     pool_ci.poolSizeCount = descriptor_pool_sizes.size();
     pool_ci.pPoolSizes = descriptor_pool_sizes.data();
-    VK_DEMAND(vkCreateDescriptorPool(DisplayHost::instance().device(), &pool_ci, nullptr, &m_pool));
+    VK_DEMAND(vkCreateDescriptorPool(DisplayHost::device(), &pool_ci, nullptr, &m_pool));
 }
 
 DescriptorPool::~DescriptorPool()
 {
-    vkDestroyDescriptorPool(DisplayHost::instance().device(), m_pool, nullptr);
+    vkDestroyDescriptorPool(DisplayHost::device(), m_pool, nullptr);
 }
 
 DescriptorSet DescriptorPool::allocate()
@@ -195,7 +225,7 @@ DescriptorSet DescriptorPool::allocate()
         alloc_info.descriptorPool = m_pool;
         alloc_info.descriptorSetCount = 1;
         alloc_info.pSetLayouts = &r_layout;
-        VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::instance().device(), &alloc_info, &descriptor_set));
+        VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &alloc_info, &descriptor_set));
 
         return DescriptorSet(*this, descriptor_set);
     } else {
@@ -226,11 +256,11 @@ Pipeline::~Pipeline()
 {
     for (auto it = m_descriptor_pools.begin(); it != m_descriptor_pools.end(); ++it)
         it->clear();
-    vkDestroyPipeline(DisplayHost::instance().device(), m_pipeline, nullptr);
-    vkDestroyPipelineLayout(DisplayHost::instance().device(), m_layout, nullptr);
+    vkDestroyPipeline(DisplayHost::device(), m_pipeline, nullptr);
+    vkDestroyPipelineLayout(DisplayHost::device(), m_layout, nullptr);
     for (auto it = m_descriptor_set_layouts.begin(); it != m_descriptor_set_layouts.end(); ++it) {
-        if (*it != DisplayHost::instance().empty_descriptor_set_layout())
-            vkDestroyDescriptorSetLayout(DisplayHost::instance().device(), *it, nullptr);
+        if (*it != DisplayHost::empty_descriptor_set_layout())
+            vkDestroyDescriptorSetLayout(DisplayHost::device(), *it, nullptr);
     }
 }
 
@@ -239,13 +269,13 @@ void Pipeline::create_layout(const std::array<std::vector<DescriptorBindingInfo>
     m_descriptor_bindings = descriptor_bindings;
     for (size_t set = 0; set < descriptor_bindings.size(); set++) {
         if (descriptor_bindings[set].empty()) {
-            m_descriptor_set_layouts[set] = DisplayHost::instance().empty_descriptor_set_layout();
+            m_descriptor_set_layouts[set] = DisplayHost::empty_descriptor_set_layout();
         } else {
             VkDescriptorSetLayoutCreateInfo layout_ci {};
             layout_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
             layout_ci.bindingCount = descriptor_bindings[set].size();
             layout_ci.pBindings = descriptor_bindings[set].data();
-            VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::instance().device(), &layout_ci, nullptr, &m_descriptor_set_layouts[set]));
+            VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &layout_ci, nullptr, &m_descriptor_set_layouts[set]));
             m_descriptor_pools[set].emplace_back(m_descriptor_set_layouts[set], descriptor_bindings[set]);
         }
     }
@@ -256,19 +286,19 @@ void Pipeline::create_layout(const std::array<std::vector<DescriptorBindingInfo>
     pipeline_layout_ci.pSetLayouts = m_descriptor_set_layouts.data();
     pipeline_layout_ci.pushConstantRangeCount = push_constant_ranges.size();
     pipeline_layout_ci.pPushConstantRanges = push_constant_ranges.data();
-    VK_DEMAND(vkCreatePipelineLayout(DisplayHost::instance().device(), &pipeline_layout_ci, nullptr, &m_layout));
+    VK_DEMAND(vkCreatePipelineLayout(DisplayHost::device(), &pipeline_layout_ci, nullptr, &m_layout));
 }
 
 void Pipeline::create_pipeline(VkGraphicsPipelineCreateInfo& createinfo, VkPipelineCache cache)
 {
     createinfo.layout = m_layout;
-    VK_DEMAND(vkCreateGraphicsPipelines(DisplayHost::instance().device(), cache, 1, &createinfo, nullptr, &m_pipeline));
+    VK_DEMAND(vkCreateGraphicsPipelines(DisplayHost::device(), cache, 1, &createinfo, nullptr, &m_pipeline));
 }
 
 void Pipeline::create_pipeline(VkComputePipelineCreateInfo& createinfo, VkPipelineCache cache)
 {
     createinfo.layout = m_layout;
-    VK_DEMAND(vkCreateComputePipelines(DisplayHost::instance().device(), cache, 1, &createinfo, nullptr, &m_pipeline));
+    VK_DEMAND(vkCreateComputePipelines(DisplayHost::device(), cache, 1, &createinfo, nullptr, &m_pipeline));
 }
 
 DescriptorSet Pipeline::allocate_descriptor_set(int set)
@@ -404,6 +434,11 @@ Pipeline PipelineBuilder::build()
                     b.descriptorType = VK_DESCRIPTOR_TYPE_INLINE_UNIFORM_BLOCK;
             }
         }
+        for (auto it = descriptor_bindings.begin(); it != descriptor_bindings.end(); ++it) {
+            std::sort(it->begin(), it->end(), [](const DescriptorBindingInfo& lhs, const DescriptorBindingInfo& rhs) {
+                return lhs.binding < rhs.binding;
+            });
+        }
 
         std::vector<SpvReflectBlockVariable*> reflect_push_constants;
         spvReflectEnumeratePushConstantBlocks(&mod, &count, nullptr);
@@ -457,7 +492,7 @@ Pipeline PipelineBuilder::build()
             }
         }
 
-        VK_DEMAND(vkCreateShaderModule(DisplayHost::instance().device(), &m_shader_modules_ci[i], nullptr, &shader_modules[i]));
+        VK_DEMAND(vkCreateShaderModule(DisplayHost::device(), &m_shader_modules_ci[i], nullptr, &shader_modules[i]));
     }
 
     // All structures containing pointers that are actually indexes need to be updated
@@ -503,7 +538,7 @@ Pipeline PipelineBuilder::build()
         depth_stencil_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
         depth_stencil_info.depthTestEnable = VK_TRUE;
         depth_stencil_info.depthWriteEnable = VK_TRUE;
-        depth_stencil_info.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+        depth_stencil_info.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
         depth_stencil_info.depthBoundsTestEnable = VK_FALSE;
         depth_stencil_info.stencilTestEnable = VK_FALSE;
 
@@ -535,16 +570,16 @@ Pipeline PipelineBuilder::build()
         pipeline_ci.pDynamicState = &dynamic_state_info;
         pipeline_ci.renderPass = m_render_pass.first;
         pipeline_ci.subpass = m_render_pass.second;
-        out_pipeline.create_pipeline(pipeline_ci, DisplayHost::instance().pipeline_cache());
+        out_pipeline.create_pipeline(pipeline_ci, DisplayHost::pipeline_cache());
     } else {
         VkComputePipelineCreateInfo pipeline_ci {};
         pipeline_ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         pipeline_ci.stage = m_pipeline_shaders.front();
-        out_pipeline.create_pipeline(pipeline_ci, DisplayHost::instance().pipeline_cache());
+        out_pipeline.create_pipeline(pipeline_ci, DisplayHost::pipeline_cache());
     }
 
     for (auto it = shader_modules.begin(); it != shader_modules.end(); ++it)
-        vkDestroyShaderModule(DisplayHost::instance().device(), *it, nullptr);
+        vkDestroyShaderModule(DisplayHost::device(), *it, nullptr);
     reset(m_is_graphics);
     return out_pipeline;
 }

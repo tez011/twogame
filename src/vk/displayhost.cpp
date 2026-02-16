@@ -11,6 +11,7 @@
 #include <volk.h>
 #include <vulkan/vulkan_metal.h>
 #include "display.h"
+#include "scene.h"
 
 #ifdef DEBUG_BUILD
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;
@@ -641,7 +642,7 @@ int32_t DisplayHost::acquire_image()
 
     VkResult res;
     uint32_t index;
-    VkSemaphore sem = m_sem_acquire_image[m_frame_number % SIMULTANEOUS_FRAMES];
+    VkSemaphore sem = m_sem_acquire_image[next_frame_number % SIMULTANEOUS_FRAMES];
     do {
         if ((res = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX, sem, VK_NULL_HANDLE, &index)) == VK_ERROR_OUT_OF_DATE_KHR) {
             if (recreate_swapchain() == false) {
@@ -651,7 +652,7 @@ int32_t DisplayHost::acquire_image()
     } while (res == VK_ERROR_OUT_OF_DATE_KHR);
 
     if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) {
-        SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u BEGIN -> I%u\n", m_frame_number.load(std::memory_order_relaxed), index);
+        SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u BEGIN -> I%u\n", next_frame_number, index);
         return index;
     } else {
         SDL_LogCritical(SDL_LOG_CATEGORY_GPU, "failed to acquire swapchain image: %s", string_VkResult(res));
@@ -661,10 +662,11 @@ int32_t DisplayHost::acquire_image()
 
 void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signal)
 {
+    uint32_t frame_number = m_frame_number.load(std::memory_order_relaxed);
     VkQueue queue;
     vkGetDeviceQueue(m_device, m_queue_family_index, 0, &queue);
 
-    VkCommandBuffer present_commands = m_present_commands[m_frame_number % SIMULTANEOUS_FRAMES];
+    VkCommandBuffer present_commands = m_present_commands[frame_number % SIMULTANEOUS_FRAMES];
     VkCommandBufferBeginInfo begin_info {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -700,7 +702,7 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
         0, 0, nullptr, 0, nullptr, 1, &barrier);
     VK_DEMAND(vkEndCommandBuffer(present_commands));
 
-    auto wait_sems = std::to_array<VkSemaphore>({ m_sem_acquire_image[m_frame_number % SIMULTANEOUS_FRAMES], signal });
+    auto wait_sems = std::to_array<VkSemaphore>({ m_sem_acquire_image[frame_number % SIMULTANEOUS_FRAMES], signal });
     auto wait_stages = std::to_array<VkPipelineStageFlags>({ VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT });
     VkSubmitInfo submit {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -711,7 +713,7 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
     submit.pCommandBuffers = &present_commands;
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &m_sem_submit_image[index];
-    VK_DEMAND(vkQueueSubmit(queue, 1, &submit, m_fence_frame[m_frame_number % SIMULTANEOUS_FRAMES]));
+    VK_DEMAND(vkQueueSubmit(queue, 1, &submit, m_fence_frame[frame_number % SIMULTANEOUS_FRAMES]));
 
     VkPresentInfoKHR present {};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -729,18 +731,21 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
     }
 }
 
-SDL_AppResult DisplayHost::draw_frame(IRenderer* renderer, SceneHost* stage)
+SDL_AppResult DisplayHost::draw_frame()
 {
+    IRenderer* renderer = SceneHost::active_renderer();
     int32_t swapchain_slot = acquire_image();
     if (swapchain_slot < 0)
         return SDL_APP_FAILURE;
     if (m_swapchain_recreated) {
+        renderer->resize_frames(m_swapchain_extent);
         renderer->recreate_subpass_data(m_frame_number);
         m_swapchain_recreated = false;
     }
 
-    IRenderer::Output output = renderer->draw(stage, m_frame_number);
+    IRenderer::Output output = renderer->draw(m_frame_number);
     present_image(swapchain_slot, output.image, output.signal);
+    SceneHost::submit_transfers();
 
     return SDL_APP_CONTINUE;
 }

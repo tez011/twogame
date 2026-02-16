@@ -4,6 +4,8 @@
 
 namespace twogame {
 
+std::unique_ptr<SceneHost> SceneHost::s_self;
+
 void SceneHost::StagingBuffer::copy_buffer(VkBuffer dst, VkDeviceSize dst_size, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access)
 {
     VkBufferMemoryBarrier2& barrier = m_buffer_memory_barriers.emplace_back();
@@ -12,8 +14,8 @@ void SceneHost::StagingBuffer::copy_buffer(VkBuffer dst, VkDeviceSize dst_size, 
     barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT;
-    barrier.srcQueueFamilyIndex = DisplayHost::instance().queue_family_index_dma();
-    barrier.dstQueueFamilyIndex = DisplayHost::instance().queue_family_index();
+    barrier.srcQueueFamilyIndex = DisplayHost::queue_family_index_dma();
+    barrier.dstQueueFamilyIndex = DisplayHost::queue_family_index();
     barrier.buffer = dst;
     barrier.offset = 0;
     barrier.size = dst_size;
@@ -53,8 +55,8 @@ void SceneHost::StagingBuffer::copy_image(VkImage dst, VkImageCreateInfo& info, 
     barrier.dstStageMask = dst_stage;
     barrier.dstAccessMask = dst_access;
     barrier.newLayout = final_layout;
-    barrier.srcQueueFamilyIndex = DisplayHost::instance().queue_family_index_dma();
-    barrier.dstQueueFamilyIndex = DisplayHost::instance().queue_family_index();
+    barrier.srcQueueFamilyIndex = DisplayHost::queue_family_index_dma();
+    barrier.dstQueueFamilyIndex = DisplayHost::queue_family_index();
     m_image_memory_barriers[1].push_back(barrier);
 
     auto& copy = m_image_copies.emplace_back();
@@ -106,30 +108,30 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     : m_active_scene(nullptr)
     , m_requested_scene(nullptr)
     , m_active(true)
-    , r_renderer(renderer)
+    , m_renderer(renderer)
 {
     std::array<VkSemaphore, BUILDER_THREAD_COUNT> builder_sem;
     VkSemaphoreCreateInfo sem_createinfo {};
     VkSemaphoreTypeCreateInfo sem_typeinfo {};
     sem_createinfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     for (size_t i = 0; i < BUILDER_THREAD_COUNT; i++)
-        VK_DEMAND(vkCreateSemaphore(DisplayHost::instance().device(), &sem_createinfo, nullptr, &builder_sem[i]));
+        VK_DEMAND(vkCreateSemaphore(DisplayHost::device(), &sem_createinfo, nullptr, &builder_sem[i]));
 
     sem_createinfo.pNext = &sem_typeinfo;
     sem_typeinfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
     sem_typeinfo.semaphoreType = VK_SEMAPHORE_TYPE_TIMELINE;
     sem_typeinfo.initialValue = 0;
-    VK_DEMAND(vkCreateSemaphore(DisplayHost::instance().device(), &sem_createinfo, nullptr, &m_timeline));
+    VK_DEMAND(vkCreateSemaphore(DisplayHost::device(), &sem_createinfo, nullptr, &m_timeline));
 
     VkCommandPoolCreateInfo pool_createinfo {};
     pool_createinfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_createinfo.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool_createinfo.queueFamilyIndex = DisplayHost::instance().queue_family_index_dma();
-    VK_DEMAND(vkCreateCommandPool(DisplayHost::instance().device(), &pool_createinfo, nullptr, &m_xfer_command_pool));
-    pool_createinfo.queueFamilyIndex = DisplayHost::instance().queue_family_index();
-    VK_DEMAND(vkCreateCommandPool(DisplayHost::instance().device(), &pool_createinfo, nullptr, &m_acquire_command_pool));
-    vkGetDeviceQueue(DisplayHost::instance().device(), DisplayHost::instance().queue_family_index(), 0, &m_graphics_queue);
-    vkGetDeviceQueue(DisplayHost::instance().device(), DisplayHost::instance().queue_family_index_dma(), 0, &m_transfer_queue);
+    pool_createinfo.queueFamilyIndex = DisplayHost::queue_family_index_dma();
+    VK_DEMAND(vkCreateCommandPool(DisplayHost::device(), &pool_createinfo, nullptr, &m_xfer_command_pool));
+    pool_createinfo.queueFamilyIndex = DisplayHost::queue_family_index();
+    VK_DEMAND(vkCreateCommandPool(DisplayHost::device(), &pool_createinfo, nullptr, &m_acquire_command_pool));
+    vkGetDeviceQueue(DisplayHost::device(), DisplayHost::queue_family_index(), 0, &m_graphics_queue);
+    vkGetDeviceQueue(DisplayHost::device(), DisplayHost::queue_family_index_dma(), 0, &m_transfer_queue);
 
     std::array<std::array<VkCommandBuffer, BUILDER_THREAD_COUNT>, 2> builder_commands;
     VkCommandBufferAllocateInfo cmd_allocinfo {};
@@ -137,9 +139,9 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     cmd_allocinfo.commandPool = m_xfer_command_pool;
     cmd_allocinfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmd_allocinfo.commandBufferCount = BUILDER_THREAD_COUNT;
-    VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::instance().device(), &cmd_allocinfo, builder_commands[0].data()));
+    VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::device(), &cmd_allocinfo, builder_commands[0].data()));
     cmd_allocinfo.commandPool = m_acquire_command_pool;
-    VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::instance().device(), &cmd_allocinfo, builder_commands[1].data()));
+    VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::device(), &cmd_allocinfo, builder_commands[1].data()));
 
     VkBufferCreateInfo staging_createinfo {};
     VmaAllocationCreateInfo staging_allocinfo {};
@@ -151,7 +153,7 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     staging_allocinfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
     for (size_t i = 0; i < BUILDER_THREAD_COUNT; i++) {
         VmaAllocationInfo staging_meminfo;
-        VK_DEMAND(vmaCreateBuffer(DisplayHost::instance().allocator(), &staging_createinfo, &staging_allocinfo,
+        VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &staging_createinfo, &staging_allocinfo,
             &m_staging_buffers[i].m_src_buffer, &m_staging_buffers[i].m_src_mem, &staging_meminfo));
 
         m_staging_buffers[i].m_src_data = std::span(static_cast<std::byte*>(staging_meminfo.pMappedData), STAGING_BUFFER_SIZE);
@@ -165,8 +167,9 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     uint64_t pass = 0;
     bool complete;
     do {
-        complete = initial->construct(r_renderer, pass++, m_staging_buffers[0]);
+        complete = initial->construct(m_renderer.get(), m_staging_buffers[0], pass, pass + 1);
         m_staging_buffers[0].finalize();
+        pass++;
 
         VkSubmitInfo submit {};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -194,12 +197,12 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
         wait_info.pSemaphores = &m_timeline;
         wait_info.pValues = &pass;
 
-        VK_DEMAND(vkWaitSemaphores(DisplayHost::instance().device(), &wait_info, UINT64_MAX));
+        VK_DEMAND(vkWaitSemaphores(DisplayHost::device(), &wait_info, UINT64_MAX));
     } while (complete == false);
     m_scenes[initial] = pass;
     m_requested_scene = initial;
     m_max_ticket.store(pass + 1, std::memory_order_relaxed);
-    initial->record_commands(r_renderer, 0);
+    initial->record_commands(m_renderer.get(), 0);
 
     m_scene_host = std::thread(&SceneHost::scene_loop, this);
     for (size_t i = 0; i < BUILDER_THREAD_COUNT; i++)
@@ -218,29 +221,46 @@ SceneHost::~SceneHost()
         it->join();
     m_scene_host.join();
 
-    vkDeviceWaitIdle(DisplayHost::instance().device());
+    vkDeviceWaitIdle(DisplayHost::device());
     for (auto it = m_scenes.begin(); it != m_scenes.end(); ++it)
         delete it->first;
 
-    vkDestroyCommandPool(DisplayHost::instance().device(), m_xfer_command_pool, nullptr);
-    vkDestroyCommandPool(DisplayHost::instance().device(), m_acquire_command_pool, nullptr);
-    vkDestroySemaphore(DisplayHost::instance().device(), m_timeline, nullptr);
+    vkDestroyCommandPool(DisplayHost::device(), m_xfer_command_pool, nullptr);
+    vkDestroyCommandPool(DisplayHost::device(), m_acquire_command_pool, nullptr);
+    vkDestroySemaphore(DisplayHost::device(), m_timeline, nullptr);
+}
+
+void SceneHost::init(IRenderer* renderer, IScene* initial)
+{
+    if (s_self) {
+        s_self->m_renderer.reset(renderer);
+        s_self->m_requested_scene = initial;
+        prepare(initial);
+    } else {
+        s_self = std::unique_ptr<SceneHost> { new SceneHost(renderer, initial) };
+    }
+}
+
+void SceneHost::drop()
+{
+    SDL_assert(s_self);
+    s_self.reset();
 }
 
 void SceneHost::scene_loop()
 {
-    const DisplayHost& host = DisplayHost::instance();
+    const DisplayHost& display = DisplayHost::instance();
     std::array<uint64_t, 2> frame_time = { SDL_GetTicks(), 0 };
     while (m_active) {
         uint32_t frame_number = m_frame_number.load(std::memory_order_relaxed) + 1;
         uint64_t timeline_value = 0;
-        VK_DEMAND(vkGetSemaphoreCounterValue(host.m_device, m_timeline, &timeline_value));
+        VK_DEMAND(vkGetSemaphoreCounterValue(display.m_device, m_timeline, &timeline_value));
 
         // Wait for the last frame's resources to be free before we record commands for the next frame.
-        uint32_t render_frame_number = host.m_frame_number.load(std::memory_order_acquire);
+        uint32_t render_frame_number = display.m_frame_number.load(std::memory_order_acquire);
         SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "scene  thread: F%u WAITING (H%u)", frame_number, render_frame_number);
-        while ((render_frame_number = host.m_frame_number.load(std::memory_order_acquire)) < frame_number)
-            host.m_frame_number.wait(render_frame_number, std::memory_order_relaxed);
+        while ((render_frame_number = display.m_frame_number.load(std::memory_order_acquire)) < frame_number)
+            display.m_frame_number.wait(render_frame_number, std::memory_order_relaxed);
         if (m_active == false)
             break;
         SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "scene  thread: F%u BEGIN", frame_number);
@@ -257,7 +277,7 @@ void SceneHost::scene_loop()
             while (m_event_queue.try_pop(evt))
                 scene->handle_event(evt, this);
             scene->tick(frame_time[1], frame_time[1] - frame_time[0], this);
-            scene->record_commands(r_renderer, frame_number);
+            scene->record_commands(m_renderer.get(), frame_number);
             frame_time[0] = frame_time[1];
 
             if (scene == m_requested_scene) {
@@ -280,10 +300,12 @@ void SceneHost::scene_loop()
             int32_t frames_before_purge = static_cast<int32_t>(m_purge_queue.front().second - frame_number);
             if (frames_before_purge <= 0) {
                 IScene* purge_scene = m_purge_queue.front().first;
-                BQData payload = { purge_scene, false };
-                m_scenes.erase(purge_scene);
-                m_builder_queue.push(payload);
                 m_purge_queue.pop();
+                if (purge_scene != m_active_scene && purge_scene != m_requested_scene) {
+                    BQData payload = { purge_scene, false };
+                    m_scenes.erase(purge_scene);
+                    m_builder_queue.push(payload);
+                }
             }
         }
     }
@@ -295,8 +317,8 @@ void SceneHost::builder_loop(int thread_id)
         BQData build_job;
         m_builder_queue.pop(build_job);
         if (build_job.scene == nullptr && build_job.bringup == false) {
-            vmaDestroyBuffer(DisplayHost::instance().allocator(), m_staging_buffers[thread_id].m_src_buffer, m_staging_buffers[thread_id].m_src_mem);
-            vkDestroySemaphore(DisplayHost::instance().device(), m_staging_buffers[thread_id].m_post_xfer, nullptr);
+            vmaDestroyBuffer(DisplayHost::allocator(), m_staging_buffers[thread_id].m_src_buffer, m_staging_buffers[thread_id].m_src_mem);
+            vkDestroySemaphore(DisplayHost::device(), m_staging_buffers[thread_id].m_post_xfer, nullptr);
             return;
         }
 
@@ -312,15 +334,15 @@ void SceneHost::builder_loop(int thread_id)
             job.scene = build_job.scene;
             job.commands = &m_staging_buffers[thread_id];
             do {
-                complete = job.scene->construct(r_renderer, pass++, m_staging_buffers[thread_id]);
-                m_staging_buffers[thread_id].finalize();
                 job.ticket = m_max_ticket.fetch_add(1, std::memory_order_relaxed);
-                SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup=%p", job.scene, job.ticket, job.commands);
+                complete = job.scene->construct(m_renderer.get(), m_staging_buffers[thread_id], pass++, job.ticket);
+                m_staging_buffers[thread_id].finalize();
                 m_render_queue.push(job);
+                SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup=%p", job.scene, job.ticket, job.commands);
 
                 // Because the builder thread blocks until the command buffer we just submitted is complete, we don't need any GPU waiting.
                 wait_info.pValues = &job.ticket;
-                VK_DEMAND(vkWaitSemaphores(DisplayHost::instance().device(), &wait_info, UINT64_MAX));
+                VK_DEMAND(vkWaitSemaphores(DisplayHost::device(), &wait_info, UINT64_MAX));
             } while (complete == false);
             SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup complete", job.scene, job.ticket);
             m_return_queue.push(job);
@@ -334,30 +356,33 @@ void SceneHost::builder_loop(int thread_id)
 bool SceneHost::prepare(IScene* scene)
 {
     BQData job { scene, true };
-    return m_builder_queue.try_push(job);
+    if (s_self->m_scenes.find(scene) == s_self->m_scenes.end())
+        return s_self->m_builder_queue.try_push(job);
+    else
+        return true;
 }
 
 void SceneHost::set_next_scene(IScene* scene)
 {
-    m_requested_scene = scene;
+    s_self->m_requested_scene = scene;
 }
 
 void SceneHost::wait_frame(uint32_t frame_number)
 {
     uint32_t actual_frame;
-    SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u WAIT FOR COMMANDS (F%u)", frame_number, m_frame_number.load());
-    while ((actual_frame = m_frame_number.load(std::memory_order_acquire)) < frame_number)
-        m_frame_number.wait(actual_frame, std::memory_order_relaxed);
+    SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u WAIT FOR COMMANDS (F%u)", frame_number, s_self->m_frame_number.load());
+    while ((actual_frame = s_self->m_frame_number.load(std::memory_order_acquire)) < frame_number)
+        s_self->m_frame_number.wait(actual_frame, std::memory_order_relaxed);
 
     SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u COMMANDS READY", frame_number);
 }
 
 void SceneHost::push_event(SDL_Event* evt)
 {
-    m_event_queue.push(*evt);
+    s_self->m_event_queue.push(*evt);
 }
 
-void SceneHost::tick()
+void SceneHost::submit_transfers()
 {
     RQData job;
     uint64_t max_ticket = 0, num_commands = 0;
@@ -367,7 +392,7 @@ void SceneHost::tick()
     timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
     timeline_info.signalSemaphoreValueCount = 1;
 
-    while (num_commands < xfer_commands.size() && m_render_queue.try_pop(job)) {
+    while (num_commands < xfer_commands.size() && s_self->m_render_queue.try_pop(job)) {
         xfer_commands[num_commands].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         xfer_commands[num_commands].commandBufferCount = 1;
         xfer_commands[num_commands].pCommandBuffers = &job.commands->m_xfer_commands;
@@ -382,21 +407,21 @@ void SceneHost::tick()
         acquire_commands[num_commands].commandBufferCount = 1;
         acquire_commands[num_commands].pCommandBuffers = &job.commands->m_acquire_commands;
         acquire_commands[num_commands].signalSemaphoreCount = 1;
-        acquire_commands[num_commands].pSignalSemaphores = &m_timeline;
+        acquire_commands[num_commands].pSignalSemaphores = &s_self->m_timeline;
         max_ticket = std::max(max_ticket, job.ticket);
         num_commands++;
     }
-    timeline_info.pSignalSemaphoreValues = &max_ticket;
 
     if (num_commands > 0) {
-        VK_DEMAND(vkQueueSubmit(m_transfer_queue, num_commands, xfer_commands.data(), VK_NULL_HANDLE));
-        VK_DEMAND(vkQueueSubmit(m_graphics_queue, num_commands, acquire_commands.data(), VK_NULL_HANDLE));
+        timeline_info.pSignalSemaphoreValues = &max_ticket;
+        VK_DEMAND(vkQueueSubmit(s_self->m_transfer_queue, num_commands, xfer_commands.data(), VK_NULL_HANDLE));
+        VK_DEMAND(vkQueueSubmit(s_self->m_graphics_queue, num_commands, acquire_commands.data(), VK_NULL_HANDLE));
     }
 }
 
 void SceneHost::execute_draws(VkCommandBuffer container, uint32_t frame_number, int subpass)
 {
-    IScene* active_scene = m_active_scene.load(std::memory_order_acquire);
+    IScene* active_scene = s_self->m_active_scene.load(std::memory_order_acquire);
     if (active_scene) {
         std::span<VkCommandBuffer> commands = active_scene->draw_commands(frame_number, subpass);
         if (commands.size() > 0)

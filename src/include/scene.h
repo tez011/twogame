@@ -1,6 +1,5 @@
 #pragma once
 #include <atomic>
-#include <list>
 #include <queue>
 #include <span>
 #include <stack>
@@ -15,6 +14,8 @@ namespace twogame {
 class IScene;
 
 class SceneHost final {
+    static std::unique_ptr<SceneHost> s_self;
+
 public:
     constexpr static VkDeviceSize STAGING_BUFFER_SIZE = 1 << 29;
     class StagingBuffer {
@@ -32,7 +33,7 @@ public:
         std::vector<std::pair<VkCopyBufferToImageInfo2, std::vector<VkBufferImageCopy2>>> m_image_copies;
 
     public:
-        StagingBuffer() {}
+        StagingBuffer() { }
         inline std::span<std::byte> window(VkDeviceSize offset) const { return m_src_data.subspan(offset); }
         void copy_image(VkImage dst, VkImageCreateInfo& info, std::span<const VkBufferImageCopy2> copies, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout final_layout);
         void copy_buffer(VkBuffer dst, VkDeviceSize dst_size, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
@@ -67,7 +68,7 @@ private:
     bool m_active;
 
     // Owned by render thread
-    IRenderer* r_renderer;
+    std::unique_ptr<IRenderer> m_renderer;
     VkCommandPool m_xfer_command_pool, m_acquire_command_pool;
     VkSemaphore m_timeline;
     VkQueue m_graphics_queue, m_transfer_queue;
@@ -79,29 +80,37 @@ private:
 
     void scene_loop();
     void builder_loop(int thread_id);
+    SceneHost(IRenderer* renderer, IScene* initial);
 
 public:
-    SceneHost(IRenderer* renderer, IScene* initial);
+    static void init(IRenderer* renderer, IScene* initial);
+    static void drop();
+    static SceneHost& owned()
+    {
+        return *s_self;
+    }
     ~SceneHost();
+
+    static inline IRenderer* active_renderer() { return s_self->m_renderer.get(); }
 
     /**
      * Enqueue the scene for preparation.
      * @warning only safe to call from the scene thread.
      * @return false if the queue is full and the caller should try again.
      */
-    bool prepare(IScene* scene);
+    static bool prepare(IScene* scene);
 
     /**
      * Set the next scene. When this next scene is ready, the host will switch to it.
      * @warning only safe to call from the scene thread.
      */
-    void set_next_scene(IScene* scene);
+    static void set_next_scene(IScene* scene);
 
-    void wait_frame(uint32_t frame_number);
-    void push_event(SDL_Event*);
-    void tick();
+    static void wait_frame(uint32_t frame_number);
+    static void push_event(SDL_Event*);
+    static void submit_transfers();
 
-    void execute_draws(VkCommandBuffer container, uint32_t frame_number, int subpass);
+    static void execute_draws(VkCommandBuffer container, uint32_t frame_number, int subpass);
 };
 
 class IScene {
@@ -114,7 +123,7 @@ protected:
 
 public:
     virtual ~IScene() { }
-    virtual bool construct(IRenderer*, int pass, SceneHost::StagingBuffer&) = 0;
+    virtual bool construct(IRenderer* renderer, SceneHost::StagingBuffer& buffer, size_t pass, size_t ticket) = 0;
     virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
     virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
     virtual void record_commands(IRenderer*, uint32_t frame_number) = 0;
@@ -131,12 +140,21 @@ protected:
     IAsset() { }
 
 public:
+    struct LoadQueueCmp {
+        bool operator()(const std::weak_ptr<IAsset>& lhs, const std::weak_ptr<IAsset>& rhs)
+        {
+            auto Lhs = lhs.lock(), Rhs = rhs.lock();
+            return Lhs->prepare_needs() < Rhs->prepare_needs();
+        }
+    };
+    using LoadQueue = std::priority_queue<std::weak_ptr<IAsset>, std::vector<std::weak_ptr<IAsset>>, LoadQueueCmp>;
+
     virtual ~IAsset() { }
 
+    virtual void dependencies(LoadQueue&) const { }
     virtual size_t prepare_needs() const = 0;
-    virtual void prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) = 0;
+    virtual size_t prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) = 0;
     void post_prepare(uint64_t ready);
-    virtual std::list<IAsset*> dependencies() const { return {}; }
 };
 
 namespace asset {
@@ -153,7 +171,35 @@ namespace asset {
         inline VkImageView view() const { return m_image_view; }
 
         virtual size_t prepare_needs() const override;
-        virtual void prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) override;
+        virtual size_t prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) override;
+    };
+
+    class Material : public IAsset {
+        std::shared_ptr<Image> m_base_color_texture;
+
+    public:
+        Material();
+        ~Material();
+
+        virtual void dependencies(LoadQueue&) const override;
+        virtual size_t prepare_needs() const override;
+        virtual size_t prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) override;
+    };
+
+    class Mesh final : public IAsset {
+    public:
+        VkBuffer m_vertex_buffer;
+        VkBuffer m_index_buffer;
+        VmaAllocation m_vertex_mem, m_index_mem;
+        std::vector<std::shared_ptr<Material>> m_materials;
+
+    public:
+        Mesh();
+        ~Mesh();
+
+        virtual void dependencies(LoadQueue&) const override;
+        virtual size_t prepare_needs() const override;
+        virtual size_t prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) override;
     };
 
 }
