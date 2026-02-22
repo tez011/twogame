@@ -1,6 +1,7 @@
 #pragma once
 #include <atomic>
 #include <queue>
+#include <set>
 #include <span>
 #include <stack>
 #include <thread>
@@ -91,7 +92,7 @@ public:
     }
     ~SceneHost();
 
-    static inline IRenderer* active_renderer() { return s_self->m_renderer.get(); }
+    static inline IRenderer* renderer() { return s_self->m_renderer.get(); }
 
     /**
      * Enqueue the scene for preparation.
@@ -132,7 +133,12 @@ public:
 };
 
 class IAsset {
-    static std::unordered_map<uint64_t, std::weak_ptr<IAsset>> s_cache;
+public:
+    enum class Type {
+        Image,
+        Material,
+        Mesh,
+    };
 
 protected:
     std::variant<std::shared_ptr<void>, uint64_t> m_prepared;
@@ -140,18 +146,10 @@ protected:
     IAsset() { }
 
 public:
-    struct LoadQueueCmp {
-        bool operator()(const std::weak_ptr<IAsset>& lhs, const std::weak_ptr<IAsset>& rhs)
-        {
-            auto Lhs = lhs.lock(), Rhs = rhs.lock();
-            return Lhs->prepare_needs() < Rhs->prepare_needs();
-        }
-    };
-    using LoadQueue = std::priority_queue<std::weak_ptr<IAsset>, std::vector<std::weak_ptr<IAsset>>, LoadQueueCmp>;
-
     virtual ~IAsset() { }
+    virtual Type type() const = 0;
 
-    virtual void dependencies(LoadQueue&) const { }
+    virtual void push_dependents(std::queue<IAsset*>&) const { }
     virtual size_t prepare_needs() const = 0;
     virtual size_t prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) = 0;
     void post_prepare(uint64_t ready);
@@ -167,7 +165,8 @@ namespace asset {
     public:
         Image();
         ~Image();
-        inline operator VkImage() const { return m_image; }
+        inline virtual Type type() const override { return IAsset::Type::Image; }
+        inline VkImage handle() const { return m_image; }
         inline VkImageView view() const { return m_image_view; }
 
         virtual size_t prepare_needs() const override;
@@ -180,10 +179,13 @@ namespace asset {
     public:
         Material();
         ~Material();
+        inline virtual Type type() const override { return IAsset::Type::Material; }
 
-        virtual void dependencies(LoadQueue&) const override;
+        virtual void push_dependents(std::queue<IAsset*>&) const override;
         virtual size_t prepare_needs() const override;
         virtual size_t prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) override;
+
+        Image* base_color_texture() const { return m_base_color_texture.get(); }
     };
 
     class Mesh final : public IAsset {
@@ -196,8 +198,9 @@ namespace asset {
     public:
         Mesh();
         ~Mesh();
+        inline virtual Type type() const override { return IAsset::Type::Mesh; }
 
-        virtual void dependencies(LoadQueue&) const override;
+        virtual void push_dependents(std::queue<IAsset*>&) const override;
         virtual size_t prepare_needs() const override;
         virtual size_t prepare(SceneHost::StagingBuffer& commands, VkDeviceSize offset) override;
     };

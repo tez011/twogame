@@ -1,3 +1,4 @@
+#include <set>
 #include "display.h"
 #include "embedded_shaders.h"
 #include "scene.h"
@@ -7,10 +8,23 @@ namespace twogame {
 IRenderer::IRenderer()
     : m_perspective_projection(GLMS_MAT4_ZERO_INIT)
     , m_ortho_projection(GLMS_MAT4_ZERO_INIT)
+    , m_descriptor_layouts(3)
     , m_render_pass(VK_NULL_HANDLE)
 {
     VkPhysicalDeviceProperties hwd_props;
     vkGetPhysicalDeviceProperties(DisplayHost::hardware_device(), &hwd_props);
+
+    VkBufferCreateInfo buffer_ci {};
+    VmaAllocationCreateInfo alloc_ci {};
+    VmaAllocationInfo alloc_info;
+    buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_ci.size = 4 * sizeof(mat4);
+    buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_uniform_buffer, &m_uniform_buffer_mem, &alloc_info));
+    m_uniform_buffer_ptr = static_cast<std::byte*>(alloc_info.pMappedData);
 
     VkSamplerCreateInfo sampler_info {};
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
@@ -18,20 +32,151 @@ IRenderer::IRenderer()
     sampler_info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
     sampler_info.addressModeU = sampler_info.addressModeV = sampler_info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     sampler_info.anisotropyEnable = VK_TRUE;
-    sampler_info.maxAnisotropy = hwd_props.limits.maxSamplerAnisotropy;
+    sampler_info.maxAnisotropy = std::min(8.f, hwd_props.limits.maxSamplerAnisotropy);
     sampler_info.minLod = 0;
     sampler_info.maxLod = VK_LOD_CLAMP_NONE;
     sampler_info.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     VK_DEMAND(vkCreateSampler(DisplayHost::device(), &sampler_info, nullptr, &m_sampler));
+
+    VkDescriptorSetLayoutCreateInfo binding_layout_ci {};
+    VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_ci {};
+    std::array<VkDescriptorSetLayoutBinding, 1> bindings {};
+    std::array<VkDescriptorBindingFlags, 1> binding_flags {};
+    binding_layout_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    binding_layout_ci.pBindings = bindings.data();
+    binding_flags_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
+    binding_flags_ci.pBindingFlags = binding_flags.data();
+
+    binding_layout_ci.bindingCount = 0;
+    VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &binding_layout_ci, nullptr, &m_descriptor_layouts[0]));
+
+    binding_layout_ci.bindingCount = 1;
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    bindings[0].descriptorCount = 1;
+    bindings[0].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &binding_layout_ci, nullptr, &m_descriptor_layouts[1]));
+
+    binding_layout_ci.pNext = &binding_flags_ci;
+    binding_layout_ci.bindingCount = binding_flags_ci.bindingCount = 1;
+    bindings[0].binding = 0;
+    bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
+    bindings[0].descriptorCount = PICTUREBOOK_CAPACITY;
+    bindings[0].stageFlags = VK_SHADER_STAGE_ALL;
+    binding_flags[0] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+    VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &binding_layout_ci, nullptr, &m_descriptor_layouts[2]));
+
+    std::array<VkDescriptorSetLayout, 3> set_layouts;
+    VkPipelineLayoutCreateInfo pipeline_layout_ci {};
+    VkPushConstantRange push_constant_range {};
+    pipeline_layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    pipeline_layout_ci.pSetLayouts = set_layouts.data();
+    pipeline_layout_ci.pushConstantRangeCount = 1;
+    pipeline_layout_ci.pPushConstantRanges = &push_constant_range;
+    push_constant_range.stageFlags = VK_SHADER_STAGE_ALL;
+    push_constant_range.offset = 0;
+    push_constant_range.size = 3 * sizeof(uint64_t);
+
+    pipeline_layout_ci.setLayoutCount = 3;
+    set_layouts[0] = m_descriptor_layouts[1];
+    set_layouts[1] = m_descriptor_layouts[0];
+    set_layouts[2] = m_descriptor_layouts[2];
+    VK_DEMAND(vkCreatePipelineLayout(DisplayHost::device(), &pipeline_layout_ci, nullptr, &m_graphics_pipeline_layouts[static_cast<size_t>(GraphicsPipeline::GPass)]));
+
+    std::array<VkDescriptorPoolSize, 1> pool_sizes {};
+    VkDescriptorPoolCreateInfo descriptor_pool_ci {};
+    descriptor_pool_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    descriptor_pool_ci.maxSets = 2 + 2 * static_cast<size_t>(GraphicsPipeline::MAX_VALUE);
+    descriptor_pool_ci.poolSizeCount = pool_sizes.size();
+    descriptor_pool_ci.pPoolSizes = pool_sizes.data();
+    pool_sizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    pool_sizes[0].descriptorCount = 1;
+    VK_DEMAND(vkCreateDescriptorPool(DisplayHost::device(), &descriptor_pool_ci, nullptr, &m_graphics_descriptor_pool));
+
+    VkDescriptorSetAllocateInfo descriptor_alloc_info {};
+    auto m_descriptor_set_1_layouts = std::to_array<VkDescriptorSetLayout>({
+        m_descriptor_layouts[0],
+    });
+    descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    descriptor_alloc_info.descriptorPool = m_graphics_descriptor_pool;
+    descriptor_alloc_info.descriptorSetCount = 1;
+    descriptor_alloc_info.pSetLayouts = &m_descriptor_layouts[1];
+    VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &descriptor_alloc_info, &m_descriptor_set_0[0]));
+    VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &descriptor_alloc_info, &m_descriptor_set_0[1]));
+    descriptor_alloc_info.descriptorSetCount = m_descriptor_set_1_layouts.size();
+    descriptor_alloc_info.pSetLayouts = m_descriptor_set_1_layouts.data();
+    VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &descriptor_alloc_info, m_descriptor_set_1[0].data()));
+    VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &descriptor_alloc_info, m_descriptor_set_1[1].data()));
+
+    std::array<VkWriteDescriptorSet, 2> descriptor_writes {};
+    std::array<VkDescriptorBufferInfo, 2> descriptor_buffer_writes {};
+    descriptor_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptor_writes[0].dstSet = m_descriptor_set_0[0];
+    descriptor_writes[0].dstBinding = 0;
+    descriptor_writes[0].descriptorCount = 1;
+    descriptor_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptor_writes[0].pBufferInfo = &descriptor_buffer_writes[0];
+    descriptor_buffer_writes[0].buffer = m_uniform_buffer;
+    descriptor_buffer_writes[0].offset = 0;
+    descriptor_buffer_writes[0].range = 2 * sizeof(mat4);
+    descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptor_writes[1].dstSet = m_descriptor_set_0[1];
+    descriptor_writes[1].dstBinding = 0;
+    descriptor_writes[1].descriptorCount = 1;
+    descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    descriptor_writes[1].pBufferInfo = &descriptor_buffer_writes[1];
+    descriptor_buffer_writes[1].buffer = m_uniform_buffer;
+    descriptor_buffer_writes[1].offset = 2 * sizeof(mat4);
+    descriptor_buffer_writes[1].range = 2 * sizeof(mat4);
+    vkUpdateDescriptorSets(DisplayHost::device(), descriptor_writes.size(), descriptor_writes.data(), 0, nullptr);
 
     resize_frames(DisplayHost::swapchain_extent());
 }
 
 IRenderer::~IRenderer()
 {
-    m_pipelines.clear();
+    std::set<VkPipeline> unique_pipelines;
+    std::set<VkPipelineLayout> unique_pipeline_layouts;
+    unique_pipelines.insert(m_graphics_pipelines.begin(), m_graphics_pipelines.end());
+    unique_pipelines.insert(m_compute_pipelines.begin(), m_compute_pipelines.end());
+    unique_pipeline_layouts.insert(m_graphics_pipeline_layouts.begin(), m_graphics_pipeline_layouts.end());
+    unique_pipeline_layouts.insert(m_compute_pipeline_layouts.begin(), m_compute_pipeline_layouts.end());
+
+    for (auto it = unique_pipelines.begin(); it != unique_pipelines.end(); ++it)
+        vkDestroyPipeline(DisplayHost::device(), *it, nullptr);
+    for (auto it = unique_pipeline_layouts.begin(); it != unique_pipeline_layouts.end(); ++it)
+        vkDestroyPipelineLayout(DisplayHost::device(), *it, nullptr);
+    vkDestroyDescriptorPool(DisplayHost::device(), m_graphics_descriptor_pool, nullptr);
+    for (auto it = m_descriptor_layouts.begin(); it != m_descriptor_layouts.end(); ++it)
+        vkDestroyDescriptorSetLayout(DisplayHost::device(), *it, nullptr);
     vkDestroyRenderPass(DisplayHost::device(), m_render_pass, nullptr);
     vkDestroySampler(DisplayHost::device(), m_sampler, nullptr);
+    vmaDestroyBuffer(DisplayHost::allocator(), m_uniform_buffer, m_uniform_buffer_mem);
+}
+
+std::span<std::byte> IRenderer::descriptor_buffer(int frame, int set, int binding)
+{
+    frame %= SIMULTANEOUS_FRAMES;
+
+    if (set == 0 && binding == 0) {
+        if (frame == 0)
+            return std::span(m_uniform_buffer_ptr + 0, 2 * sizeof(mat4));
+        if (frame == 1)
+            return std::span(m_uniform_buffer_ptr + 2 * sizeof(mat4), 2 * sizeof(mat4));
+    }
+    return {};
+}
+
+void IRenderer::flush_descriptor_buffers()
+{
+    vmaFlushAllocation(DisplayHost::allocator(), m_uniform_buffer_mem, 0, VK_WHOLE_SIZE);
+}
+
+void IRenderer::bind_pipeline(VkCommandBuffer cmd, GraphicsPipeline pass, int frame_number)
+{
+    std::array<VkDescriptorSet, 2> sets = { m_descriptor_set_0[frame_number % SIMULTANEOUS_FRAMES], m_descriptor_set_1[frame_number % SIMULTANEOUS_FRAMES][static_cast<size_t>(pass)] };
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipelines[static_cast<size_t>(pass)]);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline_layouts[static_cast<size_t>(pass)], 0, sets.size(), sets.data(), 0, nullptr);
 }
 
 void IRenderer::resize_frames(VkExtent2D surface_extent)
@@ -122,11 +267,127 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     p0_depth_att.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     VK_DEMAND(vkCreateRenderPass2(DisplayHost::device(), &render_pass_ci, nullptr, &m_render_pass));
 
-    PipelineBuilder pipeline_builder;
-    m_pipelines.push_back(pipeline_builder.new_graphics(m_render_pass, 0)
-                              .with_shader(twogame::shaders::basic_vert_spv, twogame::shaders::basic_vert_size, VK_SHADER_STAGE_VERTEX_BIT)
-                              .with_shader(twogame::shaders::basic_frag_spv, twogame::shaders::basic_frag_size, VK_SHADER_STAGE_FRAGMENT_BIT)
-                              .build());
+    std::array<VkShaderModule, 2> shader_modules;
+    VkShaderModuleCreateInfo shader_module_info {};
+    shader_module_info.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    shader_module_info.codeSize = shaders::basic_vert_size;
+    shader_module_info.pCode = shaders::basic_vert_spv;
+    VK_DEMAND(vkCreateShaderModule(DisplayHost::device(), &shader_module_info, nullptr, &shader_modules[0]));
+    shader_module_info.codeSize = shaders::basic_frag_size;
+    shader_module_info.pCode = shaders::basic_frag_spv;
+    VK_DEMAND(vkCreateShaderModule(DisplayHost::device(), &shader_module_info, nullptr, &shader_modules[1]));
+
+    std::array<VkPipelineShaderStageCreateInfo, 2> pipeline_shaders {};
+    pipeline_shaders[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipeline_shaders[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    pipeline_shaders[0].module = shader_modules[0];
+    pipeline_shaders[0].pName = "main";
+    pipeline_shaders[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    pipeline_shaders[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    pipeline_shaders[1].module = shader_modules[1];
+    pipeline_shaders[1].pName = "main";
+
+    // Each attribute (position, normal, tangent, uv, color) has its own binding.
+    // Within each binding, the attributes are interleaved.
+    // So, if there is a vec2 uv0 and uv1, the stride is 16, and uv1's offset is 8.
+    std::array<VkVertexInputBindingDescription, 3> vertex_input_bindings {};
+    std::array<VkVertexInputAttributeDescription, 3> vertex_input_atts {};
+    vertex_input_bindings[0].binding = 0; // TODO: this value should come from an enum
+    vertex_input_bindings[0].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    vertex_input_bindings[0].stride = 12;
+    vertex_input_bindings[1].binding = 1;
+    vertex_input_bindings[1].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    vertex_input_bindings[1].stride = 12;
+    vertex_input_bindings[2].binding = 3;
+    vertex_input_bindings[2].inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+    vertex_input_bindings[2].stride = 8;
+    vertex_input_atts[0].location = 0;
+    vertex_input_atts[0].binding = 0;
+    vertex_input_atts[0].format = VK_FORMAT_R32G32B32_SFLOAT;
+    vertex_input_atts[0].offset = 0;
+    vertex_input_atts[1].location = 1;
+    vertex_input_atts[1].binding = 1;
+    vertex_input_atts[1].format = VK_FORMAT_R32G32B32_SFLOAT;
+    vertex_input_atts[1].offset = 0;
+    vertex_input_atts[2].location = 2;
+    vertex_input_atts[2].binding = 3;
+    vertex_input_atts[2].format = VK_FORMAT_R32G32_SFLOAT;
+    vertex_input_atts[2].offset = 0;
+
+    std::array<VkPipelineVertexInputStateCreateInfo, 1> vertex_input_info {};
+    vertex_input_info[0].sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertex_input_info[0].vertexBindingDescriptionCount = 3;
+    vertex_input_info[0].pVertexBindingDescriptions = &vertex_input_bindings[0];
+    vertex_input_info[0].vertexAttributeDescriptionCount = 3;
+    vertex_input_info[0].pVertexAttributeDescriptions = &vertex_input_atts[0];
+
+    VkPipelineInputAssemblyStateCreateInfo input_assy_info {};
+    input_assy_info.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    input_assy_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewport_info {};
+    viewport_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewport_info.viewportCount = 1;
+    viewport_info.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizer_info {};
+    rasterizer_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizer_info.depthClampEnable = VK_FALSE;
+    rasterizer_info.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizer_info.cullMode = VK_CULL_MODE_BACK_BIT;
+    rasterizer_info.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizer_info.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo multisample_info {};
+    multisample_info.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisample_info.sampleShadingEnable = VK_FALSE;
+    multisample_info.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    VkPipelineDepthStencilStateCreateInfo depth_stencil_info {};
+    depth_stencil_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+    depth_stencil_info.depthTestEnable = VK_TRUE;
+    depth_stencil_info.depthWriteEnable = VK_TRUE;
+    depth_stencil_info.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
+    depth_stencil_info.depthBoundsTestEnable = VK_FALSE;
+    depth_stencil_info.stencilTestEnable = VK_FALSE;
+
+    std::array<VkPipelineColorBlendAttachmentState, 1> color_blend_atts {};
+    VkPipelineColorBlendStateCreateInfo color_blend_info {};
+    color_blend_info.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    color_blend_info.attachmentCount = color_blend_atts.size();
+    color_blend_info.pAttachments = color_blend_atts.data();
+    color_blend_atts[0].blendEnable = VK_FALSE;
+    color_blend_atts[0].colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineDynamicStateCreateInfo dynamic_state_info {};
+    auto dynamic_state_set = std::to_array<VkDynamicState>({ VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE });
+    dynamic_state_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamic_state_info.dynamicStateCount = dynamic_state_set.size();
+    dynamic_state_info.pDynamicStates = dynamic_state_set.data();
+
+    std::array<VkGraphicsPipelineCreateInfo, static_cast<size_t>(GraphicsPipeline::MAX_VALUE)> graphics_pipeline_ci {};
+    graphics_pipeline_ci[0].sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    graphics_pipeline_ci[0].stageCount = 2;
+    graphics_pipeline_ci[0].pStages = &pipeline_shaders[0];
+    graphics_pipeline_ci[0].pVertexInputState = &vertex_input_info[0];
+    graphics_pipeline_ci[0].pInputAssemblyState = &input_assy_info;
+    graphics_pipeline_ci[0].pViewportState = &viewport_info;
+    graphics_pipeline_ci[0].pRasterizationState = &rasterizer_info;
+    graphics_pipeline_ci[0].pMultisampleState = &multisample_info;
+    graphics_pipeline_ci[0].pDepthStencilState = &depth_stencil_info;
+    graphics_pipeline_ci[0].pColorBlendState = &color_blend_info;
+    graphics_pipeline_ci[0].pDynamicState = &dynamic_state_info;
+    graphics_pipeline_ci[0].layout = m_graphics_pipeline_layouts[0];
+    graphics_pipeline_ci[0].renderPass = m_render_pass;
+    graphics_pipeline_ci[0].subpass = 0;
+    VK_DEMAND(vkCreateGraphicsPipelines(DisplayHost::device(), DisplayHost::pipeline_cache(), graphics_pipeline_ci.size(), graphics_pipeline_ci.data(), nullptr, m_graphics_pipelines.data()));
+
+    std::array<VkComputePipelineCreateInfo, static_cast<size_t>(ComputePipeline::MAX_VALUE)> compute_pipeline_ci {};
+    if constexpr (compute_pipeline_ci.empty() == false)
+        VK_DEMAND(vkCreateComputePipelines(DisplayHost::device(), DisplayHost::pipeline_cache(), compute_pipeline_ci.size(), compute_pipeline_ci.data(), nullptr, m_compute_pipelines.data()));
+
+    for (auto it = shader_modules.begin(); it != shader_modules.end(); ++it)
+        vkDestroyShaderModule(DisplayHost::device(), *it, nullptr);
 }
 
 void SimpleForwardRenderer::create_frame_data(FrameData& frame)
@@ -154,7 +415,7 @@ void SimpleForwardRenderer::create_frame_data(FrameData& frame)
 void SimpleForwardRenderer::create_subpass_data(AllSubpasses& subpasses)
 {
     {
-        auto& pass = std::get<Subpass0>(subpasses);
+        auto& pass = std::get<GPass>(subpasses);
         VmaAllocationCreateInfo mem_createinfo {};
         VkImageCreateInfo i_createinfo {};
         VkImageViewCreateInfo iv_createinfo {};
@@ -211,7 +472,7 @@ void SimpleForwardRenderer::create_subpass_data(AllSubpasses& subpasses)
 void SimpleForwardRenderer::destroy_subpass_data(AllSubpasses& subpasses)
 {
     {
-        auto& pass = std::get<Subpass0>(subpasses);
+        auto& pass = std::get<GPass>(subpasses);
         vkDestroyFramebuffer(DisplayHost::device(), pass.framebuffer, nullptr);
         vkDestroyImageView(DisplayHost::device(), pass.depth_buffer_view, nullptr);
         vkDestroyImage(DisplayHost::device(), pass.depth_buffer, nullptr);

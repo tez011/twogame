@@ -311,9 +311,9 @@ Material::~Material()
 {
 }
 
-void Material::dependencies(LoadQueue& out) const
+void Material::push_dependents(std::queue<IAsset*>& deps) const
 {
-    out.push(m_base_color_texture);
+    deps.push(m_base_color_texture.get());
 }
 
 size_t Material::prepare_needs() const
@@ -330,7 +330,7 @@ Mesh::Mesh()
 {
     auto prep = std::make_shared<mesh::prep>("/data/duck.bin");
     m_prepared = prep;
-    m_materials.emplace_back();
+    m_materials.emplace_back(new Material);
 
     m_vertex_buffer = prep->vertex_buffer.handle;
     m_vertex_mem = prep->vertex_buffer.mem;
@@ -344,9 +344,10 @@ Mesh::~Mesh()
     vmaDestroyBuffer(DisplayHost::allocator(), m_index_buffer, m_index_mem);
 }
 
-void Mesh::dependencies(LoadQueue& out) const
+void Mesh::push_dependents(std::queue<IAsset*>& deps) const
 {
-    out.push_range(std::ranges::subrange(m_materials.begin(), m_materials.end()));
+    for (auto it = m_materials.cbegin(); it != m_materials.cend(); ++it)
+        deps.push(it->get());
 }
 
 size_t Mesh::prepare_needs() const

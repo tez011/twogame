@@ -75,10 +75,6 @@ DisplayHost::~DisplayHost()
     for (auto it = m_sem_acquire_image.begin(); it != m_sem_acquire_image.end(); ++it)
         vkDestroySemaphore(m_device, *it, nullptr);
     vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
-    vkDestroySampler(m_device, m_null_image_sampler, nullptr);
-    vkDestroyImageView(m_device, m_null_image_view, nullptr);
-    vmaDestroyImage(m_allocator, m_null_image, m_null_image_mem);
-    vkDestroyDescriptorSetLayout(m_device, m_empty_descriptor_set_layout, nullptr);
     vkDestroyPipelineCache(m_device, m_pipeline_cache, nullptr);
     vkDestroyCommandPool(m_device, m_present_command_pool, nullptr);
     vmaDestroyAllocator(m_allocator);
@@ -279,9 +275,11 @@ bool DisplayHost::pick_physical_device()
     }
 
         DEMAND_FEATURE(available_features.features, depthClamp);
+        DEMAND_FEATURE(available_features12, descriptorBindingSampledImageUpdateAfterBind);
+        DEMAND_FEATURE(available_features12, descriptorBindingVariableDescriptorCount);
+        DEMAND_FEATURE(available_features12, descriptorIndexing);
         DEMAND_FEATURE(available_features12, timelineSemaphore);
         DEMAND_FEATURE(available_features12, uniformBufferStandardLayout);
-        DEMAND_FEATURE(available_features13, inlineUniformBlock);
         DEMAND_FEATURE(available_features13, synchronization2);
         if (has_portability_subset) {
             DEMAND_FEATURE(portability_features, constantAlphaColorBlendFactors);
@@ -420,7 +418,7 @@ bool DisplayHost::create_logical_device()
     queue_createinfos[queue_createinfo_count].queueFamilyIndex = m_queue_family_index;
     queue_createinfos[queue_createinfo_count].queueCount = 1;
     queue_createinfos[queue_createinfo_count].pQueuePriorities = &queue_priority;
-    if (qfi_dma != qfi) {
+    if (qfi_dma && qfi_dma != qfi) {
         queue_createinfos[++queue_createinfo_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queue_createinfos[queue_createinfo_count].queueFamilyIndex = m_dma_queue_family_index;
         queue_createinfos[queue_createinfo_count].queueCount = 1;
@@ -471,62 +469,6 @@ bool DisplayHost::create_pipeline_artifacts()
     pipeline_cache_createinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
     pipeline_cache_createinfo.flags = VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
     VK_DEMAND(vkCreatePipelineCache(m_device, &pipeline_cache_createinfo, nullptr, &m_pipeline_cache));
-
-    VkDescriptorSetLayoutCreateInfo descriptor_set_layout_createinfo {};
-    descriptor_set_layout_createinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
-    VK_DEMAND(vkCreateDescriptorSetLayout(m_device, &descriptor_set_layout_createinfo, nullptr, &m_empty_descriptor_set_layout));
-
-    VkPhysicalDeviceFeatures2 device_features {};
-    VkPhysicalDeviceRobustness2FeaturesEXT device_features_robustness2 {};
-    device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    device_features.pNext = &device_features_robustness2;
-    device_features_robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
-    vkGetPhysicalDeviceFeatures2(m_hwd, &device_features);
-    if (device_features_robustness2.nullDescriptor) {
-        m_null_image = VK_NULL_HANDLE;
-        m_null_image_view = VK_NULL_HANDLE;
-        m_null_image_mem = VK_NULL_HANDLE;
-        m_null_image_sampler = VK_NULL_HANDLE;
-    } else {
-        VkImageCreateInfo image_ci {};
-        VmaAllocationCreateInfo alloc_ci {};
-        image_ci.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-        image_ci.imageType = VK_IMAGE_TYPE_2D;
-        image_ci.format = VK_FORMAT_R8G8B8A8_UINT;
-        image_ci.extent.width = image_ci.extent.height = image_ci.extent.depth = 1;
-        image_ci.mipLevels = 1;
-        image_ci.arrayLayers = 1;
-        image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
-        image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
-        image_ci.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-        image_ci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_HOST;
-        VK_DEMAND(vmaCreateImage(m_allocator, &image_ci, &alloc_ci, &m_null_image, &m_null_image_mem, nullptr));
-
-        VkImageViewCreateInfo view_ci {};
-        view_ci.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-        view_ci.image = m_null_image;
-        view_ci.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_ci.format = image_ci.format;
-        view_ci.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        view_ci.subresourceRange.baseArrayLayer = 0;
-        view_ci.subresourceRange.layerCount = 1;
-        view_ci.subresourceRange.baseMipLevel = 0;
-        view_ci.subresourceRange.levelCount = 1;
-        VK_DEMAND(vkCreateImageView(m_device, &view_ci, nullptr, &m_null_image_view));
-
-        VkSamplerCreateInfo sampler_ci {};
-        sampler_ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sampler_ci.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        sampler_ci.magFilter = sampler_ci.minFilter = VK_FILTER_NEAREST;
-        sampler_ci.mipmapMode = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-        sampler_ci.addressModeU = sampler_ci.addressModeV = sampler_ci.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-        sampler_ci.anisotropyEnable = VK_FALSE;
-        sampler_ci.minLod = 0;
-        sampler_ci.maxLod = VK_LOD_CLAMP_NONE;
-        sampler_ci.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
-        VK_DEMAND(vkCreateSampler(m_device, &sampler_ci, nullptr, &m_null_image_sampler));
-    }
 
     return true;
 }
@@ -733,7 +675,7 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
 
 SDL_AppResult DisplayHost::draw_frame()
 {
-    IRenderer* renderer = SceneHost::active_renderer();
+    IRenderer* renderer = SceneHost::renderer();
     int32_t swapchain_slot = acquire_image();
     if (swapchain_slot < 0)
         return SDL_APP_FAILURE;

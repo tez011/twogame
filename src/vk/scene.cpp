@@ -93,9 +93,11 @@ void SceneHost::StagingBuffer::finalize()
     vkCmdPipelineBarrier2(m_xfer_commands, &dep);
     VK_DEMAND(vkEndCommandBuffer(m_xfer_commands));
 
-    VK_DEMAND(vkBeginCommandBuffer(m_acquire_commands, &begin_info));
-    vkCmdPipelineBarrier2(m_acquire_commands, &dep);
-    VK_DEMAND(vkEndCommandBuffer(m_acquire_commands));
+    if (m_acquire_commands != VK_NULL_HANDLE) {
+        VK_DEMAND(vkBeginCommandBuffer(m_acquire_commands, &begin_info));
+        vkCmdPipelineBarrier2(m_acquire_commands, &dep);
+        VK_DEMAND(vkEndCommandBuffer(m_acquire_commands));
+    }
 
     m_buffer_copies.clear();
     m_image_copies.clear();
@@ -114,8 +116,15 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     VkSemaphoreCreateInfo sem_createinfo {};
     VkSemaphoreTypeCreateInfo sem_typeinfo {};
     sem_createinfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    for (size_t i = 0; i < BUILDER_THREAD_COUNT; i++)
-        VK_DEMAND(vkCreateSemaphore(DisplayHost::device(), &sem_createinfo, nullptr, &builder_sem[i]));
+
+    vkGetDeviceQueue(DisplayHost::device(), DisplayHost::queue_family_index(), 0, &m_graphics_queue);
+    vkGetDeviceQueue(DisplayHost::device(), DisplayHost::queue_family_index_dma(), 0, &m_transfer_queue);
+    if (m_graphics_queue == m_transfer_queue) {
+        builder_sem.fill(VK_NULL_HANDLE);
+    } else {
+        for (size_t i = 0; i < BUILDER_THREAD_COUNT; i++)
+            VK_DEMAND(vkCreateSemaphore(DisplayHost::device(), &sem_createinfo, nullptr, &builder_sem[i]));
+    }
 
     sem_createinfo.pNext = &sem_typeinfo;
     sem_typeinfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_TYPE_CREATE_INFO;
@@ -130,8 +139,6 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     VK_DEMAND(vkCreateCommandPool(DisplayHost::device(), &pool_createinfo, nullptr, &m_xfer_command_pool));
     pool_createinfo.queueFamilyIndex = DisplayHost::queue_family_index();
     VK_DEMAND(vkCreateCommandPool(DisplayHost::device(), &pool_createinfo, nullptr, &m_acquire_command_pool));
-    vkGetDeviceQueue(DisplayHost::device(), DisplayHost::queue_family_index(), 0, &m_graphics_queue);
-    vkGetDeviceQueue(DisplayHost::device(), DisplayHost::queue_family_index_dma(), 0, &m_transfer_queue);
 
     std::array<std::array<VkCommandBuffer, BUILDER_THREAD_COUNT>, 2> builder_commands;
     VkCommandBufferAllocateInfo cmd_allocinfo {};
@@ -140,8 +147,12 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     cmd_allocinfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     cmd_allocinfo.commandBufferCount = BUILDER_THREAD_COUNT;
     VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::device(), &cmd_allocinfo, builder_commands[0].data()));
-    cmd_allocinfo.commandPool = m_acquire_command_pool;
-    VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::device(), &cmd_allocinfo, builder_commands[1].data()));
+    if (m_graphics_queue == m_transfer_queue) {
+        builder_commands[1].fill(VK_NULL_HANDLE);
+    } else {
+        cmd_allocinfo.commandPool = m_acquire_command_pool;
+        VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::device(), &cmd_allocinfo, builder_commands[1].data()));
+    }
 
     VkBufferCreateInfo staging_createinfo {};
     VmaAllocationCreateInfo staging_allocinfo {};
@@ -172,24 +183,30 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
         pass++;
 
         VkSubmitInfo submit {};
+        VkTimelineSemaphoreSubmitInfo timeline_info {};
         submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
         submit.commandBufferCount = 1;
         submit.pCommandBuffers = &m_staging_buffers[0].m_xfer_commands;
         submit.signalSemaphoreCount = 1;
-        submit.pSignalSemaphores = &m_staging_buffers[0].m_post_xfer;
-        VK_DEMAND(vkQueueSubmit(m_transfer_queue, 1, &submit, VK_NULL_HANDLE));
-
-        VkTimelineSemaphoreSubmitInfo timeline_info {};
-        submit.pNext = &timeline_info;
-        submit.waitSemaphoreCount = 1;
-        submit.pWaitSemaphores = &m_staging_buffers[0].m_post_xfer;
-        submit.pWaitDstStageMask = &wait_stage;
-        submit.pCommandBuffers = &m_staging_buffers[0].m_acquire_commands;
-        submit.pSignalSemaphores = &m_timeline;
         timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
         timeline_info.signalSemaphoreValueCount = 1;
         timeline_info.pSignalSemaphoreValues = &pass;
-        VK_DEMAND(vkQueueSubmit(m_graphics_queue, 1, &submit, VK_NULL_HANDLE));
+        if (m_graphics_queue == m_transfer_queue) {
+            submit.pNext = &timeline_info;
+            submit.pSignalSemaphores = &m_timeline;
+            VK_DEMAND(vkQueueSubmit(m_transfer_queue, 1, &submit, VK_NULL_HANDLE));
+        } else {
+            submit.pSignalSemaphores = &m_staging_buffers[0].m_post_xfer;
+            VK_DEMAND(vkQueueSubmit(m_transfer_queue, 1, &submit, VK_NULL_HANDLE));
+
+            submit.pNext = &timeline_info;
+            submit.waitSemaphoreCount = 1;
+            submit.pWaitSemaphores = &m_staging_buffers[0].m_post_xfer;
+            submit.pWaitDstStageMask = &wait_stage;
+            submit.pCommandBuffers = &m_staging_buffers[0].m_acquire_commands;
+            submit.pSignalSemaphores = &m_timeline;
+            VK_DEMAND(vkQueueSubmit(m_graphics_queue, 1, &submit, VK_NULL_HANDLE));
+        }
 
         VkSemaphoreWaitInfo wait_info {};
         wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
@@ -397,17 +414,22 @@ void SceneHost::submit_transfers()
         xfer_commands[num_commands].commandBufferCount = 1;
         xfer_commands[num_commands].pCommandBuffers = &job.commands->m_xfer_commands;
         xfer_commands[num_commands].signalSemaphoreCount = 1;
-        xfer_commands[num_commands].pSignalSemaphores = &job.commands->m_post_xfer;
+        if (s_self->m_graphics_queue == s_self->m_transfer_queue) {
+            xfer_commands[num_commands].pNext = &timeline_info;
+            xfer_commands[num_commands].pSignalSemaphores = &s_self->m_timeline;
+        } else {
+            xfer_commands[num_commands].pSignalSemaphores = &job.commands->m_post_xfer;
+            acquire_commands[num_commands].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+            acquire_commands[num_commands].pNext = &timeline_info;
+            acquire_commands[num_commands].waitSemaphoreCount = 1;
+            acquire_commands[num_commands].pWaitSemaphores = &job.commands->m_post_xfer;
+            acquire_commands[num_commands].pWaitDstStageMask = &wait_stage;
+            acquire_commands[num_commands].commandBufferCount = 1;
+            acquire_commands[num_commands].pCommandBuffers = &job.commands->m_acquire_commands;
+            acquire_commands[num_commands].signalSemaphoreCount = 1;
+            acquire_commands[num_commands].pSignalSemaphores = &s_self->m_timeline;
+        }
 
-        acquire_commands[num_commands].sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        acquire_commands[num_commands].pNext = &timeline_info;
-        acquire_commands[num_commands].waitSemaphoreCount = 1;
-        acquire_commands[num_commands].pWaitSemaphores = &job.commands->m_post_xfer;
-        acquire_commands[num_commands].pWaitDstStageMask = &wait_stage;
-        acquire_commands[num_commands].commandBufferCount = 1;
-        acquire_commands[num_commands].pCommandBuffers = &job.commands->m_acquire_commands;
-        acquire_commands[num_commands].signalSemaphoreCount = 1;
-        acquire_commands[num_commands].pSignalSemaphores = &s_self->m_timeline;
         max_ticket = std::max(max_ticket, job.ticket);
         num_commands++;
     }
@@ -415,7 +437,8 @@ void SceneHost::submit_transfers()
     if (num_commands > 0) {
         timeline_info.pSignalSemaphoreValues = &max_ticket;
         VK_DEMAND(vkQueueSubmit(s_self->m_transfer_queue, num_commands, xfer_commands.data(), VK_NULL_HANDLE));
-        VK_DEMAND(vkQueueSubmit(s_self->m_graphics_queue, num_commands, acquire_commands.data(), VK_NULL_HANDLE));
+        if (s_self->m_graphics_queue != s_self->m_transfer_queue)
+            VK_DEMAND(vkQueueSubmit(s_self->m_graphics_queue, num_commands, acquire_commands.data(), VK_NULL_HANDLE));
     }
 }
 
