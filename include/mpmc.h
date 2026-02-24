@@ -2,13 +2,16 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bit>
 #include <cstddef>
 #include <type_traits>
 
 template <typename T, std::size_t C>
 class MPMCQ {
+public:
     constexpr static size_t hardware_interference_size = 64;
     static_assert(std::is_trivially_copyable<T>::value);
+    static_assert(std::has_single_bit(C));
 
     struct Slot {
         alignas(std::max(hardware_interference_size, alignof(T))) std::array<std::byte, sizeof(T)> data;
@@ -16,7 +19,8 @@ class MPMCQ {
     };
     alignas(hardware_interference_size) std::atomic_size_t m_head;
     alignas(hardware_interference_size) std::atomic_size_t m_tail;
-    alignas(hardware_interference_size) std::array<Slot, C + 1> m_slots;
+    alignas(hardware_interference_size) std::array<Slot, C> m_slots;
+    static_assert(sizeof(Slot) % hardware_interference_size == 0);
 
 public:
     MPMCQ()

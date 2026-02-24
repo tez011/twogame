@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.31)
 
 # ---- external dependencies ----
+CPMAddPackage(NAME flatbuffers
+              VERSION 25.12.19
+              GIT_REPOSITORY https://github.com/google/flatbuffers.git
+              EXCLUDE_FROM_ALL TRUE
+              OPTIONS "FLATBUFFERS_BUILD_TESTS OFF")
 CPMAddPackage(NAME glm
               VERSION 1.0.3
               GIT_REPOSITORY https://github.com/g-truc/glm.git
