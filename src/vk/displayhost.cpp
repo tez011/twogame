@@ -1,6 +1,7 @@
 #define VK_ENABLE_BETA_EXTENSIONS
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -10,6 +11,7 @@
 #include <volk.h>
 #include <vulkan/vulkan_metal.h>
 #include "display.h"
+#include "scene.h"
 
 #ifdef DEBUG_BUILD
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;
@@ -20,12 +22,6 @@ constexpr static bool ENABLE_VALIDATION_LAYERS = false;
 constexpr static const char** INSTANCE_LAYERS = nullptr;
 constexpr static uint32_t INSTANCE_LAYERS_COUNT = 0;
 #endif
-
-constexpr static auto s_depth_candidates = std::to_array<VkFormat>({
-    VK_FORMAT_D32_SFLOAT,
-    VK_FORMAT_D16_UNORM,
-    VK_FORMAT_S8_UINT,
-});
 
 static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* cb_data, void* user_data)
 {
@@ -51,6 +47,8 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
 
 namespace twogame {
 
+std::unique_ptr<DisplayHost> DisplayHost::s_self;
+
 DisplayHost::DisplayHost()
 {
     bool success = create_instance()
@@ -58,6 +56,7 @@ DisplayHost::DisplayHost()
         && create_surface()
         && pick_physical_device()
         && create_logical_device()
+        && create_pipeline_artifacts()
         && create_swapchain(VK_NULL_HANDLE)
         && create_syncobjects();
 
@@ -76,6 +75,7 @@ DisplayHost::~DisplayHost()
     for (auto it = m_sem_acquire_image.begin(); it != m_sem_acquire_image.end(); ++it)
         vkDestroySemaphore(m_device, *it, nullptr);
     vkDestroySwapchainKHR(m_device, m_swapchain, nullptr);
+    vkDestroyPipelineCache(m_device, m_pipeline_cache, nullptr);
     vkDestroyCommandPool(m_device, m_present_command_pool, nullptr);
     vmaDestroyAllocator(m_allocator);
     vkDestroyDevice(m_device, nullptr);
@@ -86,6 +86,18 @@ DisplayHost::~DisplayHost()
         vkDestroyDebugUtilsMessengerEXT(m_instance, m_debug_messenger, nullptr);
     }
     vkDestroyInstance(m_instance, nullptr);
+}
+
+void DisplayHost::init()
+{
+    SDL_assert(!s_self);
+    s_self = std::unique_ptr<DisplayHost> { new DisplayHost };
+}
+
+void DisplayHost::drop()
+{
+    SDL_assert(s_self);
+    s_self.reset();
 }
 
 bool DisplayHost::create_instance()
@@ -204,30 +216,20 @@ bool DisplayHost::pick_physical_device()
             queue_family_props[i].sType = VK_STRUCTURE_TYPE_QUEUE_FAMILY_PROPERTIES_2;
         vkGetPhysicalDeviceQueueFamilyProperties2(hwd, &count, queue_family_props.data());
 
-        int graphics_queue = -1, compute_queue = -1;
+        int qfi = -1;
         for (uint32_t i = 0; i < count; i++) {
             const auto& props = queue_family_props[i].queueFamilyProperties;
-            if (graphics_queue == -1) {
-                if (props.queueFlags & VK_QUEUE_GRAPHICS_BIT) {
+            if (qfi == -1) {
+                if ((props.queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
                     VkBool32 can_present = VK_FALSE;
                     vkGetPhysicalDeviceSurfaceSupportKHR(hwd, i, m_surface, &can_present);
                     if (can_present && props.queueCount > 0)
-                        graphics_queue = i;
-                }
-            }
-            if (compute_queue == -1) {
-                if (props.queueFlags & VK_QUEUE_COMPUTE_BIT) {
-                    if (props.queueCount > 0)
-                        compute_queue = i;
+                        qfi = i;
                 }
             }
         }
-        if (graphics_queue == -1) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no queue capable of graphics and presentation", hwd_props.properties.deviceName);
-            return 0.f;
-        }
-        if (compute_queue == -1) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no queue capable of asynchronous compute", hwd_props.properties.deviceName);
+        if (qfi == -1) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no queue capable of graphics, compute, and presentation", hwd_props.properties.deviceName);
             return 0.f;
         }
 
@@ -273,6 +275,9 @@ bool DisplayHost::pick_physical_device()
     }
 
         DEMAND_FEATURE(available_features.features, depthClamp);
+        DEMAND_FEATURE(available_features12, descriptorBindingSampledImageUpdateAfterBind);
+        DEMAND_FEATURE(available_features12, descriptorBindingVariableDescriptorCount);
+        DEMAND_FEATURE(available_features12, descriptorIndexing);
         DEMAND_FEATURE(available_features12, timelineSemaphore);
         DEMAND_FEATURE(available_features12, uniformBufferStandardLayout);
         DEMAND_FEATURE(available_features13, synchronization2);
@@ -301,12 +306,8 @@ bool DisplayHost::pick_physical_device()
             SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: required image format RGBA32F is not supported", hwd_props.properties.deviceName);
             return 0.f;
         }
-
-        if (std::none_of(s_depth_candidates.begin(), s_depth_candidates.end(), [hwd](VkFormat fmt) {
-                VkImageFormatProperties props {};
-                return vkGetPhysicalDeviceImageFormatProperties(hwd, fmt, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &props) == VK_SUCCESS;
-            })) {
-            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: no available depth buffer formats", hwd_props.properties.deviceName);
+        if (vkGetPhysicalDeviceImageFormatProperties(hwd, DEPTH_FORMAT, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &ifmt) == VK_ERROR_FORMAT_NOT_SUPPORTED) {
+            SDL_LogWarn(SDL_LOG_CATEGORY_GPU, "skipping %s: required depth format D32F is not supported", hwd_props.properties.deviceName);
             return 0.f;
         }
 
@@ -388,49 +389,38 @@ bool DisplayHost::create_logical_device()
 
     float queue_priority = 1.0f;
     int queue_createinfo_count = 0;
-    std::array<VkDeviceQueueCreateInfo, 3> queue_createinfos {};
+    std::array<VkDeviceQueueCreateInfo, 2> queue_createinfos {};
     std::vector<VkQueueFamilyProperties> queue_families(count);
     vkGetPhysicalDeviceQueueFamilyProperties(m_hwd, &count, queue_families.data());
 
-    uint32_t qf_graphics = 0, qf_compute = 0, qf_transfer = 0;
+    uint32_t qfi = 0, qfi_dma = 0;
     VkDeviceSize image_transfer_granularity = UINT64_MAX;
     for (uint32_t i = 0; i < count; i++) {
         if (queue_families[i].queueCount == 0)
             continue;
-        if (qf_graphics == 0 && (queue_families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+        if (qfi == 0 && (queue_families[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) {
             VkBool32 can_present = VK_FALSE;
             vkGetPhysicalDeviceSurfaceSupportKHR(m_hwd, i, m_surface, &can_present);
             if (can_present)
-                qf_graphics = i + 1;
+                qfi = i + 1;
         }
-        if (qf_compute == 0 && (queue_families[i].queueFlags & VK_QUEUE_COMPUTE_BIT)) {
-            qf_compute = i + 1;
-        }
-        if (queue_families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) {
+        if ((queue_families[i].queueFlags & VK_QUEUE_TRANSFER_BIT) && qfi != i + 1) {
             VkDeviceSize gr = queue_families[i].minImageTransferGranularity.width * queue_families[i].minImageTransferGranularity.height * queue_families[i].minImageTransferGranularity.depth;
             if (image_transfer_granularity > gr) {
                 image_transfer_granularity = gr;
-                qf_transfer = i + 1;
+                qfi_dma = i + 1;
             }
         }
     }
-
-    m_queue_family_indexes[static_cast<size_t>(QueueType::Graphics)] = qf_graphics - 1;
-    m_queue_family_indexes[static_cast<size_t>(QueueType::Compute)] = qf_compute - 1;
-    m_queue_family_indexes[static_cast<size_t>(QueueType::Transfer)] = qf_transfer - 1;
+    m_queue_family_index = qfi - 1;
+    m_dma_queue_family_index = (qfi_dma ? qfi_dma : qfi) - 1;
     queue_createinfos[queue_createinfo_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queue_createinfos[queue_createinfo_count].queueFamilyIndex = qf_graphics - 1;
+    queue_createinfos[queue_createinfo_count].queueFamilyIndex = m_queue_family_index;
     queue_createinfos[queue_createinfo_count].queueCount = 1;
     queue_createinfos[queue_createinfo_count].pQueuePriorities = &queue_priority;
-    if (qf_compute != qf_graphics) {
+    if (qfi_dma && qfi_dma != qfi) {
         queue_createinfos[++queue_createinfo_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_createinfos[queue_createinfo_count].queueFamilyIndex = qf_compute - 1;
-        queue_createinfos[queue_createinfo_count].queueCount = 1;
-        queue_createinfos[queue_createinfo_count].pQueuePriorities = &queue_priority;
-    }
-    if (qf_transfer != qf_graphics && qf_transfer != qf_compute) {
-        queue_createinfos[++queue_createinfo_count].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-        queue_createinfos[queue_createinfo_count].queueFamilyIndex = qf_transfer - 1;
+        queue_createinfos[queue_createinfo_count].queueFamilyIndex = m_dma_queue_family_index;
         queue_createinfos[queue_createinfo_count].queueCount = 1;
         queue_createinfos[queue_createinfo_count].pQueuePriorities = &queue_priority;
     }
@@ -457,20 +447,15 @@ bool DisplayHost::create_logical_device()
     vfn.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
     VK_DEMAND(vmaCreateAllocator(&allocator_ci, &m_allocator));
 
-    m_depth_format = *std::find_if(s_depth_candidates.begin(), s_depth_candidates.end(), [this](VkFormat depth_format) {
-        VkImageFormatProperties props {};
-        VkResult res = vkGetPhysicalDeviceImageFormatProperties(m_hwd, depth_format, VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, 0, &props);
-        if (res == VK_SUCCESS)
-            return true;
-        else if (res != VK_ERROR_FORMAT_NOT_SUPPORTED)
-            VK_DEMAND(res);
-        return false;
-    });
+    return true;
+}
 
+bool DisplayHost::create_pipeline_artifacts()
+{
     VkCommandPoolCreateInfo pool_ci {};
     pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     pool_ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT | VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    pool_ci.queueFamilyIndex = qf_graphics - 1;
+    pool_ci.queueFamilyIndex = m_queue_family_index;
     VK_DEMAND(vkCreateCommandPool(m_device, &pool_ci, nullptr, &m_present_command_pool));
 
     VkCommandBufferAllocateInfo command_allocinfo {};
@@ -479,6 +464,11 @@ bool DisplayHost::create_logical_device()
     command_allocinfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     command_allocinfo.commandBufferCount = m_present_commands.size();
     VK_DEMAND(vkAllocateCommandBuffers(m_device, &command_allocinfo, m_present_commands.data()));
+
+    VkPipelineCacheCreateInfo pipeline_cache_createinfo {};
+    pipeline_cache_createinfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+    pipeline_cache_createinfo.flags = VK_PIPELINE_CACHE_CREATE_EXTERNALLY_SYNCHRONIZED_BIT;
+    VK_DEMAND(vkCreatePipelineCache(m_device, &pipeline_cache_createinfo, nullptr, &m_pipeline_cache));
 
     return true;
 }
@@ -594,7 +584,7 @@ int32_t DisplayHost::acquire_image()
 
     VkResult res;
     uint32_t index;
-    VkSemaphore sem = m_sem_acquire_image[m_frame_number % SIMULTANEOUS_FRAMES];
+    VkSemaphore sem = m_sem_acquire_image[next_frame_number % SIMULTANEOUS_FRAMES];
     do {
         if ((res = vkAcquireNextImageKHR(m_device, m_swapchain, UINT64_MAX, sem, VK_NULL_HANDLE, &index)) == VK_ERROR_OUT_OF_DATE_KHR) {
             if (recreate_swapchain() == false) {
@@ -604,7 +594,7 @@ int32_t DisplayHost::acquire_image()
     } while (res == VK_ERROR_OUT_OF_DATE_KHR);
 
     if (res == VK_SUCCESS || res == VK_SUBOPTIMAL_KHR) {
-        SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u BEGIN -> I%u\n", m_frame_number.load(std::memory_order_relaxed), index);
+        SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "render thread: H%u BEGIN -> I%u\n", next_frame_number, index);
         return index;
     } else {
         SDL_LogCritical(SDL_LOG_CATEGORY_GPU, "failed to acquire swapchain image: %s", string_VkResult(res));
@@ -614,10 +604,11 @@ int32_t DisplayHost::acquire_image()
 
 void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signal)
 {
+    uint32_t frame_number = m_frame_number.load(std::memory_order_relaxed);
     VkQueue queue;
-    vkGetDeviceQueue(m_device, m_queue_family_indexes[static_cast<size_t>(QueueType::Graphics)], 0, &queue);
+    vkGetDeviceQueue(m_device, m_queue_family_index, 0, &queue);
 
-    VkCommandBuffer present_commands = m_present_commands[m_frame_number % SIMULTANEOUS_FRAMES];
+    VkCommandBuffer present_commands = m_present_commands[frame_number % SIMULTANEOUS_FRAMES];
     VkCommandBufferBeginInfo begin_info {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -653,7 +644,7 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
         0, 0, nullptr, 0, nullptr, 1, &barrier);
     VK_DEMAND(vkEndCommandBuffer(present_commands));
 
-    auto wait_sems = std::to_array<VkSemaphore>({ m_sem_acquire_image[m_frame_number % SIMULTANEOUS_FRAMES], signal });
+    auto wait_sems = std::to_array<VkSemaphore>({ m_sem_acquire_image[frame_number % SIMULTANEOUS_FRAMES], signal });
     auto wait_stages = std::to_array<VkPipelineStageFlags>({ VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT });
     VkSubmitInfo submit {};
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -664,7 +655,7 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
     submit.pCommandBuffers = &present_commands;
     submit.signalSemaphoreCount = 1;
     submit.pSignalSemaphores = &m_sem_submit_image[index];
-    VK_DEMAND(vkQueueSubmit(queue, 1, &submit, m_fence_frame[m_frame_number % SIMULTANEOUS_FRAMES]));
+    VK_DEMAND(vkQueueSubmit(queue, 1, &submit, m_fence_frame[frame_number % SIMULTANEOUS_FRAMES]));
 
     VkPresentInfoKHR present {};
     present.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -682,20 +673,168 @@ void DisplayHost::present_image(uint32_t index, VkImage image, VkSemaphore signa
     }
 }
 
-SDL_AppResult DisplayHost::draw_frame(IRenderer* renderer, SceneHost* stage)
+SDL_AppResult DisplayHost::draw_frame()
 {
+    IRenderer* renderer = SceneHost::renderer();
     int32_t swapchain_slot = acquire_image();
     if (swapchain_slot < 0)
         return SDL_APP_FAILURE;
     if (m_swapchain_recreated) {
+        renderer->resize_frames(m_swapchain_extent);
         renderer->recreate_subpass_data(m_frame_number);
         m_swapchain_recreated = false;
     }
 
-    IRenderer::Output output = renderer->draw(stage, m_frame_number);
+    IRenderer::Output output = renderer->draw(m_frame_number);
     present_image(swapchain_slot, output.image, output.signal);
+    SceneHost::submit_transfers();
 
     return SDL_APP_CONTINUE;
+}
+
+#define VK_FORMATS                      \
+    X(R4G4_UNORM_PACK8, 1, 2)           \
+    X(R4G4B4A4_UNORM_PACK16, 2, 4)      \
+    X(B4G4R4A4_UNORM_PACK16, 2, 4)      \
+    X(R5G6B5_UNORM_PACK16, 2, 3)        \
+    X(B5G6R5_UNORM_PACK16, 2, 3)        \
+    X(R5G5B5A1_UNORM_PACK16, 2, 4)      \
+    X(B5G5R5A1_UNORM_PACK16, 2, 4)      \
+    X(A1R5G5B5_UNORM_PACK16, 2, 4)      \
+    X(R8_UNORM, 1, 1)                   \
+    X(R8_SNORM, 1, 1)                   \
+    X(R8_USCALED, 1, 1)                 \
+    X(R8_SSCALED, 1, 1)                 \
+    X(R8_UINT, 1, 1)                    \
+    X(R8_SINT, 1, 1)                    \
+    X(R8_SRGB, 1, 1)                    \
+    X(R8G8_UNORM, 2, 2)                 \
+    X(R8G8_SNORM, 2, 2)                 \
+    X(R8G8_USCALED, 2, 2)               \
+    X(R8G8_SSCALED, 2, 2)               \
+    X(R8G8_UINT, 2, 2)                  \
+    X(R8G8_SINT, 2, 2)                  \
+    X(R8G8_SRGB, 2, 2)                  \
+    X(R8G8B8_UNORM, 3, 3)               \
+    X(R8G8B8_SNORM, 3, 3)               \
+    X(R8G8B8_USCALED, 3, 3)             \
+    X(R8G8B8_SSCALED, 3, 3)             \
+    X(R8G8B8_UINT, 3, 3)                \
+    X(R8G8B8_SINT, 3, 3)                \
+    X(R8G8B8_SRGB, 3, 3)                \
+    X(B8G8R8_UNORM, 3, 3)               \
+    X(B8G8R8_SNORM, 3, 3)               \
+    X(B8G8R8_USCALED, 3, 3)             \
+    X(B8G8R8_SSCALED, 3, 3)             \
+    X(B8G8R8_UINT, 3, 3)                \
+    X(B8G8R8_SINT, 3, 3)                \
+    X(B8G8R8_SRGB, 3, 3)                \
+    X(R8G8B8A8_UNORM, 4, 4)             \
+    X(R8G8B8A8_SNORM, 4, 4)             \
+    X(R8G8B8A8_USCALED, 4, 4)           \
+    X(R8G8B8A8_SSCALED, 4, 4)           \
+    X(R8G8B8A8_UINT, 4, 4)              \
+    X(R8G8B8A8_SINT, 4, 4)              \
+    X(R8G8B8A8_SRGB, 4, 4)              \
+    X(B8G8R8A8_UNORM, 4, 4)             \
+    X(B8G8R8A8_SNORM, 4, 4)             \
+    X(B8G8R8A8_USCALED, 4, 4)           \
+    X(B8G8R8A8_SSCALED, 4, 4)           \
+    X(B8G8R8A8_UINT, 4, 4)              \
+    X(B8G8R8A8_SINT, 4, 4)              \
+    X(B8G8R8A8_SRGB, 4, 4)              \
+    X(A8B8G8R8_UNORM_PACK32, 4, 4)      \
+    X(A8B8G8R8_SNORM_PACK32, 4, 4)      \
+    X(A8B8G8R8_USCALED_PACK32, 4, 4)    \
+    X(A8B8G8R8_SSCALED_PACK32, 4, 4)    \
+    X(A8B8G8R8_UINT_PACK32, 4, 4)       \
+    X(A8B8G8R8_SINT_PACK32, 4, 4)       \
+    X(A8B8G8R8_SRGB_PACK32, 4, 4)       \
+    X(A2R10G10B10_UNORM_PACK32, 4, 4)   \
+    X(A2R10G10B10_SNORM_PACK32, 4, 4)   \
+    X(A2R10G10B10_USCALED_PACK32, 4, 4) \
+    X(A2R10G10B10_SSCALED_PACK32, 4, 4) \
+    X(A2R10G10B10_UINT_PACK32, 4, 4)    \
+    X(A2R10G10B10_SINT_PACK32, 4, 4)    \
+    X(A2B10G10R10_UNORM_PACK32, 4, 4)   \
+    X(A2B10G10R10_SNORM_PACK32, 4, 4)   \
+    X(A2B10G10R10_USCALED_PACK32, 4, 4) \
+    X(A2B10G10R10_SSCALED_PACK32, 4, 4) \
+    X(A2B10G10R10_UINT_PACK32, 4, 4)    \
+    X(A2B10G10R10_SINT_PACK32, 4, 4)    \
+    X(R16_UNORM, 2, 1)                  \
+    X(R16_SNORM, 2, 1)                  \
+    X(R16_USCALED, 2, 1)                \
+    X(R16_SSCALED, 2, 1)                \
+    X(R16_UINT, 2, 1)                   \
+    X(R16_SINT, 2, 1)                   \
+    X(R16_SFLOAT, 2, 1)                 \
+    X(R16G16_UNORM, 4, 2)               \
+    X(R16G16_SNORM, 4, 2)               \
+    X(R16G16_USCALED, 4, 2)             \
+    X(R16G16_SSCALED, 4, 2)             \
+    X(R16G16_UINT, 4, 2)                \
+    X(R16G16_SINT, 4, 2)                \
+    X(R16G16_SFLOAT, 4, 2)              \
+    X(R16G16B16_UNORM, 6, 3)            \
+    X(R16G16B16_SNORM, 6, 3)            \
+    X(R16G16B16_USCALED, 6, 3)          \
+    X(R16G16B16_SSCALED, 6, 3)          \
+    X(R16G16B16_UINT, 6, 3)             \
+    X(R16G16B16_SINT, 6, 3)             \
+    X(R16G16B16_SFLOAT, 6, 3)           \
+    X(R16G16B16A16_UNORM, 8, 4)         \
+    X(R16G16B16A16_SNORM, 8, 4)         \
+    X(R16G16B16A16_USCALED, 8, 4)       \
+    X(R16G16B16A16_SSCALED, 8, 4)       \
+    X(R16G16B16A16_UINT, 8, 4)          \
+    X(R16G16B16A16_SINT, 8, 4)          \
+    X(R16G16B16A16_SFLOAT, 8, 4)        \
+    X(R32_UINT, 4, 1)                   \
+    X(R32_SINT, 4, 1)                   \
+    X(R32_SFLOAT, 4, 1)                 \
+    X(R32G32_UINT, 8, 2)                \
+    X(R32G32_SINT, 8, 2)                \
+    X(R32G32_SFLOAT, 8, 2)              \
+    X(R32G32B32_UINT, 12, 3)            \
+    X(R32G32B32_SINT, 12, 3)            \
+    X(R32G32B32_SFLOAT, 12, 3)          \
+    X(R32G32B32A32_UINT, 16, 4)         \
+    X(R32G32B32A32_SINT, 16, 4)         \
+    X(R32G32B32A32_SFLOAT, 16, 4)       \
+    X(R64_UINT, 8, 1)                   \
+    X(R64_SINT, 8, 1)                   \
+    X(R64_SFLOAT, 8, 1)                 \
+    X(R64G64_UINT, 16, 2)               \
+    X(R64G64_SINT, 16, 2)               \
+    X(R64G64_SFLOAT, 16, 2)             \
+    X(R64G64B64_UINT, 24, 3)            \
+    X(R64G64B64_SINT, 24, 3)            \
+    X(R64G64B64_SFLOAT, 24, 3)          \
+    X(R64G64B64A64_UINT, 32, 4)         \
+    X(R64G64B64A64_SINT, 32, 4)         \
+    X(R64G64B64A64_SFLOAT, 32, 4)       \
+    X(B10G11R11_UFLOAT_PACK32, 4, 3)    \
+    X(E5B9G9R9_UFLOAT_PACK32, 4, 3)     \
+    X(D16_UNORM, 2, 1)                  \
+    X(X8_D24_UNORM_PACK32, 4, 1)        \
+    X(D32_SFLOAT, 4, 1)                 \
+    X(S8_UINT, 1, 1)                    \
+    X(D16_UNORM_S8_UINT, 3, 2)          \
+    X(D24_UNORM_S8_UINT, 4, 2)          \
+    X(D32_SFLOAT_S8_UINT, 8, 2)
+
+size_t DisplayHost::format_width(VkFormat fmt)
+{
+#define X(FMT, SIZE, COMPONENTS) \
+    case VK_FORMAT_##FMT:        \
+        return SIZE;
+    switch (fmt) {
+        VK_FORMATS
+    default:
+        return 0;
+    }
+#undef X
 }
 
 }

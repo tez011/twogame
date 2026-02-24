@@ -1,19 +1,17 @@
 cmake_minimum_required(VERSION 3.31)
 
 # ---- external dependencies ----
+CPMAddPackage(NAME cglm
+              VERSION 0.9.6
+              GIT_REPOSITORY https://github.com/recp/cglm.git
+              EXCLUDE_FROM_ALL TRUE
+              OPTIONS "CGLM_SHARED OFF"
+                      "CGLM_STATIC ON")
 CPMAddPackage(NAME flatbuffers
               VERSION 25.12.19
               GIT_REPOSITORY https://github.com/google/flatbuffers.git
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "FLATBUFFERS_BUILD_TESTS OFF")
-CPMAddPackage(NAME glm
-              VERSION 1.0.3
-              GIT_REPOSITORY https://github.com/g-truc/glm.git
-              GIT_TAG 1.0.3
-              EXCLUDE_FROM_ALL TRUE
-              OPTIONS "GLM_ENABLE_CXX_17 ON"
-                      "GLM_ENABLE_CXX_20 ON"
-                      "GLM_ENABLE_FAST_MATH ON")
 CPMAddPackage(NAME ktx
               VERSION 4.4.2
               GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
@@ -41,10 +39,6 @@ CPMAddPackage(NAME vulkanmemoryallocator
                       "VMA_STATIC_VULKAN_FUNCTIONS OFF")
 
 # ---- library options ----
-if(glm_ADDED)
-    target_compile_definitions(glm PUBLIC "GLM_FORCE_INTRINSICS")
-    target_compile_definitions(glm-header-only INTERFACE "GLM_FORCE_INTRINSICS")
-endif()
 if (physicsfs_ADDED)
     set(PHYSFS_EXTRA_SRCS)
     if(APPLE)
