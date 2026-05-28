@@ -1,19 +1,21 @@
 cmake_minimum_required(VERSION 3.31)
 
 # ---- external dependencies ----
+CPMAddPackage(NAME cglm
+              VERSION 0.9.6
+              GIT_REPOSITORY https://github.com/recp/cglm.git
+              EXCLUDE_FROM_ALL TRUE
+              OPTIONS "CGLM_SHARED OFF"
+                      "CGLM_STATIC ON")
+CPMAddPackage(NAME fastgltf
+              VERSION 0.9.0
+              GIT_REPOSITORY https://github.com/spnda/fastgltf.git
+              EXCLUDE_FROM_ALL TRUE)
 CPMAddPackage(NAME flatbuffers
               VERSION 25.12.19
               GIT_REPOSITORY https://github.com/google/flatbuffers.git
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "FLATBUFFERS_BUILD_TESTS OFF")
-CPMAddPackage(NAME glm
-              VERSION 1.0.3
-              GIT_REPOSITORY https://github.com/g-truc/glm.git
-              GIT_TAG 1.0.3
-              EXCLUDE_FROM_ALL TRUE
-              OPTIONS "GLM_ENABLE_CXX_17 ON"
-                      "GLM_ENABLE_CXX_20 ON"
-                      "GLM_ENABLE_FAST_MATH ON")
 CPMAddPackage(NAME ktx
               VERSION 4.4.2
               GIT_REPOSITORY https://github.com/KhronosGroup/KTX-Software.git
@@ -31,6 +33,11 @@ CPMAddPackage(NAME pugixml
               GIT_REPOSITORY https://github.com/zeux/pugixml.git
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "BUILD_SHARED_LIBS OFF")
+CPMAddPackage(NAME stb
+              VERSION 2.30
+              GIT_REPOSITORY https://github.com/nothings/stb.git
+              GIT_TAG 013ac3beddff3dbffafd5177e7972067cd2b5083
+              DOWNLOAD_ONLY YES)
 CPMAddPackage(NAME vulkanmemoryallocator
               VERSION 3.3.0
               GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -41,10 +48,6 @@ CPMAddPackage(NAME vulkanmemoryallocator
                       "VMA_STATIC_VULKAN_FUNCTIONS OFF")
 
 # ---- library options ----
-if(glm_ADDED)
-    target_compile_definitions(glm PUBLIC "GLM_FORCE_INTRINSICS")
-    target_compile_definitions(glm-header-only INTERFACE "GLM_FORCE_INTRINSICS")
-endif()
 if (physicsfs_ADDED)
     set(PHYSFS_EXTRA_SRCS)
     if(APPLE)
@@ -91,4 +94,8 @@ if (physicsfs_ADDED)
                                               "PHYSFS_SUPPORTS_ISO9660=0"
                                               "PHYSFS_SUPPORTS_VDF=0")
     set_property(TARGET physfs PROPERTY POSITION_INDEPENDENT_CODE TRUE)
+endif()
+if (stb_ADDED)
+    add_library(stb_image INTERFACE)
+    target_include_directories(stb_image INTERFACE "${stb_SOURCE_DIR}")
 endif()
