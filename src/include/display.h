@@ -117,37 +117,37 @@ public:
 };
 
 class IRenderer {
-    friend class SceneHost;
+    friend class IScene;
 
 public:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
     constexpr static uint32_t PICTUREBOOK_CAPACITY = 1;
     constexpr static float VERTICAL_FOV = 70.f;
-    enum class GraphicsPipeline {
-        GPass,
-        MAX_VALUE,
+    struct BindingZero {
+        mat4s proj;
+        mat4s view;
     };
-    enum class ComputePipeline {
-        MAX_VALUE,
+    struct InstanceEntry {
+        mat4s model;
+        uint32_t mesh_id;
+        uint32_t material_id;
+    };
+    struct MeshEntry {
+        uint64_t vertex_buffer_address;
+        uint64_t normal_buffer_address;
+        uint64_t index_buffer_address;
     };
 
 private:
     mat4s m_perspective_projection, m_ortho_projection;
-    VkDescriptorPool m_descriptor_pool;
-
-    std::array<VkDescriptorSet, SIMULTANEOUS_FRAMES> m_descriptor_set_0;
-    VkDescriptorSetLayout m_set_0_layout;
-    VkBuffer m_uniform_buffer;
-    VmaAllocation m_uniform_buffer_mem;
-    std::byte* m_uniform_buffer_ptr;
+    std::vector<VkDescriptorPoolSize> m_descriptor_pool_sizes;
+    std::array<VkDescriptorSetLayout, 1> m_descriptor_set_layout;
     std::array<VkSampler, 1> m_samplers;
 
 protected:
     VkRenderPass m_render_pass;
-    std::array<VkPipelineLayout, static_cast<size_t>(GraphicsPipeline::MAX_VALUE)> m_graphics_pipeline_layouts;
-    std::array<VkPipelineLayout, static_cast<size_t>(ComputePipeline::MAX_VALUE)> m_compute_pipeline_layouts;
-    std::array<VkPipeline, static_cast<size_t>(GraphicsPipeline::MAX_VALUE)> m_graphics_pipelines;
-    std::array<VkPipeline, static_cast<size_t>(ComputePipeline::MAX_VALUE)> m_compute_pipelines;
+    std::vector<VkPipelineLayout> m_pipeline_layouts;
+    std::vector<VkPipeline> m_graphics_pipelines, m_compute_pipelines;
 
     IRenderer();
 
@@ -165,21 +165,18 @@ public:
     virtual ~IRenderer();
 
     inline VkRenderPass render_pass() const { return m_render_pass; }
-    inline VkPipelineLayout graphics_pipeline_layout(GraphicsPipeline i) const { return m_graphics_pipeline_layouts[static_cast<size_t>(i)]; }
-    inline VkPipelineLayout compute_pipeline_layout(ComputePipeline i) const { return m_compute_pipeline_layouts[static_cast<size_t>(i)]; }
-    inline VkPipeline graphics_pipeline(GraphicsPipeline i) const { return m_graphics_pipelines[static_cast<size_t>(i)]; }
-    inline VkPipeline compute_pipeline(ComputePipeline i) const { return m_compute_pipelines[static_cast<size_t>(i)]; }
     inline mat4s projection() const { return m_perspective_projection; }
     inline mat4s ortho_projection() const { return m_ortho_projection; }
+    inline VkPipeline graphics_pipeline(size_t i) const { return m_graphics_pipelines.at(i); }
+    inline VkPipelineLayout pipeline_layout(size_t i) const { return m_pipeline_layouts.at(i); }
+    inline auto descriptor_set_layouts() const { return m_descriptor_set_layout; }
+    inline auto samplers() const { return m_samplers; }
 
     virtual Output draw(uint32_t frame_number) = 0;
     virtual void recreate_subpass_data(uint32_t frame_number) = 0;
 
-    std::span<std::byte> binding_zero_buffer(int frame);
-    void flush_binding_zero_buffer();
+    VkDescriptorPool create_descriptor_pool() const;
     void resize_frames(VkExtent2D surface_extent);
-    void bind_picturebook(std::span<VkDescriptorImageInfo> images);
-    void bind_pipeline(VkCommandBuffer cmd, GraphicsPipeline pass, int frame_number, bool first = false);
 };
 
 class SimpleForwardRenderer final : public IRenderer {
@@ -201,7 +198,6 @@ class SimpleForwardRenderer final : public IRenderer {
         FrameContext ctx;
         AllSubpasses pass;
     };
-    static_assert(std::tuple_size<AllSubpasses>::value == static_cast<size_t>(GraphicsPipeline::MAX_VALUE));
 
     VkQueue m_graphics_queue;
     std::array<FrameData, SIMULTANEOUS_FRAMES> m_frame_data;
@@ -216,8 +212,8 @@ public:
     SimpleForwardRenderer();
     ~SimpleForwardRenderer();
 
-    virtual Output draw(uint32_t frame_number);
-    virtual void recreate_subpass_data(uint32_t frame_number);
+    virtual Output draw(uint32_t frame_number) override;
+    virtual void recreate_subpass_data(uint32_t frame_number) override;
 };
 
 }

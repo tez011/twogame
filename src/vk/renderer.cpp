@@ -13,18 +13,6 @@ IRenderer::IRenderer()
     VkPhysicalDeviceProperties hwd_props;
     vkGetPhysicalDeviceProperties(DisplayHost::hardware_device(), &hwd_props);
 
-    VkBufferCreateInfo buffer_ci {};
-    VmaAllocationCreateInfo alloc_ci {};
-    VmaAllocationInfo alloc_info;
-    buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    buffer_ci.size = 4 * sizeof(mat4);
-    buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_uniform_buffer, &m_uniform_buffer_mem, &alloc_info));
-    m_uniform_buffer_ptr = static_cast<std::byte*>(alloc_info.pMappedData);
-
     VkSamplerCreateInfo sampler_info {};
     sampler_info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
     sampler_info.magFilter = sampler_info.minFilter = VK_FILTER_LINEAR;
@@ -60,122 +48,54 @@ IRenderer::IRenderer()
     bindings[2].descriptorCount = PICTUREBOOK_CAPACITY;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     binding_flags[2] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
-    VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &binding_layout_ci, nullptr, &m_set_0_layout));
+    VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &binding_layout_ci, nullptr, &m_descriptor_set_layout[0]));
 
     VkPipelineLayoutCreateInfo pipeline_layout_ci {};
     VkPushConstantRange push_constant_range {};
     pipeline_layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-    pipeline_layout_ci.setLayoutCount = 1;
-    pipeline_layout_ci.pSetLayouts = &m_set_0_layout;
+    pipeline_layout_ci.setLayoutCount = m_descriptor_set_layout.size();
+    pipeline_layout_ci.pSetLayouts = m_descriptor_set_layout.data();
     pipeline_layout_ci.pushConstantRangeCount = 1;
     pipeline_layout_ci.pPushConstantRanges = &push_constant_range;
     push_constant_range.stageFlags = VK_SHADER_STAGE_ALL;
     push_constant_range.offset = 0;
-    push_constant_range.size = sizeof(uint64_t);
-    VK_DEMAND(vkCreatePipelineLayout(DisplayHost::device(), &pipeline_layout_ci, nullptr, &m_graphics_pipeline_layouts[static_cast<size_t>(GraphicsPipeline::GPass)]));
+    push_constant_range.size = 2 * sizeof(uint64_t);
+    VK_DEMAND(vkCreatePipelineLayout(DisplayHost::device(), &pipeline_layout_ci, nullptr, &m_pipeline_layouts.emplace_back()));
 
-    std::array<VkDescriptorPoolSize, std::size(bindings)> pool_sizes {};
-    VkDescriptorPoolCreateInfo descriptor_pool_ci {};
-    descriptor_pool_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    descriptor_pool_ci.maxSets = 2;
-    descriptor_pool_ci.poolSizeCount = pool_sizes.size();
-    descriptor_pool_ci.pPoolSizes = pool_sizes.data();
+    m_descriptor_pool_sizes.resize(bindings.size());
     for (size_t i = 0; i < bindings.size(); i++) {
-        pool_sizes[i].type = bindings[i].descriptorType;
-        pool_sizes[i].descriptorCount = bindings[i].descriptorCount * 2;
+        m_descriptor_pool_sizes[i].type = bindings[i].descriptorType;
+        m_descriptor_pool_sizes[i].descriptorCount = bindings[i].descriptorCount * SIMULTANEOUS_FRAMES;
     }
-    VK_DEMAND(vkCreateDescriptorPool(DisplayHost::device(), &descriptor_pool_ci, nullptr, &m_descriptor_pool));
-
-    VkDescriptorSetAllocateInfo descriptor_alloc_info {};
-    VkDescriptorSetVariableDescriptorCountAllocateInfo variable_descriptor_alloc_info {};
-    descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    descriptor_alloc_info.pNext = &variable_descriptor_alloc_info;
-    descriptor_alloc_info.descriptorPool = m_descriptor_pool;
-    descriptor_alloc_info.descriptorSetCount = 1;
-    descriptor_alloc_info.pSetLayouts = &m_set_0_layout;
-    variable_descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-    variable_descriptor_alloc_info.descriptorSetCount = 1;
-    variable_descriptor_alloc_info.pDescriptorCounts = &PICTUREBOOK_CAPACITY;
-    VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &descriptor_alloc_info, &m_descriptor_set_0[0]));
-    VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &descriptor_alloc_info, &m_descriptor_set_0[1]));
-
-    std::array<VkWriteDescriptorSet, 4> descriptor_writes {};
-    std::array<VkDescriptorBufferInfo, 2> descriptor_buffer_writes {};
-    std::array<VkDescriptorImageInfo, std::tuple_size<decltype(m_samplers)>::value> descriptor_sampler_writes {};
-    descriptor_writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptor_writes[0].dstSet = m_descriptor_set_0[0];
-    descriptor_writes[0].dstBinding = 0;
-    descriptor_writes[0].descriptorCount = 1;
-    descriptor_writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptor_writes[0].pBufferInfo = &descriptor_buffer_writes[0];
-    descriptor_buffer_writes[0].buffer = m_uniform_buffer;
-    descriptor_buffer_writes[0].offset = 0;
-    descriptor_buffer_writes[0].range = 2 * sizeof(mat4);
-    descriptor_writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptor_writes[1].dstSet = m_descriptor_set_0[1];
-    descriptor_writes[1].dstBinding = 0;
-    descriptor_writes[1].descriptorCount = 1;
-    descriptor_writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptor_writes[1].pBufferInfo = &descriptor_buffer_writes[1];
-    descriptor_buffer_writes[1].buffer = m_uniform_buffer;
-    descriptor_buffer_writes[1].offset = 2 * sizeof(mat4);
-    descriptor_buffer_writes[1].range = 2 * sizeof(mat4);
-    descriptor_writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptor_writes[2].dstSet = m_descriptor_set_0[0];
-    descriptor_writes[2].dstBinding = 1;
-    descriptor_writes[2].descriptorCount = m_samplers.size();
-    descriptor_writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    descriptor_writes[2].pImageInfo = descriptor_sampler_writes.data();
-    descriptor_writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptor_writes[3].dstSet = m_descriptor_set_0[1];
-    descriptor_writes[3].dstBinding = 1;
-    descriptor_writes[3].descriptorCount = m_samplers.size();
-    descriptor_writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    descriptor_writes[3].pImageInfo = descriptor_sampler_writes.data();
-    for (size_t i = 0; i < m_samplers.size(); i++) {
-        descriptor_sampler_writes[i].sampler = m_samplers[i];
-        descriptor_sampler_writes[i].imageView = VK_NULL_HANDLE;
-    }
-    vkUpdateDescriptorSets(DisplayHost::device(), descriptor_writes.size(), descriptor_writes.data(), 0, nullptr);
 
     resize_frames(DisplayHost::swapchain_extent());
 }
 
 IRenderer::~IRenderer()
 {
-    std::set<VkPipeline> unique_pipelines;
-    std::set<VkPipelineLayout> unique_pipeline_layouts;
-    unique_pipelines.insert(m_graphics_pipelines.begin(), m_graphics_pipelines.end());
-    unique_pipelines.insert(m_compute_pipelines.begin(), m_compute_pipelines.end());
-    unique_pipeline_layouts.insert(m_graphics_pipeline_layouts.begin(), m_graphics_pipeline_layouts.end());
-    unique_pipeline_layouts.insert(m_compute_pipeline_layouts.begin(), m_compute_pipeline_layouts.end());
-
-    for (auto it = unique_pipelines.begin(); it != unique_pipelines.end(); ++it)
+    for (auto it = m_graphics_pipelines.begin(); it != m_graphics_pipelines.end(); ++it)
         vkDestroyPipeline(DisplayHost::device(), *it, nullptr);
-    for (auto it = unique_pipeline_layouts.begin(); it != unique_pipeline_layouts.end(); ++it)
+    for (auto it = m_compute_pipelines.begin(); it != m_compute_pipelines.end(); ++it)
+        vkDestroyPipeline(DisplayHost::device(), *it, nullptr);
+    for (auto it = m_pipeline_layouts.begin(); it != m_pipeline_layouts.end(); ++it)
         vkDestroyPipelineLayout(DisplayHost::device(), *it, nullptr);
-    vkDestroyDescriptorPool(DisplayHost::device(), m_descriptor_pool, nullptr);
-    vkDestroyDescriptorSetLayout(DisplayHost::device(), m_set_0_layout, nullptr);
+    for (auto it = m_descriptor_set_layout.begin(); it != m_descriptor_set_layout.end(); ++it)
+        vkDestroyDescriptorSetLayout(DisplayHost::device(), *it, nullptr);
     vkDestroyRenderPass(DisplayHost::device(), m_render_pass, nullptr);
-    vmaDestroyBuffer(DisplayHost::allocator(), m_uniform_buffer, m_uniform_buffer_mem);
     for (auto it = m_samplers.begin(); it != m_samplers.end(); ++it)
         vkDestroySampler(DisplayHost::device(), *it, nullptr);
 }
 
-std::span<std::byte> IRenderer::binding_zero_buffer(int frame)
+VkDescriptorPool IRenderer::create_descriptor_pool() const
 {
-    frame %= SIMULTANEOUS_FRAMES;
-    if (frame == 0)
-        return std::span(m_uniform_buffer_ptr + 0, 2 * sizeof(mat4));
-    else if (frame == 1)
-        return std::span(m_uniform_buffer_ptr + 2 * sizeof(mat4), 2 * sizeof(mat4));
-    else
-        assert(false);
-}
-
-void IRenderer::flush_binding_zero_buffer()
-{
-    vmaFlushAllocation(DisplayHost::allocator(), m_uniform_buffer_mem, 0, VK_WHOLE_SIZE);
+    VkDescriptorPool pool;
+    VkDescriptorPoolCreateInfo createinfo {};
+    createinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    createinfo.maxSets = SIMULTANEOUS_FRAMES;
+    createinfo.poolSizeCount = m_descriptor_pool_sizes.size();
+    createinfo.pPoolSizes = m_descriptor_pool_sizes.data();
+    VK_DEMAND(vkCreateDescriptorPool(DisplayHost::device(), &createinfo, nullptr, &pool));
+    return pool;
 }
 
 void IRenderer::resize_frames(VkExtent2D surface_extent)
@@ -194,27 +114,6 @@ void IRenderer::resize_frames(VkExtent2D surface_extent)
     m_ortho_projection.m31 = 1.f;
     m_ortho_projection.m32 = 1.f;
     m_ortho_projection.m33 = 1.f;
-}
-
-void IRenderer::bind_picturebook(std::span<VkDescriptorImageInfo> images)
-{
-    std::array<VkWriteDescriptorSet, SIMULTANEOUS_FRAMES> writes {};
-    for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++) {
-        writes[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        writes[i].dstSet = m_descriptor_set_0[i];
-        writes[i].dstBinding = 2;
-        writes[i].descriptorCount = images.size();
-        writes[i].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        writes[i].pImageInfo = images.data();
-    }
-    vkUpdateDescriptorSets(DisplayHost::device(), writes.size(), writes.data(), 0, nullptr);
-}
-
-void IRenderer::bind_pipeline(VkCommandBuffer cmd, GraphicsPipeline pass, int frame_number, bool first)
-{
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipelines[static_cast<size_t>(pass)]);
-    if (first)
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, m_graphics_pipeline_layouts[static_cast<size_t>(pass)], 0, 1, &m_descriptor_set_0[frame_number % SIMULTANEOUS_FRAMES], 0, nullptr);
 }
 
 SimpleForwardRenderer::SimpleForwardRenderer()
@@ -354,7 +253,7 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     dynamic_state_info.dynamicStateCount = dynamic_state_set.size();
     dynamic_state_info.pDynamicStates = dynamic_state_set.data();
 
-    std::array<VkGraphicsPipelineCreateInfo, static_cast<size_t>(GraphicsPipeline::MAX_VALUE)> graphics_pipeline_ci {};
+    std::array<VkGraphicsPipelineCreateInfo, 1> graphics_pipeline_ci {};
     graphics_pipeline_ci[0].sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     graphics_pipeline_ci[0].stageCount = 2;
     graphics_pipeline_ci[0].pStages = &pipeline_shaders[0];
@@ -366,12 +265,13 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     graphics_pipeline_ci[0].pDepthStencilState = &depth_stencil_info;
     graphics_pipeline_ci[0].pColorBlendState = &color_blend_info;
     graphics_pipeline_ci[0].pDynamicState = &dynamic_state_info;
-    graphics_pipeline_ci[0].layout = m_graphics_pipeline_layouts[0];
+    graphics_pipeline_ci[0].layout = m_pipeline_layouts[0];
     graphics_pipeline_ci[0].renderPass = m_render_pass;
     graphics_pipeline_ci[0].subpass = 0;
+    m_graphics_pipelines.resize(graphics_pipeline_ci.size());
     VK_DEMAND(vkCreateGraphicsPipelines(DisplayHost::device(), DisplayHost::pipeline_cache(), graphics_pipeline_ci.size(), graphics_pipeline_ci.data(), nullptr, m_graphics_pipelines.data()));
 
-    std::array<VkComputePipelineCreateInfo, static_cast<size_t>(ComputePipeline::MAX_VALUE)> compute_pipeline_ci {};
+    std::array<VkComputePipelineCreateInfo, 0> compute_pipeline_ci {};
     if constexpr (compute_pipeline_ci.empty() == false)
         VK_DEMAND(vkCreateComputePipelines(DisplayHost::device(), DisplayHost::pipeline_cache(), compute_pipeline_ci.size(), compute_pipeline_ci.data(), nullptr, m_compute_pipelines.data()));
 

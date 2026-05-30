@@ -13,28 +13,7 @@
 namespace twogame {
 
 class IScene;
-
-class StagingBuffer {
-    friend class SceneHost;
-
-    VkBuffer m_src_buffer;
-    VmaAllocation m_src_mem;
-    std::span<std::byte> m_src_data;
-    VkCommandBuffer m_xfer_commands, m_acquire_commands;
-    VkSemaphore m_post_xfer;
-
-    std::vector<VkBufferMemoryBarrier2> m_buffer_memory_barriers;
-    std::vector<std::pair<VkCopyBufferInfo2, std::vector<VkBufferCopy2>>> m_buffer_copies;
-    std::array<std::vector<VkImageMemoryBarrier2>, 2> m_image_memory_barriers;
-    std::vector<std::pair<VkCopyBufferToImageInfo2, std::vector<VkBufferImageCopy2>>> m_image_copies;
-
-public:
-    StagingBuffer() { }
-    inline std::span<std::byte> window(VkDeviceSize offset) const { return m_src_data.subspan(offset); }
-    void copy_image(VkImage dst, VkImageCreateInfo& info, std::span<const VkBufferImageCopy2> copies, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout final_layout);
-    void copy_buffer(VkBuffer dst, VkDeviceSize dst_size, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
-    void finalize();
-};
+class StagingBuffer;
 
 class IAsset {
 public:
@@ -92,8 +71,8 @@ namespace asset {
         inline virtual Type type() const override { return IAsset::Type::Mesh; }
         inline size_t index_count() const { return m_index_count; }
         inline uint32_t pipeline_key() const { return m_pipeline_key; }
-        inline VkDeviceAddress vertices_offset() const;
-        inline VkDeviceAddress normals_offset() const;
+        VkDeviceAddress vertices_offset() const;
+        VkDeviceAddress normals_offset() const;
 
         virtual size_t prepare_needs() const override;
         virtual size_t prepare(IScene* scene, StagingBuffer& commands, VkDeviceSize staging_offset) override;
@@ -101,30 +80,26 @@ namespace asset {
 
 }
 
-class MeshBuffer {
-    VkBuffer m_buffer;
-    VmaAllocation m_mem;
-    VkMemoryPropertyFlags m_memflags;
-    std::span<std::byte> m_data;
-    std::map<asset::Mesh*, VkDeviceSize> m_offsets;
+class StagingBuffer {
+    friend class SceneHost;
+
+    VkBuffer m_src_buffer;
+    VmaAllocation m_src_mem;
+    std::span<std::byte> m_src_data;
+    VkCommandBuffer m_xfer_commands, m_acquire_commands;
+    VkSemaphore m_post_xfer;
+
+    std::vector<VkBufferMemoryBarrier2> m_buffer_memory_barriers;
+    std::vector<std::pair<VkCopyBufferInfo2, std::vector<VkBufferCopy2>>> m_buffer_copies;
+    std::array<std::vector<VkImageMemoryBarrier2>, 2> m_image_memory_barriers;
+    std::vector<std::pair<VkCopyBufferToImageInfo2, std::vector<VkBufferImageCopy2>>> m_image_copies;
 
 public:
-    MeshBuffer()
-        : m_buffer(VK_NULL_HANDLE)
-        , m_mem(VK_NULL_HANDLE)
-        , m_memflags(0)
-    {
-    }
-    MeshBuffer(const MeshBuffer&) = delete;
-    MeshBuffer(MeshBuffer&&) = delete;
-    ~MeshBuffer();
-
-    inline VkBuffer handle() const { return m_buffer; }
-    inline VkDeviceSize offset_of(twogame::asset::Mesh* mesh) const { return m_offsets.at(mesh); }
-    inline bool is_host_visible() const { return m_memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT; }
-    inline std::span<std::byte> window(size_t offset) { return m_data.subspan(offset); }
-
-    void build(std::vector<asset::Mesh>& meshes);
+    StagingBuffer() { }
+    inline std::span<std::byte> window(VkDeviceSize offset) const { return m_src_data.subspan(offset); }
+    void copy_image(VkImage dst, VkImageCreateInfo& info, std::span<const VkBufferImageCopy2> copies, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout final_layout);
+    void copy_buffer(VkBuffer dst, VkDeviceSize dst_size, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
+    void finalize();
 };
 
 class IScene {
@@ -132,22 +107,41 @@ class IScene {
 
 protected:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
-    MeshBuffer m_mesh_buffer;
     std::vector<asset::Mesh> m_meshes;
     std::vector<asset::Image> m_images;
 
-    IScene() { }
+    VkDescriptorPool m_descriptor_pool;
+    std::array<std::array<VkDescriptorSet, 1>, SIMULTANEOUS_FRAMES> m_descriptor_set;
+
+    std::span<IRenderer::BindingZero> m_binding_zero;
+    std::span<IRenderer::MeshEntry> m_mesh_refs;
+    std::array<std::span<IRenderer::InstanceEntry>, SIMULTANEOUS_FRAMES> m_instances;
+    std::array<std::span<VkDrawIndirectCommand>, SIMULTANEOUS_FRAMES> m_draw_commands;
+
+    IScene();
+
+private:
+    std::array<VkCommandPool, SIMULTANEOUS_FRAMES> m_draw_cmd_pool;
+    std::array<std::array<VkCommandBuffer, 1>, SIMULTANEOUS_FRAMES> m_draw_cmd;
+    struct {
+        VkBuffer handle;
+        VmaAllocation mem;
+        VkMemoryPropertyFlags memflags;
+    } m_vertices_buffer, m_mesh_refs_buffer, m_binding_zero_buffer, m_instances_buffer[SIMULTANEOUS_FRAMES], m_indirect_buffer[SIMULTANEOUS_FRAMES];
+    std::span<std::byte> m_vertices_ptr;
 
 public:
-    virtual ~IScene() { }
-    inline MeshBuffer& mesh_buffer() { return m_mesh_buffer; }
+    virtual ~IScene();
+    inline VkCommandBuffer draw_commands(uint32_t frame_number, int subpass) const { return m_draw_cmd[frame_number % SIMULTANEOUS_FRAMES][subpass]; }
 
-    virtual bool construct(IRenderer* renderer, StagingBuffer& buffer, size_t pass, size_t ticket) = 0;
     virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
     virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
-    virtual void record_commands(IRenderer*, uint32_t frame_number) = 0;
+    virtual void render(IRenderer*, uint32_t frame_number) = 0;
 
-    virtual std::span<VkCommandBuffer> draw_commands(uint32_t frame_number, int subpass) = 0;
+    std::vector<std::vector<IAsset*>> begin_construct_assets(IRenderer*);
+    size_t prepare_mesh(asset::Mesh* mesh, const std::vector<std::byte>& data, StagingBuffer& commands, VkDeviceSize staging_offset);
+    void end_construct_assets(IRenderer*);
+    void record_commands(IRenderer*, uint32_t frame_number);
 };
 
 class SceneHost final {

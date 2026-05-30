@@ -305,27 +305,12 @@ size_t Mesh::prepare_needs() const
 
 size_t Mesh::prepare(IScene* scene, StagingBuffer& commands, VkDeviceSize staging_offset)
 {
-    MeshBuffer& mesh_buffer = scene->mesh_buffer();
-    size_t staged_size, total_size = prepare_needs(), offset = mesh_buffer.offset_of(this);
+    std::vector<std::byte> mesh_data(prepare_needs());
     PHYSFS_File* fh = PHYSFS_openRead("/data/duck.bin");
-    PHYSFS_seek(fh, 0);
-    if (mesh_buffer.is_host_visible()) {
-        PHYSFS_readBytes(fh, mesh_buffer.window(offset).data(), total_size);
-        staged_size = 0;
-    } else {
-        VkBufferCopy2 copy {};
-        copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
-        copy.srcOffset = staging_offset;
-        copy.dstOffset = offset;
-        copy.size = total_size;
-
-        PHYSFS_readBytes(fh, commands.window(staging_offset).data(), total_size);
-        commands.copy_buffer(mesh_buffer.handle(), total_size, std::span(&copy, 1), VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
-        staged_size = total_size;
-    }
-
+    PHYSFS_readBytes(fh, mesh_data.data(), mesh_data.size());
     PHYSFS_close(fh);
-    return staged_size;
+
+    return scene->prepare_mesh(this, mesh_data, commands, staging_offset);
 }
 
 }

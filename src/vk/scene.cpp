@@ -106,42 +106,289 @@ void StagingBuffer::finalize()
     m_image_memory_barriers[1].clear();
 }
 
-MeshBuffer::~MeshBuffer()
+IScene::IScene()
 {
-    if (m_memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
-        vmaUnmapMemory(DisplayHost::allocator(), m_mem);
-    vmaDestroyBuffer(DisplayHost::allocator(), m_buffer, m_mem);
+    VkCommandPoolCreateInfo cmd_pool_ci {};
+    cmd_pool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    cmd_pool_ci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+    cmd_pool_ci.queueFamilyIndex = DisplayHost::queue_family_index();
+
+    VkCommandBufferAllocateInfo cmd_buffer_ci {};
+    cmd_buffer_ci.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmd_buffer_ci.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
+    cmd_buffer_ci.commandBufferCount = m_draw_cmd[0].size();
+    for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++) {
+        VK_DEMAND(vkCreateCommandPool(DisplayHost::device(), &cmd_pool_ci, nullptr, &m_draw_cmd_pool[i]));
+
+        cmd_buffer_ci.commandPool = m_draw_cmd_pool[i];
+        VK_DEMAND(vkAllocateCommandBuffers(DisplayHost::device(), &cmd_buffer_ci, m_draw_cmd[i].data()));
+    }
 }
 
-void MeshBuffer::build(std::vector<asset::Mesh>& meshes)
+IScene::~IScene()
 {
-    std::sort(meshes.begin(), meshes.end(), [](const asset::Mesh& lhs, const asset::Mesh& rhs) {
-        return lhs.pipeline_key() < rhs.pipeline_key();
-    });
+    vmaDestroyBuffer(DisplayHost::allocator(), m_vertices_buffer.handle, m_vertices_buffer.mem);
+    vmaDestroyBuffer(DisplayHost::allocator(), m_mesh_refs_buffer.handle, m_mesh_refs_buffer.mem);
+    vmaDestroyBuffer(DisplayHost::allocator(), m_binding_zero_buffer.handle, m_binding_zero_buffer.mem);
+    for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++) {
+        vmaDestroyBuffer(DisplayHost::allocator(), m_instances_buffer[i].handle, m_instances_buffer[i].mem);
+        vmaDestroyBuffer(DisplayHost::allocator(), m_indirect_buffer[i].handle, m_indirect_buffer[i].mem);
+    }
+
+    vkDestroyDescriptorPool(DisplayHost::device(), m_descriptor_pool, nullptr);
+    for (auto it = m_draw_cmd_pool.begin(); it != m_draw_cmd_pool.end(); ++it)
+        vkDestroyCommandPool(DisplayHost::device(), *it, nullptr);
+}
+
+std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* renderer)
+{
+    m_descriptor_pool = renderer->create_descriptor_pool();
+
+    VkDescriptorSetAllocateInfo descriptor_alloc_info {};
+    VkDescriptorSetVariableDescriptorCountAllocateInfo variable_descriptor_alloc_info {};
+    descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    descriptor_alloc_info.pNext = &variable_descriptor_alloc_info;
+    descriptor_alloc_info.descriptorPool = m_descriptor_pool;
+    descriptor_alloc_info.descriptorSetCount = renderer->descriptor_set_layouts().size();
+    descriptor_alloc_info.pSetLayouts = renderer->descriptor_set_layouts().data();
+    variable_descriptor_alloc_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+    variable_descriptor_alloc_info.descriptorSetCount = 1;
+    variable_descriptor_alloc_info.pDescriptorCounts = &IRenderer::PICTUREBOOK_CAPACITY;
+    VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &descriptor_alloc_info, m_descriptor_set[0].data()));
+    VK_DEMAND(vkAllocateDescriptorSets(DisplayHost::device(), &descriptor_alloc_info, m_descriptor_set[1].data()));
 
     VkBufferCreateInfo buffer_ci {};
     VmaAllocationCreateInfo alloc_ci {};
     VmaAllocationInfo alloc_info;
     buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    buffer_ci.size = sizeof(IRenderer::BindingZero) * SIMULTANEOUS_FRAMES;
+    buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_binding_zero_buffer.handle, &m_binding_zero_buffer.mem, &alloc_info));
+    m_binding_zero = std::span(static_cast<IRenderer::BindingZero*>(alloc_info.pMappedData), SIMULTANEOUS_FRAMES);
+
     buffer_ci.size = 0;
     buffer_ci.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    buffer_ci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_HOST_ACCESS_ALLOW_TRANSFER_INSTEAD_BIT;
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-    for (auto it = meshes.begin(); it != meshes.end(); ++it) {
-        m_offsets[&*it] = buffer_ci.size;
+    for (auto it = m_meshes.begin(); it != m_meshes.end(); ++it)
         buffer_ci.size += it->prepare_needs();
+
+    VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_vertices_buffer.handle, &m_vertices_buffer.mem, &alloc_info));
+    vmaGetMemoryTypeProperties(DisplayHost::allocator(), alloc_info.memoryType, &m_vertices_buffer.memflags);
+    if (m_vertices_buffer.memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        void* mapped;
+        VK_DEMAND(vmaMapMemory(DisplayHost::allocator(), m_vertices_buffer.mem, &mapped));
+        m_vertices_ptr = std::span(static_cast<std::byte*>(mapped), buffer_ci.size);
+    } else {
+        m_vertices_ptr = std::span(static_cast<std::byte*>(nullptr), buffer_ci.size);
     }
 
-    VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_buffer, &m_mem, &alloc_info));
-    vmaGetMemoryTypeProperties(DisplayHost::allocator(), alloc_info.memoryType, &m_memflags);
-    if (m_memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
-        void* mapped;
-        VK_DEMAND(vmaMapMemory(DisplayHost::allocator(), m_mem, &mapped));
-        m_data = std::span(static_cast<std::byte*>(mapped), buffer_ci.size);
-    } else {
-        m_data = std::span(static_cast<std::byte*>(nullptr), buffer_ci.size);
+    buffer_ci.size = sizeof(IRenderer::MeshEntry) * m_meshes.size();
+    buffer_ci.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
+    VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_mesh_refs_buffer.handle, &m_mesh_refs_buffer.mem, &alloc_info));
+    m_mesh_refs = std::span(static_cast<IRenderer::MeshEntry*>(alloc_info.pMappedData), m_meshes.size());
+
+    VkBufferDeviceAddressInfo bda_info {};
+    bda_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    bda_info.buffer = m_vertices_buffer.handle;
+    VkDeviceAddress base_vertices_addr = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info);
+    for (size_t i = 0; i < m_meshes.size(); i++) {
+        m_mesh_refs[i].index_buffer_address = base_vertices_addr;
+        m_mesh_refs[i].vertex_buffer_address = base_vertices_addr + m_meshes[i].vertices_offset();
+        m_mesh_refs[i].normal_buffer_address = base_vertices_addr + m_meshes[i].normals_offset();
+        base_vertices_addr += m_meshes[i].prepare_needs();
     }
+
+    // this will be sized based on a scene graph defined in the constructor
+    size_t max_instance_count = 1;
+    buffer_ci.size = sizeof(IRenderer::InstanceEntry) * max_instance_count;
+    for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++) {
+        VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_instances_buffer[i].handle, &m_instances_buffer[i].mem, &alloc_info));
+        m_instances[i] = std::span(static_cast<IRenderer::InstanceEntry*>(alloc_info.pMappedData), max_instance_count);
+    }
+    buffer_ci.size = sizeof(VkDrawIndirectCommand) * max_instance_count;
+    buffer_ci.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
+    for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++) {
+        VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_indirect_buffer[i].handle, &m_indirect_buffer[i].mem, &alloc_info));
+        m_draw_commands[i] = std::span(static_cast<VkDrawIndirectCommand*>(alloc_info.pMappedData), max_instance_count);
+    }
+
+    std::vector<IAsset*> all_assets;
+    for (auto it = m_meshes.begin(); it != m_meshes.end(); ++it)
+        all_assets.push_back(&*it);
+    for (auto it = m_images.begin(); it != m_images.end(); ++it)
+        all_assets.push_back(&*it);
+
+    std::vector<std::vector<IAsset*>> buckets(1);
+    std::vector<size_t> bucket_usage(1);
+    std::sort(all_assets.begin(), all_assets.end(), [](const IAsset* lhs, const IAsset* rhs) {
+        return lhs->prepare_needs() > rhs->prepare_needs();
+    });
+    for (auto it = all_assets.begin(); it != all_assets.end(); ++it) {
+        bool unassigned = true;
+        size_t occ = (*it)->prepare_needs();
+        for (size_t i = 0; i < buckets.size() && unassigned; i++) {
+            if (bucket_usage[i] + occ <= SceneHost::STAGING_BUFFER_SIZE) {
+                bucket_usage[i] += occ;
+                buckets[i].push_back(*it);
+                unassigned = false;
+            }
+        }
+        if (unassigned) {
+            bucket_usage.push_back(occ);
+            buckets.emplace_back().push_back(*it);
+        }
+    }
+    return buckets;
+}
+
+size_t IScene::prepare_mesh(asset::Mesh* mesh, const std::vector<std::byte>& data, StagingBuffer& commands, VkDeviceSize staging_offset)
+{
+    size_t staged_size = 0, total_size = data.size(), mesh_index = mesh - m_meshes.data();
+    VkBufferDeviceAddressInfo bda_info {};
+    bda_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    bda_info.buffer = m_vertices_buffer.handle;
+    VkDeviceAddress base_vertices_addr = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info), dst_offset = m_mesh_refs[mesh_index].index_buffer_address - base_vertices_addr;
+
+    if (m_vertices_buffer.memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        memcpy(m_vertices_ptr.subspan(dst_offset).data(), data.data(), total_size);
+    } else {
+        VkBufferCopy2 copy {};
+        copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
+        copy.srcOffset = staging_offset;
+        copy.dstOffset = dst_offset;
+        copy.size = total_size;
+
+        memcpy(commands.window(staging_offset).data(), data.data(), total_size);
+        commands.copy_buffer(m_vertices_buffer.handle, total_size, std::span(&copy, 1), VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+        staged_size = data.size();
+    }
+    return staged_size;
+}
+
+void IScene::end_construct_assets(IRenderer* renderer)
+{
+    vmaUnmapMemory(DisplayHost::allocator(), m_vertices_buffer.mem);
+
+    std::array<VkDescriptorBufferInfo, 2> binding_zero_writes {};
+    binding_zero_writes[0].buffer = m_binding_zero_buffer.handle;
+    binding_zero_writes[0].offset = 0;
+    binding_zero_writes[0].range = sizeof(IRenderer::BindingZero);
+    binding_zero_writes[1].buffer = m_binding_zero_buffer.handle;
+    binding_zero_writes[1].offset = sizeof(IRenderer::BindingZero);
+    binding_zero_writes[1].range = sizeof(IRenderer::BindingZero);
+
+    std::array<VkDescriptorImageInfo, std::tuple_size<decltype(renderer->samplers())>::value> sampler_writes;
+    for (size_t i = 0; i < std::tuple_size<decltype(renderer->samplers())>::value; i++) {
+        sampler_writes[i].sampler = renderer->samplers().at(i);
+        sampler_writes[i].imageView = VK_NULL_HANDLE;
+    }
+    std::vector<VkDescriptorImageInfo> picturebook_writes(m_images.size());
+    for (size_t i = 0; i < m_images.size(); i++) {
+        picturebook_writes[i].sampler = VK_NULL_HANDLE;
+        picturebook_writes[i].imageView = m_images[i].view();
+        picturebook_writes[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    }
+
+    std::array<VkWriteDescriptorSet, 6> writes {};
+    writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[0].dstSet = m_descriptor_set[0][0];
+    writes[0].dstBinding = 0;
+    writes[0].descriptorCount = 1;
+    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[0].pBufferInfo = &binding_zero_writes[0];
+    writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[1].dstSet = m_descriptor_set[1][0];
+    writes[1].dstBinding = 0;
+    writes[1].descriptorCount = 1;
+    writes[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    writes[1].pBufferInfo = &binding_zero_writes[1];
+    writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[2].dstSet = m_descriptor_set[0][0];
+    writes[2].dstBinding = 1;
+    writes[2].descriptorCount = sampler_writes.size();
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[2].pImageInfo = sampler_writes.data();
+    writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[3].dstSet = m_descriptor_set[1][0];
+    writes[3].dstBinding = 1;
+    writes[3].descriptorCount = sampler_writes.size();
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[3].pImageInfo = sampler_writes.data();
+    writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[4].dstSet = m_descriptor_set[0][0];
+    writes[4].dstBinding = 2;
+    writes[4].descriptorCount = picturebook_writes.size();
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[4].pImageInfo = picturebook_writes.data();
+    writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[5].dstSet = m_descriptor_set[1][0];
+    writes[5].dstBinding = 2;
+    writes[5].descriptorCount = picturebook_writes.size();
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[5].pImageInfo = picturebook_writes.data();
+    vkUpdateDescriptorSets(DisplayHost::device(), writes.size(), writes.data(), 0, nullptr);
+}
+
+void IScene::record_commands(IRenderer* renderer, uint32_t frame_number)
+{
+    auto allocations = std::to_array({
+        m_instances_buffer[frame_number % SIMULTANEOUS_FRAMES].mem,
+        m_indirect_buffer[frame_number % SIMULTANEOUS_FRAMES].mem,
+        m_binding_zero_buffer.mem,
+    });
+    std::array<VkDeviceSize, std::size(allocations)> offsets, sizes;
+    offsets.fill(0);
+    sizes.fill(VK_WHOLE_SIZE);
+    vmaFlushAllocations(DisplayHost::allocator(), allocations.size(), allocations.data(), offsets.data(), sizes.data());
+    vkResetCommandPool(DisplayHost::device(), m_draw_cmd_pool[frame_number % SIMULTANEOUS_FRAMES], 0);
+
+    struct {
+        uint64_t mesh_buffer_address;
+        uint64_t instance_buffer_address;
+    } push_data;
+    VkBufferDeviceAddressInfo bda_info {};
+    bda_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    bda_info.buffer = m_mesh_refs_buffer.handle;
+    push_data.mesh_buffer_address = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info);
+    bda_info.buffer = m_instances_buffer[frame_number % SIMULTANEOUS_FRAMES].handle;
+    push_data.instance_buffer_address = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info);
+
+    VkCommandBuffer cmd = m_draw_cmd[frame_number % SIMULTANEOUS_FRAMES][0];
+    VkCommandBufferBeginInfo begin_info {};
+    VkCommandBufferInheritanceInfo inherit_info {};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT | VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+    begin_info.pInheritanceInfo = &inherit_info;
+    inherit_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+    inherit_info.renderPass = renderer->render_pass();
+    inherit_info.subpass = 0;
+    VK_DEMAND(vkBeginCommandBuffer(cmd, &begin_info));
+
+    VkExtent2D swapchain_extent = DisplayHost::swapchain_extent();
+    VkViewport viewport {};
+    VkRect2D scissor {};
+    viewport.x = 0;
+    viewport.y = 0;
+    viewport.width = swapchain_extent.width;
+    viewport.height = swapchain_extent.height;
+    viewport.minDepth = 0.f;
+    viewport.maxDepth = 1.f;
+    scissor.offset = { 0, 0 };
+    scissor.extent = swapchain_extent;
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    // bind the pipeline for pass 0 whose pipeline key matches the meshes we're drawing
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->graphics_pipeline(0));
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->pipeline_layout(0), 0, m_descriptor_set[frame_number % SIMULTANEOUS_FRAMES].size(), m_descriptor_set[frame_number % SIMULTANEOUS_FRAMES].data(), 0, nullptr);
+    vkCmdPushConstants(cmd, renderer->pipeline_layout(0), VK_SHADER_STAGE_ALL, 0, sizeof(push_data), &push_data);
+    vkCmdDrawIndirect(cmd, m_indirect_buffer[frame_number % SIMULTANEOUS_FRAMES].handle, 0, 1 /*draw count*/, sizeof(VkDrawIndirectCommand));
+    vkEndCommandBuffer(cmd);
 }
 
 SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
@@ -214,9 +461,14 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     // Prepare the initial scene in-line.
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     uint64_t pass = 0;
-    bool complete;
-    do {
-        complete = initial->construct(m_renderer.get(), m_staging_buffers[0], pass, pass + 1);
+    auto buckets = initial->begin_construct_assets(m_renderer.get());
+    while (pass < buckets.size()) {
+        size_t staging_offset = 0;
+        for (auto it = buckets[pass].begin(); it != buckets[pass].end(); ++it) {
+            staging_offset += (*it)->prepare(initial, m_staging_buffers[0], staging_offset);
+            (*it)->post_prepare(pass + 1);
+        }
+
         m_staging_buffers[0].finalize();
         pass++;
 
@@ -253,10 +505,12 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
         wait_info.pValues = &pass;
 
         VK_DEMAND(vkWaitSemaphores(DisplayHost::device(), &wait_info, UINT64_MAX));
-    } while (complete == false);
+    }
     m_scenes[initial] = pass;
     m_requested_scene = initial;
     m_max_ticket.store(pass + 1, std::memory_order_relaxed);
+    initial->end_construct_assets(m_renderer.get());
+    initial->render(m_renderer.get(), 0);
     initial->record_commands(m_renderer.get(), 0);
 
     m_scene_host = std::thread(&SceneHost::scene_loop, this);
@@ -332,6 +586,7 @@ void SceneHost::scene_loop()
             while (m_event_queue.try_pop(evt))
                 scene->handle_event(evt, this);
             scene->tick(frame_time[1], frame_time[1] - frame_time[0], this);
+            scene->render(m_renderer.get(), frame_number);
             scene->record_commands(m_renderer.get(), frame_number);
             frame_time[0] = frame_time[1];
 
@@ -384,13 +639,17 @@ void SceneHost::builder_loop(int thread_id)
             wait_info.pSemaphores = &m_timeline;
 
             RQData job;
-            bool complete;
-            int pass = 0;
             job.scene = build_job.scene;
             job.commands = &m_staging_buffers[thread_id];
-            do {
+            auto buckets = job.scene->begin_construct_assets(m_renderer.get());
+            for (size_t pass = 0; pass < buckets.size(); pass++) {
+                size_t staging_offset = 0;
                 job.ticket = m_max_ticket.fetch_add(1, std::memory_order_relaxed);
-                complete = job.scene->construct(m_renderer.get(), m_staging_buffers[thread_id], pass++, job.ticket);
+                for (auto it = buckets[pass].begin(); it != buckets[pass].end(); ++it) {
+                    staging_offset += (*it)->prepare(job.scene, m_staging_buffers[thread_id], staging_offset);
+                    (*it)->post_prepare(job.ticket);
+                }
+
                 m_staging_buffers[thread_id].finalize();
                 m_render_queue.push(job);
                 SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup=%p", job.scene, job.ticket, job.commands);
@@ -398,8 +657,9 @@ void SceneHost::builder_loop(int thread_id)
                 // Because the builder thread blocks until the command buffer we just submitted is complete, we don't need any GPU waiting.
                 wait_info.pValues = &job.ticket;
                 VK_DEMAND(vkWaitSemaphores(DisplayHost::device(), &wait_info, UINT64_MAX));
-            } while (complete == false);
+            }
             SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup complete", job.scene, job.ticket);
+            job.scene->end_construct_assets(m_renderer.get());
             m_return_queue.push(job);
         } else {
             SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p teardown", build_job.scene);
@@ -484,9 +744,8 @@ void SceneHost::execute_draws(VkCommandBuffer container, uint32_t frame_number, 
 {
     IScene* active_scene = s_self->m_active_scene.load(std::memory_order_acquire);
     if (active_scene) {
-        std::span<VkCommandBuffer> commands = active_scene->draw_commands(frame_number, subpass);
-        if (commands.size() > 0)
-            vkCmdExecuteCommands(container, commands.size(), commands.data());
+        VkCommandBuffer commands = active_scene->draw_commands(frame_number, subpass);
+        vkCmdExecuteCommands(container, 1, &commands);
     }
 }
 

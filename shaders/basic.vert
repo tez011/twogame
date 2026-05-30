@@ -24,19 +24,23 @@ layout(buffer_reference, std430) readonly buffer VertexBuffer { Vertex verts[]; 
 layout(buffer_reference, std430) readonly buffer NormalBuffer { Normal normals[]; };
 layout(buffer_reference, std430) readonly buffer IndexBuffer { uint16_t index[]; };
 
-struct Instance {
+struct Mesh {
     uint64_t vertex_buffer;
     uint64_t normal_buffer;
     uint64_t index_buffer;
-    uint32_t material_id;
-    mat4 model;
 };
 
-layout(buffer_reference, std430) readonly buffer InstanceBuffer {
-    Instance instances[];
+struct Instance {
+    mat4 model;
+    uint32_t mesh_id;
+    uint32_t material_id;
 };
+
+layout(buffer_reference, std430) readonly buffer MeshBuffer { Mesh meshes[]; };
+layout(buffer_reference, std430) readonly buffer InstanceBuffer { Instance instances[]; };
 
 layout(push_constant, std430) uniform PC {
+    uint64_t mesh_buffer_address;
     uint64_t instance_buffer_address;
 };
 
@@ -46,11 +50,13 @@ layout(location = 2) flat out uint out_material_id;
 
 void main()
 {
+    MeshBuffer mesh_buffer = MeshBuffer(mesh_buffer_address);
     InstanceBuffer instance_buffer = InstanceBuffer(instance_buffer_address);
     Instance instance = instance_buffer.instances[gl_InstanceIndex];
-    VertexBuffer vertex_buffer = VertexBuffer(instance.vertex_buffer);
-    NormalBuffer normal_buffer = NormalBuffer(instance.normal_buffer);
-    IndexBuffer index_buffer = IndexBuffer(instance.index_buffer);
+    Mesh mesh = mesh_buffer.meshes[instance.mesh_id];
+    VertexBuffer vertex_buffer = VertexBuffer(mesh.vertex_buffer);
+    NormalBuffer normal_buffer = NormalBuffer(mesh.normal_buffer);
+    IndexBuffer index_buffer = IndexBuffer(mesh.index_buffer);
 
     uint vertex_index = uint(index_buffer.index[gl_VertexIndex]);
     Vertex v = vertex_buffer.verts[vertex_index];
