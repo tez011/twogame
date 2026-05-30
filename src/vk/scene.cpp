@@ -6,6 +6,12 @@ namespace twogame {
 
 std::unique_ptr<SceneHost> SceneHost::s_self;
 
+void StagingBuffer::advance(size_t offset)
+{
+    m_tail += offset;
+    SDL_assert(m_tail <= SceneHost::STAGING_BUFFER_SIZE);
+}
+
 void StagingBuffer::copy_buffer(VkBuffer dst, VkDeviceSize dst_size, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access)
 {
     VkBufferMemoryBarrier2& barrier = m_buffer_memory_barriers.emplace_back();
@@ -75,6 +81,7 @@ void StagingBuffer::finalize()
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     VK_DEMAND(vkBeginCommandBuffer(m_xfer_commands, &begin_info));
+    vmaFlushAllocation(DisplayHost::allocator(), m_src_mem, 0, VK_WHOLE_SIZE);
 
     VkDependencyInfo dep {};
     dep.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
@@ -104,6 +111,10 @@ void StagingBuffer::finalize()
     m_buffer_memory_barriers.clear();
     m_image_memory_barriers[0].clear();
     m_image_memory_barriers[1].clear();
+
+    // This is ok to do here, but only because we don't touch the staging buffer between this function
+    // and when the command buffers are done executing.
+    m_tail = 0;
 }
 
 IScene::IScene()
@@ -140,7 +151,7 @@ IScene::~IScene()
         vkDestroyCommandPool(DisplayHost::device(), *it, nullptr);
 }
 
-std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* renderer)
+std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* renderer, StagingBuffer& commands)
 {
     m_descriptor_pool = renderer->create_descriptor_pool();
 
@@ -187,10 +198,16 @@ std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* rend
 
     buffer_ci.size = sizeof(IRenderer::MeshEntry) * m_meshes.size();
     buffer_ci.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
-    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
     VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_mesh_refs_buffer.handle, &m_mesh_refs_buffer.mem, &alloc_info));
-    m_mesh_refs = std::span(static_cast<IRenderer::MeshEntry*>(alloc_info.pMappedData), m_meshes.size());
+    vmaGetMemoryTypeProperties(DisplayHost::allocator(), alloc_info.memoryType, &m_mesh_refs_buffer.memflags);
+    if (m_mesh_refs_buffer.memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        void* mapped;
+        VK_DEMAND(vmaMapMemory(DisplayHost::allocator(), m_mesh_refs_buffer.mem, &mapped));
+        m_mesh_refs = std::span(static_cast<IRenderer::MeshEntry*>(mapped), m_meshes.size());
+    } else {
+        m_mesh_refs = std::span(reinterpret_cast<IRenderer::MeshEntry*>(commands.tail()), m_meshes.size());
+        commands.advance(buffer_ci.size);
+    }
 
     VkBufferDeviceAddressInfo bda_info {};
     bda_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
@@ -202,10 +219,16 @@ std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* rend
         m_mesh_refs[i].normal_buffer_address = base_vertices_addr + m_meshes[i].normals_offset();
         base_vertices_addr += m_meshes[i].prepare_needs();
     }
+    if (m_mesh_refs_buffer.memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        vmaUnmapMemory(DisplayHost::allocator(), m_mesh_refs_buffer.mem);
+        vmaFlushAllocation(DisplayHost::allocator(), m_mesh_refs_buffer.mem, 0, VK_WHOLE_SIZE);
+    }
 
     // this will be sized based on a scene graph defined in the constructor
     size_t max_instance_count = 1;
     buffer_ci.size = sizeof(IRenderer::InstanceEntry) * max_instance_count;
+    alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
+    alloc_ci.usage = VMA_MEMORY_USAGE_AUTO;
     for (size_t i = 0; i < SIMULTANEOUS_FRAMES; i++) {
         VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_instances_buffer[i].handle, &m_instances_buffer[i].mem, &alloc_info));
         m_instances[i] = std::span(static_cast<IRenderer::InstanceEntry*>(alloc_info.pMappedData), max_instance_count);
@@ -224,7 +247,7 @@ std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* rend
         all_assets.push_back(&*it);
 
     std::vector<std::vector<IAsset*>> buckets(1);
-    std::vector<size_t> bucket_usage(1);
+    std::vector<size_t> bucket_usage = { commands.tail_offset() };
     std::sort(all_assets.begin(), all_assets.end(), [](const IAsset* lhs, const IAsset* rhs) {
         return lhs->prepare_needs() > rhs->prepare_needs();
     });
@@ -246,7 +269,7 @@ std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* rend
     return buckets;
 }
 
-size_t IScene::prepare_mesh(asset::Mesh* mesh, const std::vector<std::byte>& data, StagingBuffer& commands, VkDeviceSize staging_offset)
+size_t IScene::prepare_mesh(asset::Mesh* mesh, const std::vector<std::byte>& data, StagingBuffer& commands)
 {
     size_t staged_size = 0, total_size = data.size(), mesh_index = mesh - m_meshes.data();
     VkBufferDeviceAddressInfo bda_info {};
@@ -259,12 +282,12 @@ size_t IScene::prepare_mesh(asset::Mesh* mesh, const std::vector<std::byte>& dat
     } else {
         VkBufferCopy2 copy {};
         copy.sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
-        copy.srcOffset = staging_offset;
+        copy.srcOffset = commands.tail_offset();
         copy.dstOffset = dst_offset;
         copy.size = total_size;
 
-        memcpy(commands.window(staging_offset).data(), data.data(), total_size);
         commands.copy_buffer(m_vertices_buffer.handle, total_size, std::span(&copy, 1), VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+        memcpy(commands.tail(), data.data(), total_size);
         staged_size = data.size();
     }
     return staged_size;
@@ -282,6 +305,11 @@ void IScene::end_construct_assets(IRenderer* renderer)
     binding_zero_writes[1].offset = sizeof(IRenderer::BindingZero);
     binding_zero_writes[1].range = sizeof(IRenderer::BindingZero);
 
+    VkDescriptorBufferInfo mesh_refs_write {};
+    mesh_refs_write.buffer = m_mesh_refs_buffer.handle;
+    mesh_refs_write.offset = 0;
+    mesh_refs_write.range = sizeof(IRenderer::MeshEntry) * m_meshes.size();
+
     std::array<VkDescriptorImageInfo, std::tuple_size<decltype(renderer->samplers())>::value> sampler_writes;
     for (size_t i = 0; i < std::tuple_size<decltype(renderer->samplers())>::value; i++) {
         sampler_writes[i].sampler = renderer->samplers().at(i);
@@ -294,7 +322,7 @@ void IScene::end_construct_assets(IRenderer* renderer)
         picturebook_writes[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
-    std::array<VkWriteDescriptorSet, 6> writes {};
+    std::array<VkWriteDescriptorSet, 8> writes {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = m_descriptor_set[0][0];
     writes[0].dstBinding = 0;
@@ -310,27 +338,39 @@ void IScene::end_construct_assets(IRenderer* renderer)
     writes[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[2].dstSet = m_descriptor_set[0][0];
     writes[2].dstBinding = 1;
-    writes[2].descriptorCount = sampler_writes.size();
-    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    writes[2].pImageInfo = sampler_writes.data();
+    writes[2].descriptorCount = 1;
+    writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[2].pBufferInfo = &mesh_refs_write;
     writes[3].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[3].dstSet = m_descriptor_set[1][0];
     writes[3].dstBinding = 1;
-    writes[3].descriptorCount = sampler_writes.size();
-    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    writes[3].pImageInfo = sampler_writes.data();
+    writes[3].descriptorCount = 1;
+    writes[3].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[3].pBufferInfo = &mesh_refs_write;
     writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[4].dstSet = m_descriptor_set[0][0];
     writes[4].dstBinding = 2;
-    writes[4].descriptorCount = picturebook_writes.size();
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[4].pImageInfo = picturebook_writes.data();
+    writes[4].descriptorCount = sampler_writes.size();
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[4].pImageInfo = sampler_writes.data();
     writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[5].dstSet = m_descriptor_set[1][0];
     writes[5].dstBinding = 2;
-    writes[5].descriptorCount = picturebook_writes.size();
-    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[5].pImageInfo = picturebook_writes.data();
+    writes[5].descriptorCount = sampler_writes.size();
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[5].pImageInfo = sampler_writes.data();
+    writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[6].dstSet = m_descriptor_set[0][0];
+    writes[6].dstBinding = 3;
+    writes[6].descriptorCount = picturebook_writes.size();
+    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[6].pImageInfo = picturebook_writes.data();
+    writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[7].dstSet = m_descriptor_set[1][0];
+    writes[7].dstBinding = 3;
+    writes[7].descriptorCount = picturebook_writes.size();
+    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[7].pImageInfo = picturebook_writes.data();
     vkUpdateDescriptorSets(DisplayHost::device(), writes.size(), writes.data(), 0, nullptr);
 }
 
@@ -347,16 +387,10 @@ void IScene::record_commands(IRenderer* renderer, uint32_t frame_number)
     vmaFlushAllocations(DisplayHost::allocator(), allocations.size(), allocations.data(), offsets.data(), sizes.data());
     vkResetCommandPool(DisplayHost::device(), m_draw_cmd_pool[frame_number % SIMULTANEOUS_FRAMES], 0);
 
-    struct {
-        uint64_t mesh_buffer_address;
-        uint64_t instance_buffer_address;
-    } push_data;
     VkBufferDeviceAddressInfo bda_info {};
     bda_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
-    bda_info.buffer = m_mesh_refs_buffer.handle;
-    push_data.mesh_buffer_address = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info);
     bda_info.buffer = m_instances_buffer[frame_number % SIMULTANEOUS_FRAMES].handle;
-    push_data.instance_buffer_address = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info);
+    VkDeviceAddress instance_buffer_address = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info);
 
     VkCommandBuffer cmd = m_draw_cmd[frame_number % SIMULTANEOUS_FRAMES][0];
     VkCommandBufferBeginInfo begin_info {};
@@ -386,7 +420,7 @@ void IScene::record_commands(IRenderer* renderer, uint32_t frame_number)
     // bind the pipeline for pass 0 whose pipeline key matches the meshes we're drawing
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->graphics_pipeline(0));
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->pipeline_layout(0), 0, m_descriptor_set[frame_number % SIMULTANEOUS_FRAMES].size(), m_descriptor_set[frame_number % SIMULTANEOUS_FRAMES].data(), 0, nullptr);
-    vkCmdPushConstants(cmd, renderer->pipeline_layout(0), VK_SHADER_STAGE_ALL, 0, sizeof(push_data), &push_data);
+    vkCmdPushConstants(cmd, renderer->pipeline_layout(0), VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &instance_buffer_address);
     vkCmdDrawIndirect(cmd, m_indirect_buffer[frame_number % SIMULTANEOUS_FRAMES].handle, 0, 1 /*draw count*/, sizeof(VkDrawIndirectCommand));
     vkEndCommandBuffer(cmd);
 }
@@ -461,11 +495,10 @@ SceneHost::SceneHost(IRenderer* renderer, IScene* initial)
     // Prepare the initial scene in-line.
     VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
     uint64_t pass = 0;
-    auto buckets = initial->begin_construct_assets(m_renderer.get());
+    auto buckets = initial->begin_construct_assets(m_renderer.get(), m_staging_buffers[0]);
     while (pass < buckets.size()) {
-        size_t staging_offset = 0;
         for (auto it = buckets[pass].begin(); it != buckets[pass].end(); ++it) {
-            staging_offset += (*it)->prepare(initial, m_staging_buffers[0], staging_offset);
+            m_staging_buffers[0].advance((*it)->prepare(initial, m_staging_buffers[0]));
             (*it)->post_prepare(pass + 1);
         }
 
@@ -641,12 +674,11 @@ void SceneHost::builder_loop(int thread_id)
             RQData job;
             job.scene = build_job.scene;
             job.commands = &m_staging_buffers[thread_id];
-            auto buckets = job.scene->begin_construct_assets(m_renderer.get());
+            auto buckets = job.scene->begin_construct_assets(m_renderer.get(), m_staging_buffers[thread_id]);
             for (size_t pass = 0; pass < buckets.size(); pass++) {
-                size_t staging_offset = 0;
                 job.ticket = m_max_ticket.fetch_add(1, std::memory_order_relaxed);
                 for (auto it = buckets[pass].begin(); it != buckets[pass].end(); ++it) {
-                    staging_offset += (*it)->prepare(job.scene, m_staging_buffers[thread_id], staging_offset);
+                    m_staging_buffers[thread_id].advance((*it)->prepare(job.scene, m_staging_buffers[thread_id]));
                     (*it)->post_prepare(job.ticket);
                 }
 

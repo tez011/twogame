@@ -1,4 +1,6 @@
 #include <cassert>
+#include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>

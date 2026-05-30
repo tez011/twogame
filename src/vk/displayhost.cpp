@@ -117,6 +117,14 @@ bool DisplayHost::create_instance()
             [](const char* name) { return strcmp(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME, name) == 0; }))
         instance_create_flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 
+    const char* title = SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING);
+    if (title == nullptr)
+        title = "twogame";
+    if ((m_window = SDL_CreateWindow(title, 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE)) == nullptr) {
+        SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "SDL_CreateWindow: %s", SDL_GetError());
+        return false;
+    }
+
     VkApplicationInfo appinfo {};
     appinfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     appinfo.apiVersion = API_VERSION;
@@ -137,39 +145,31 @@ bool DisplayHost::create_instance()
 
 bool DisplayHost::create_debug_messenger()
 {
-#if DEBUG_BUILD
-    auto vkCreateDebugUtilsMessenger = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(m_instance, "vkCreateDebugUtilsMessengerEXT");
-    if (vkCreateDebugUtilsMessenger == nullptr) {
-        SDL_LogError(SDL_LOG_CATEGORY_GPU, VK_EXT_DEBUG_UTILS_EXTENSION_NAME " not present; skipping debug messenger creation");
-        return false;
+    if constexpr (ENABLE_VALIDATION_LAYERS) {
+        auto vkCreateDebugUtilsMessenger = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(m_instance, "vkCreateDebugUtilsMessengerEXT");
+        if (vkCreateDebugUtilsMessenger == nullptr) {
+            SDL_LogError(SDL_LOG_CATEGORY_GPU, VK_EXT_DEBUG_UTILS_EXTENSION_NAME " not present; skipping debug messenger creation");
+            return false;
+        }
+
+        VkDebugUtilsMessengerCreateInfoEXT createinfo {};
+        createinfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+        createinfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+        createinfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
+            | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+        createinfo.pfnUserCallback = vk_debug_callback;
+
+        VK_DEMAND(vkCreateDebugUtilsMessenger(m_instance, &createinfo, nullptr, &m_debug_messenger));
     }
-
-    VkDebugUtilsMessengerCreateInfoEXT createinfo {};
-    createinfo.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
-    createinfo.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    createinfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
-        | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-    createinfo.pfnUserCallback = vk_debug_callback;
-
-    VK_DEMAND(vkCreateDebugUtilsMessenger(m_instance, &createinfo, nullptr, &m_debug_messenger));
-#endif
     return true;
 }
 
 bool DisplayHost::create_surface()
 {
-    const char* title = SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING);
-    if (title == nullptr)
-        title = "twogame";
-    if ((m_window = SDL_CreateWindow(title, 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE)) == nullptr) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "SDL_CreateWindow: %s", SDL_GetError());
-        return false;
-    }
-
     Uint32 count;
     const char* const* base_extensions = SDL_Vulkan_GetInstanceExtensions(&count);
     if (std::any_of(base_extensions, base_extensions + count,
@@ -355,8 +355,8 @@ bool DisplayHost::create_logical_device()
             extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
         if (strcmp(VK_KHR_SWAPCHAIN_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_SWAPCHAIN_EXTENSION_NAME);
-        if (strcmp(VK_KHR_ROBUSTNESS_2_EXTENSION_NAME, ext.extensionName) == 0)
-            extensions.push_back(VK_KHR_ROBUSTNESS_2_EXTENSION_NAME);
+        if (strcmp(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME, ext.extensionName) == 0)
+            extensions.push_back(VK_EXT_ROBUSTNESS_2_EXTENSION_NAME);
     }
 
     VkPhysicalDeviceDriverProperties driver {};
@@ -376,7 +376,7 @@ bool DisplayHost::create_logical_device()
     VkPhysicalDeviceVulkan11Features device_features11 {};
     VkPhysicalDeviceVulkan12Features device_features12 {};
     VkPhysicalDeviceVulkan13Features device_features13 {};
-    VkPhysicalDeviceRobustness2FeaturesKHR device_features_robustness2 {};
+    VkPhysicalDeviceRobustness2FeaturesEXT device_features_robustness2 {};
     device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
     device_features.pNext = &device_features11;
     device_features11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
@@ -385,7 +385,7 @@ bool DisplayHost::create_logical_device()
     device_features12.pNext = &device_features13;
     device_features13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
     device_features13.pNext = &device_features_robustness2;
-    device_features_robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR;
+    device_features_robustness2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_EXT;
     vkGetPhysicalDeviceFeatures2(m_hwd, &device_features);
     vkGetPhysicalDeviceQueueFamilyProperties(m_hwd, &count, nullptr);
 

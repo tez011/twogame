@@ -199,7 +199,7 @@ size_t Image::prepare_needs() const
     }
 }
 
-size_t Image::prepare(IScene* scene, StagingBuffer& commands, VkDeviceSize staging_offset)
+size_t Image::prepare(IScene* scene, StagingBuffer& commands)
 {
     image::prep* prepare_data = static_cast<image::prep*>(std::get<std::shared_ptr<void>>(m_prepared).get());
     ktxTexture* ktx = reinterpret_cast<ktxTexture*>(prepare_data->ktx2);
@@ -253,18 +253,18 @@ size_t Image::prepare(IScene* scene, StagingBuffer& commands, VkDeviceSize stagi
     image_view_info.subresourceRange.layerCount = image_info.arrayLayers;
     VK_DEMAND(vkCreateImageView(DisplayHost::device(), &image_view_info, nullptr, &m_image_view));
 
-    std::span<std::byte> staging_data = commands.window(staging_offset);
-    image::ktx_mip_iterate_userdata mip_data(image_info, staging_offset);
+    std::byte* staging_data = commands.tail();
+    image::ktx_mip_iterate_userdata mip_data(image_info, commands.tail_offset());
     ktx_error_code_e res = ktxTexture_IterateLevels(ktx, image::ktx_mip_iterate, &mip_data);
     SDL_assert_release(res == KTX_SUCCESS);
     commands.copy_image(m_image, image_info, mip_data.regions(), VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
     if (ktx->pData) {
         // if the image was transcoded, copy it out of the decoded data
-        memcpy(staging_data.data(), ktx->pData, ktx->dataSize);
+        memcpy(staging_data, ktx->pData, ktx->dataSize);
         return (ktx->dataSize + 15) & ~15;
     } else {
-        res = ktxTexture_LoadImageData(ktx, reinterpret_cast<ktx_uint8_t*>(staging_data.data()), staging_data.size());
+        res = ktxTexture_LoadImageData(ktx, reinterpret_cast<ktx_uint8_t*>(staging_data), SceneHost::STAGING_BUFFER_SIZE - commands.tail_offset());
         SDL_assert_release(res == KTX_SUCCESS);
         return (ktxTexture_GetDataSizeUncompressed(ktx) + 15) & ~15;
     }
@@ -303,14 +303,14 @@ size_t Mesh::prepare_needs() const
     return normals_offset() + normals_size;
 }
 
-size_t Mesh::prepare(IScene* scene, StagingBuffer& commands, VkDeviceSize staging_offset)
+size_t Mesh::prepare(IScene* scene, StagingBuffer& commands)
 {
     std::vector<std::byte> mesh_data(prepare_needs());
     PHYSFS_File* fh = PHYSFS_openRead("/data/duck.bin");
     PHYSFS_readBytes(fh, mesh_data.data(), mesh_data.size());
     PHYSFS_close(fh);
 
-    return scene->prepare_mesh(this, mesh_data, commands, staging_offset);
+    return scene->prepare_mesh(this, mesh_data, commands);
 }
 
 }

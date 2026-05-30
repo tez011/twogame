@@ -133,9 +133,9 @@ public:
         uint32_t material_id;
     };
     struct MeshEntry {
-        uint64_t vertex_buffer_address;
-        uint64_t normal_buffer_address;
-        uint64_t index_buffer_address;
+        VkDeviceAddress vertex_buffer_address;
+        VkDeviceAddress normal_buffer_address;
+        VkDeviceAddress index_buffer_address;
     };
 
 private:

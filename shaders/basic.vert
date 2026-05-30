@@ -4,11 +4,6 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_int32 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
-layout(set = 0, binding = 0) uniform BindingZero {
-    mat4 proj;
-    mat4 view;
-};
-
 struct Vertex {
     vec3 position;
     vec2 uv[2];
@@ -19,10 +14,6 @@ struct Normal {
     vec3 tangent;
     vec4 color;
 };
-
-layout(buffer_reference, std430) readonly buffer VertexBuffer { Vertex verts[]; };
-layout(buffer_reference, std430) readonly buffer NormalBuffer { Normal normals[]; };
-layout(buffer_reference, std430) readonly buffer IndexBuffer { uint16_t index[]; };
 
 struct Mesh {
     uint64_t vertex_buffer;
@@ -36,11 +27,21 @@ struct Instance {
     uint32_t material_id;
 };
 
-layout(buffer_reference, std430) readonly buffer MeshBuffer { Mesh meshes[]; };
+layout(buffer_reference, std430) readonly buffer VertexBuffer { Vertex verts[]; };
+layout(buffer_reference, std430) readonly buffer NormalBuffer { Normal normals[]; };
+layout(buffer_reference, std430) readonly buffer IndexBuffer { uint16_t index[]; };
 layout(buffer_reference, std430) readonly buffer InstanceBuffer { Instance instances[]; };
 
+layout(set = 0, binding = 0) uniform BindingZero {
+    mat4 proj;
+    mat4 view;
+};
+
+layout(set = 0, binding = 1) readonly buffer MeshBuffer {
+    Mesh meshes[];
+};
+
 layout(push_constant, std430) uniform PC {
-    uint64_t mesh_buffer_address;
     uint64_t instance_buffer_address;
 };
 
@@ -50,10 +51,9 @@ layout(location = 2) flat out uint out_material_id;
 
 void main()
 {
-    MeshBuffer mesh_buffer = MeshBuffer(mesh_buffer_address);
     InstanceBuffer instance_buffer = InstanceBuffer(instance_buffer_address);
     Instance instance = instance_buffer.instances[gl_InstanceIndex];
-    Mesh mesh = mesh_buffer.meshes[instance.mesh_id];
+    Mesh mesh = meshes[instance.mesh_id];
     VertexBuffer vertex_buffer = VertexBuffer(mesh.vertex_buffer);
     NormalBuffer normal_buffer = NormalBuffer(mesh.normal_buffer);
     IndexBuffer index_buffer = IndexBuffer(mesh.index_buffer);

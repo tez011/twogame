@@ -1,4 +1,5 @@
 #define SDL_MAIN_USE_CALLBACKS
+#include <filesystem>
 #include <iostream>
 #include <cglm/cglm.h>
 #include <ktx.h>

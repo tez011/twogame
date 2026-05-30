@@ -32,7 +32,7 @@ public:
     virtual Type type() const = 0;
 
     virtual size_t prepare_needs() const = 0;
-    virtual size_t prepare(IScene* scene, StagingBuffer& commands, VkDeviceSize staging_offset) = 0;
+    virtual size_t prepare(IScene* scene, StagingBuffer& commands) = 0;
     void post_prepare(uint64_t ready);
 };
 
@@ -51,7 +51,7 @@ namespace asset {
         inline VkImageView view() const { return m_image_view; }
 
         virtual size_t prepare_needs() const override;
-        virtual size_t prepare(IScene* scene, StagingBuffer& commands, VkDeviceSize staging_offset) override;
+        virtual size_t prepare(IScene* scene, StagingBuffer& commands) override;
     };
 
     class Mesh final : public IAsset {
@@ -75,7 +75,7 @@ namespace asset {
         VkDeviceAddress normals_offset() const;
 
         virtual size_t prepare_needs() const override;
-        virtual size_t prepare(IScene* scene, StagingBuffer& commands, VkDeviceSize staging_offset) override;
+        virtual size_t prepare(IScene* scene, StagingBuffer& commands) override;
     };
 
 }
@@ -88,6 +88,7 @@ class StagingBuffer {
     std::span<std::byte> m_src_data;
     VkCommandBuffer m_xfer_commands, m_acquire_commands;
     VkSemaphore m_post_xfer;
+    VkDeviceSize m_tail;
 
     std::vector<VkBufferMemoryBarrier2> m_buffer_memory_barriers;
     std::vector<std::pair<VkCopyBufferInfo2, std::vector<VkBufferCopy2>>> m_buffer_copies;
@@ -95,8 +96,16 @@ class StagingBuffer {
     std::vector<std::pair<VkCopyBufferToImageInfo2, std::vector<VkBufferImageCopy2>>> m_image_copies;
 
 public:
-    StagingBuffer() { }
-    inline std::span<std::byte> window(VkDeviceSize offset) const { return m_src_data.subspan(offset); }
+    StagingBuffer()
+        : m_src_buffer(VK_NULL_HANDLE)
+        , m_src_mem(VK_NULL_HANDLE)
+        , m_tail(0)
+    {
+    }
+    inline VkDeviceSize tail_offset() const { return m_tail; }
+    inline std::byte* tail() { return m_src_data.subspan(m_tail).data(); }
+    void advance(size_t);
+
     void copy_image(VkImage dst, VkImageCreateInfo& info, std::span<const VkBufferImageCopy2> copies, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout final_layout);
     void copy_buffer(VkBuffer dst, VkDeviceSize dst_size, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
     void finalize();
@@ -138,8 +147,8 @@ public:
     virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
     virtual void render(IRenderer*, uint32_t frame_number) = 0;
 
-    std::vector<std::vector<IAsset*>> begin_construct_assets(IRenderer*);
-    size_t prepare_mesh(asset::Mesh* mesh, const std::vector<std::byte>& data, StagingBuffer& commands, VkDeviceSize staging_offset);
+    std::vector<std::vector<IAsset*>> begin_construct_assets(IRenderer*, StagingBuffer& commands);
+    size_t prepare_mesh(asset::Mesh* mesh, const std::vector<std::byte>& data, StagingBuffer& commands);
     void end_construct_assets(IRenderer*);
     void record_commands(IRenderer*, uint32_t frame_number);
 };

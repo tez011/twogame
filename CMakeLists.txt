@@ -47,9 +47,6 @@ if(APPLE)
     set(CMAKE_BUILD_RPATH "${CMAKE_BINARY_DIR}/$<CONFIG>")
     set(CMAKE_INSTALL_RPATH "@executable_path")
 endif(APPLE)
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_compile_definitions($<$<CONFIG:DEBUG>:LINK_RENDERDOC>)
-endif()
 
 # ---- CPM ----
 set(CPM_DOWNLOAD_VERSION 0.42.0)
