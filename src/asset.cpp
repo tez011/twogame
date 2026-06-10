@@ -1,5 +1,7 @@
+#include "asset.h"
 #include <ktx.h>
 #include <physfs.h>
+#include "asset.fbs.hpp"
 #include "scene.h"
 
 namespace twogame {
@@ -7,6 +9,40 @@ namespace twogame {
 void IAsset::post_prepare(uint64_t ready)
 {
     m_prepared = ready;
+}
+
+AssetManifest::AssetManifest(const std::string& path)
+{
+    PHYSFS_File* fh = PHYSFS_openRead(path.c_str());
+    size_t manifest_size = PHYSFS_fileLength(fh);
+    std::shared_ptr<std::byte[]> manifest_data = std::make_shared<std::byte[]>(manifest_size);
+    PHYSFS_readBytes(fh, manifest_data.get(), manifest_size);
+    PHYSFS_close(fh);
+    m_manifest = std::shared_ptr<const fbs::Assets>(manifest_data, fbs::GetAssets(manifest_data.get()));
+
+    std::string path_buf(path.size() + 10, 0);
+    size_t ext_offset = path.size() - 6;
+    std::copy(path.begin(), path.begin() + ext_offset, path_buf.begin());
+    m_slurp_buffer = [path_buf, ext_offset](size_t i) mutable {
+        std::vector<std::byte> out;
+        if (i > 0) {
+            snprintf(path_buf.data() + ext_offset, 16, ".%u.bin", (unsigned int)i);
+            PHYSFS_File* sfh = PHYSFS_openRead(path_buf.c_str());
+            out.resize(PHYSFS_fileLength(sfh));
+            PHYSFS_readBytes(sfh, out.data(), out.size());
+            PHYSFS_close(sfh);
+        }
+        return out;
+    };
+}
+
+AssetContainer& AssetContainer::operator+=(const AssetManifest& new_assets)
+{
+    for (size_t i = 0; i < new_assets.manifest()->images()->size(); i++)
+        m_images.emplace_back(std::make_shared<asset::Image>(new_assets, i, *this, m_images.size()));
+    for (size_t i = 0; i < new_assets.manifest()->meshes()->size(); i++)
+        m_meshes.emplace_back(std::make_shared<asset::Mesh>(new_assets, i, *this, m_meshes.size()));
+    return *this;
 }
 
 }
@@ -51,70 +87,6 @@ namespace image {
         }
     };
 
-    ktxStream ktx_physfs_istream(PHYSFS_File* fh)
-    {
-        ktxStream stream {};
-        stream.type = eStreamTypeCustom;
-        stream.read = [](ktxStream* self, void* dst, const ktx_size_t count) {
-            PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-            PHYSFS_sint64 rs = PHYSFS_readBytes(fh, dst, count);
-            if (rs < 0)
-                return KTX_FILE_READ_ERROR;
-            else if (static_cast<ktx_size_t>(rs) < count && PHYSFS_eof(fh))
-                return KTX_FILE_UNEXPECTED_EOF;
-            else
-                return KTX_SUCCESS;
-        };
-        stream.skip = [](ktxStream* self, const ktx_size_t count) {
-            PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-            PHYSFS_sint64 tell = PHYSFS_tell(fh);
-            if (tell == -1)
-                return KTX_FILE_SEEK_ERROR;
-            if (PHYSFS_seek(fh, tell + count))
-                return KTX_SUCCESS;
-            if (PHYSFS_getLastErrorCode() == PHYSFS_ERR_PAST_EOF)
-                return KTX_FILE_UNEXPECTED_EOF;
-            else
-                return KTX_FILE_SEEK_ERROR;
-        };
-        stream.write = nullptr;
-        stream.getpos = [](ktxStream* self, ktx_off_t* const offset) {
-            if (offset) {
-                PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-                PHYSFS_sint64 tell = PHYSFS_tell(fh);
-                if (tell == -1)
-                    return KTX_FILE_SEEK_ERROR;
-                *offset = tell;
-            }
-            return KTX_SUCCESS;
-        };
-        stream.setpos = [](ktxStream* self, const ktx_off_t offset) {
-            PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-            if (PHYSFS_seek(fh, offset))
-                return KTX_SUCCESS;
-            if (PHYSFS_getLastErrorCode() == PHYSFS_ERR_PAST_EOF)
-                return KTX_FILE_UNEXPECTED_EOF;
-            else
-                return KTX_FILE_SEEK_ERROR;
-        };
-        stream.getsize = [](ktxStream* self, ktx_size_t* const size) {
-            PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-            PHYSFS_sint64 sz = PHYSFS_fileLength(fh);
-            if (sz == -1)
-                return KTX_FILE_DATA_ERROR;
-            if (size)
-                *size = sz;
-            return KTX_SUCCESS;
-        };
-        stream.destruct = [](ktxStream* self) {
-            PHYSFS_File* fh = reinterpret_cast<PHYSFS_File*>(self->data.custom_ptr.address);
-            PHYSFS_close(fh);
-        };
-        stream.data.custom_ptr.address = fh;
-        stream.closeOnDestruct = KTX_TRUE;
-        return stream;
-    }
-
     static ktx_error_code_e ktx_mip_iterate(int miplevel, int face, int width, int height, int depth, ktx_uint64_t face_lod_size, void* pixels, void* userdata)
     {
         ktx_mip_iterate_userdata* mip_data = reinterpret_cast<ktx_mip_iterate_userdata*>(userdata);
@@ -124,14 +96,13 @@ namespace image {
     }
 
     struct prep {
-        PHYSFS_File* fh;
+        std::vector<std::byte> fh_data;
         ktxTexture2* ktx2 = nullptr;
 
-        prep(std::string_view path)
+        prep(const AssetManifest& asset_source, size_t image_index)
         {
-            fh = PHYSFS_openRead(path.data());
-            ktxStream kstream = ktx_physfs_istream(fh);
-            ktx_error_code_e k_res = ktxTexture2_CreateFromStream(&kstream, 0, &ktx2);
+            fh_data = asset_source.buffer(asset_source.manifest()->images()->Get(image_index));
+            ktx_error_code_e k_res = ktxTexture2_CreateFromMemory(reinterpret_cast<ktx_uint8_t*>(fh_data.data()), fh_data.size(), 0, &ktx2);
             SDL_assert_release(k_res == KTX_SUCCESS);
 
             ktxTexture* ktx = reinterpret_cast<ktxTexture*>(ktx2);
@@ -167,18 +138,17 @@ namespace image {
         ~prep()
         {
             ktxTexture2_Destroy(ktx2);
-            PHYSFS_close(fh);
         }
     };
 
 }
 
-Image::Image()
+Image::Image(const AssetManifest& source, size_t source_index, const AssetContainer& dst, size_t dst_index)
     : m_image(VK_NULL_HANDLE)
     , m_mem(VK_NULL_HANDLE)
     , m_image_view(VK_NULL_HANDLE)
 {
-    m_prepared = std::make_shared<image::prep>("/data/duck.i0.ktx2");
+    m_prepared = std::make_shared<image::prep>(source, source_index);
 }
 
 Image::~Image()
@@ -270,47 +240,137 @@ size_t Image::prepare(IScene* scene, StagingBuffer& commands)
     }
 }
 
-Mesh::Mesh()
-    : m_pipeline_key(0)
+namespace mesh {
+
+    enum SubBufferID {
+        SubBuffer_Index,
+        SubBuffer_Position,
+        SubBuffer_Normal,
+        SubBuffer_Joints,
+        SubBuffer_DPosition,
+        SubBuffer_DNormal,
+        SubBuffer_MAX_VALUE,
+    };
+
+    struct prep {
+        AssetManifest::BufferResolver buffer_resolver;
+        std::array<size_t, SubBuffer_MAX_VALUE> buffers, buffer_sizes;
+        size_t mesh_index;
+
+        prep(const AssetManifest& source, size_t source_index, size_t dst_index)
+            : buffer_resolver(source.buffer_resolver())
+            , mesh_index(dst_index)
+        {
+            const fbs::Assets* manifest = source.manifest().get();
+            const fbs::Mesh* info = manifest->meshes()->Get(source_index);
+            buffers[SubBuffer_Index] = info->indexes();
+            buffers[SubBuffer_Position] = info->positions();
+            buffers[SubBuffer_Normal] = info->normals();
+            buffers[SubBuffer_Joints] = info->joints();
+            buffers[SubBuffer_DPosition] = info->position_displacements();
+            buffers[SubBuffer_DNormal] = info->normal_displacements();
+            std::transform(buffers.begin(), buffers.end(), buffer_sizes.begin(), [manifest](size_t buffer_index) {
+                return buffer_index ? manifest->buffers()->Get(buffer_index - 1) : 0;
+            });
+        }
+        ~prep() { }
+    };
+
+}
+
+Mesh::Mesh(const AssetManifest& source, size_t source_index, const AssetContainer& dst, size_t dst_index)
 {
-    m_vertex_count = 2399;
-    m_index_count = 12636;
-    m_uv_channels = 1;
-    m_color_channels = 1;
-    m_32bit_indexes = 0;
+    std::shared_ptr<mesh::prep> prepare_data = std::make_shared<mesh::prep>(source, source_index, dst_index);
+    const fbs::Mesh* info = source.manifest()->meshes()->Get(source_index);
+    m_vertex_count = info->vertex_count();
+    m_index_count = info->index_count();
+
+    m_uv_channels = 2 * (prepare_data->buffer_sizes[mesh::SubBuffer_Position] / (m_vertex_count * sizeof(vec4))) - 2;
+    m_color_channels = prepare_data->buffer_sizes[mesh::SubBuffer_Normal] / (m_vertex_count * sizeof(vec4)) - 2;
+    switch (prepare_data->buffer_sizes[mesh::SubBuffer_Index] / m_index_count) {
+    case 2:
+        m_32bit_indexes = false;
+        break;
+    case 4:
+        m_32bit_indexes = true;
+        break;
+    default:
+        std::abort();
+    }
+
+    m_prepared = prepare_data;
 }
 
 Mesh::~Mesh()
 {
 }
 
-VkDeviceAddress Mesh::vertices_offset() const
-{
-    size_t indexes_size = m_index_count * (m_32bit_indexes ? sizeof(uint32_t) : sizeof(uint16_t));
-    return (indexes_size + 15) & ~15;
-}
-
-VkDeviceAddress Mesh::normals_offset() const
-{
-    size_t indexes_size = vertices_offset();
-    size_t vertices_size = m_vertex_count * (1 + (m_uv_channels + 1) / 2) * 4 * sizeof(float);
-    return indexes_size + vertices_size;
-}
-
 size_t Mesh::prepare_needs() const
 {
-    size_t normals_size = m_vertex_count * (2 + m_color_channels) * 4 * sizeof(float);
-    return normals_offset() + normals_size;
+    auto p_prepare_data = std::get_if<std::shared_ptr<void>>(&m_prepared);
+    if (p_prepare_data) {
+        mesh::prep* prepare_data = static_cast<mesh::prep*>(p_prepare_data->get());
+        size_t needs = 0;
+        for (size_t i = 0; i < mesh::SubBuffer_MAX_VALUE; i++)
+            needs += (prepare_data->buffer_sizes[i] + 15) & (~15);
+        return needs;
+    } else {
+        return 0;
+    }
+}
+
+size_t Mesh::write_buffer_addresses(std::span<IRenderer::MeshEntry> mesh_entries, VkDeviceAddress base_vertices_addr) const
+{
+    size_t delta = 0;
+    mesh::prep* prepare_data = static_cast<mesh::prep*>(std::get<std::shared_ptr<void>>(m_prepared).get());
+    mesh_entries[prepare_data->mesh_index].index_buffer_address = base_vertices_addr + delta;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Index] + 15) & ~15;
+    mesh_entries[prepare_data->mesh_index].vertex_buffer_address = base_vertices_addr + delta;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Position] + 15) & ~15;
+    mesh_entries[prepare_data->mesh_index].normal_buffer_address = base_vertices_addr + delta;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Normal] + 15) & ~15;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Joints] + 15) & ~15;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DPosition] + 15) & ~15;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DNormal] + 15) & ~15;
+    return delta;
 }
 
 size_t Mesh::prepare(IScene* scene, StagingBuffer& commands)
 {
-    std::vector<std::byte> mesh_data(prepare_needs());
-    PHYSFS_File* fh = PHYSFS_openRead("/data/duck.bin");
-    PHYSFS_readBytes(fh, mesh_data.data(), mesh_data.size());
-    PHYSFS_close(fh);
+    mesh::prep* prepare_data = static_cast<mesh::prep*>(std::get<std::shared_ptr<void>>(m_prepared).get());
+    VkBufferDeviceAddressInfo bda_info {};
+    bda_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+    bda_info.buffer = scene->mesh_data_buffer();
 
-    return scene->prepare_mesh(this, mesh_data, commands);
+    std::span<std::byte> mesh_data = scene->mesh_data_pointer();
+    std::array<std::vector<std::byte>, mesh::SubBuffer_MAX_VALUE> sub_buffers;
+    VkDeviceAddress base_vertices_addr = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info), base_offset = scene->mesh_references()[prepare_data->mesh_index].index_buffer_address - base_vertices_addr;
+    for (size_t i = 0; i < mesh::SubBuffer_MAX_VALUE; i++)
+        sub_buffers[i] = prepare_data->buffer_resolver(prepare_data->buffers[i]);
+
+    VkDeviceAddress delta = 0;
+    if (mesh_data.empty()) {
+        std::vector<VkBufferCopy2> copies;
+        for (size_t i = 0; i < mesh::SubBuffer_MAX_VALUE; i++) {
+            if (sub_buffers[i].empty())
+                continue;
+
+            copies.emplace_back().sType = VK_STRUCTURE_TYPE_BUFFER_COPY_2;
+            copies.back().srcOffset = commands.tail_offset() + delta;
+            copies.back().dstOffset = base_offset + delta;
+            copies.back().size = sub_buffers[i].size();
+            memcpy(commands.tail() + delta, sub_buffers[i].data(), sub_buffers[i].size());
+            delta += (sub_buffers[i].size() + 15) & ~15;
+        }
+        commands.copy_buffer(scene->mesh_data_buffer(), copies, VK_PIPELINE_STAGE_2_VERTEX_INPUT_BIT, VK_ACCESS_2_INDEX_READ_BIT | VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
+        return delta;
+    } else {
+        for (size_t i = 0; i < mesh::SubBuffer_MAX_VALUE; i++) {
+            memcpy(mesh_data.subspan(base_offset + delta).data(), sub_buffers[i].data(), sub_buffers[i].size());
+            delta += (sub_buffers[i].size() + 15) & ~15;
+        }
+        return 0;
+    }
 }
 
 }

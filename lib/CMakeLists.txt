@@ -10,7 +10,8 @@ CPMAddPackage(NAME cglm
 CPMAddPackage(NAME fastgltf
               VERSION 0.9.0
               GIT_REPOSITORY https://github.com/spnda/fastgltf.git
-              EXCLUDE_FROM_ALL TRUE)
+              EXCLUDE_FROM_ALL TRUE
+              OPTIONS "BUILD_SHARED_LIBS OFF")
 CPMAddPackage(NAME flatbuffers
               VERSION 25.12.19
               GIT_REPOSITORY https://github.com/google/flatbuffers.git

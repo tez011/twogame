@@ -71,6 +71,7 @@ find_package(Vulkan REQUIRED COMPONENTS glslc volk)
 include_directories(SYSTEM "${Vulkan_INCLUDE_DIR}/volk")
 
 add_subdirectory(lib)
+add_subdirectory(schema)
 add_subdirectory(shaders)
 add_subdirectory(src)
 add_subdirectory(tools)

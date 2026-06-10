@@ -7,78 +7,14 @@
 #include <thread>
 #include <unordered_map>
 #include <variant>
+#include <SDL3/SDL_events.h>
+#include <volk.h>
+#include "asset.h"
 #include "display.h"
 #include "mpmc.h"
+#include "vk_mem_alloc.h"
 
 namespace twogame {
-
-class IScene;
-class StagingBuffer;
-
-class IAsset {
-public:
-    enum class Type {
-        Image,
-        Mesh,
-    };
-
-protected:
-    std::variant<std::shared_ptr<void>, uint64_t> m_prepared;
-
-    IAsset() { }
-
-public:
-    virtual ~IAsset() { }
-    virtual Type type() const = 0;
-
-    virtual size_t prepare_needs() const = 0;
-    virtual size_t prepare(IScene* scene, StagingBuffer& commands) = 0;
-    void post_prepare(uint64_t ready);
-};
-
-namespace asset {
-
-    class Image final : public IAsset {
-        VkImage m_image;
-        VmaAllocation m_mem;
-        VkImageView m_image_view;
-
-    public:
-        Image();
-        ~Image();
-        inline virtual Type type() const override { return IAsset::Type::Image; }
-        inline VkImage handle() const { return m_image; }
-        inline VkImageView view() const { return m_image_view; }
-
-        virtual size_t prepare_needs() const override;
-        virtual size_t prepare(IScene* scene, StagingBuffer& commands) override;
-    };
-
-    class Mesh final : public IAsset {
-        size_t m_vertex_count, m_index_count;
-        union {
-            uint32_t m_pipeline_key;
-            struct {
-                unsigned m_uv_channels : 4;
-                unsigned m_color_channels : 2;
-                unsigned m_32bit_indexes : 1;
-            };
-        };
-
-    public:
-        Mesh();
-        ~Mesh();
-        inline virtual Type type() const override { return IAsset::Type::Mesh; }
-        inline size_t index_count() const { return m_index_count; }
-        inline uint32_t pipeline_key() const { return m_pipeline_key; }
-        VkDeviceAddress vertices_offset() const;
-        VkDeviceAddress normals_offset() const;
-
-        virtual size_t prepare_needs() const override;
-        virtual size_t prepare(IScene* scene, StagingBuffer& commands) override;
-    };
-
-}
 
 class StagingBuffer {
     friend class SceneHost;
@@ -107,7 +43,7 @@ public:
     void advance(size_t);
 
     void copy_image(VkImage dst, VkImageCreateInfo& info, std::span<const VkBufferImageCopy2> copies, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout final_layout);
-    void copy_buffer(VkBuffer dst, VkDeviceSize dst_size, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
+    void copy_buffer(VkBuffer dst, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
     void finalize();
 };
 
@@ -116,8 +52,7 @@ class IScene {
 
 protected:
     constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
-    std::vector<asset::Mesh> m_meshes;
-    std::vector<asset::Image> m_images;
+    AssetContainer m_assets;
 
     VkDescriptorPool m_descriptor_pool;
     std::array<std::array<VkDescriptorSet, 1>, SIMULTANEOUS_FRAMES> m_descriptor_set;
@@ -141,6 +76,9 @@ private:
 
 public:
     virtual ~IScene();
+    inline std::span<const IRenderer::MeshEntry> mesh_references() const { return m_mesh_refs; }
+    inline VkBuffer mesh_data_buffer() const { return m_vertices_buffer.handle; }
+    inline std::span<std::byte> mesh_data_pointer() const { return m_vertices_ptr; }
     inline VkCommandBuffer draw_commands(uint32_t frame_number, int subpass) const { return m_draw_cmd[frame_number % SIMULTANEOUS_FRAMES][subpass]; }
 
     virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
@@ -148,7 +86,6 @@ public:
     virtual void render(IRenderer*, uint32_t frame_number) = 0;
 
     std::vector<std::vector<IAsset*>> begin_construct_assets(IRenderer*, StagingBuffer& commands);
-    size_t prepare_mesh(asset::Mesh* mesh, const std::vector<std::byte>& data, StagingBuffer& commands);
     void end_construct_assets(IRenderer*);
     void record_commands(IRenderer*, uint32_t frame_number);
 };

@@ -1,0 +1,121 @@
+namespace twogame.fbs;
+
+struct Vec3 {
+    v: [float:3];
+}
+struct Vec4 {
+    v: [float:4];
+}
+struct Mat4 {
+    col: [Vec4:4];
+}
+struct TRS {
+    rotation: Vec4;
+    translation: Vec3;
+    scale: Vec3;
+}
+union Transform { Mat4, TRS }
+
+table SceneNode {
+    camera: uint;
+    children: [uint]; // SceneNode*
+    mesh: [uint]; // Mesh*
+    skin: [uint]; // SceneNode*
+    skeleton: uint = null; // Skeleton*
+    displace_weights: [float];
+    transform: Transform (required);
+}
+
+table BoneNode {
+    children: [uint]; // BoneNode*
+    transform: Transform (required);
+}
+
+table Texture {
+    image: uint;
+    sampler: uint;
+}
+
+table Material {
+    base_color_factor: Vec4;
+    base_color_texture: Texture;
+    base_color_uv: uint;
+    metallic_factor: float;
+    roughness_factor: float;
+    metallic_roughness_texture: Texture;
+    metallic_roughness_uv: uint;
+    normal_texture: Texture;
+    normal_uv: uint;
+    occlusion_texture: Texture;
+    occlusion_uv: uint;
+    emissive_factor: Vec3;
+    emissive_texture: Texture;
+    emissive_uv: uint;
+    double_sided: bool;
+    unlit: bool;
+}
+
+table Skeleton {
+    nodes: [BoneNode];
+    joints: [uint]; // BoneNode*
+    skin_matrices: uint32; // buffer size = 16 * joints.size
+}
+
+table Mesh {
+    index_count: ulong;
+    vertex_count: uint;
+    primitive_topology: uint = 4;
+    material: uint = null; // Material*
+
+    indexes: uint32; // buffer size (in bytes) = index_count * index byte width
+    positions: uint32; // buffer size (in Vec4) = vertex_count * (uv_channels + 1)//2
+    normals: uint32; // buffer size (in Vec4) = vertex_count * (2 + color_channels)
+    joints: uint32; // buffer size = (uvec4 + vec4) * joints_per_vertex * vertex_count; joints_per_vertex is multiple of 4; [0.joints][0.weights][1.joints][1.weights]
+    displace_weights: [float];
+    position_displacements: uint32; // buffer size (in Vec4) = positions.size * displace_weights.size
+    normal_displacements: uint32; // buffer size (in Vec4) = normals.size * displace_weights.size
+}
+
+enum AnimationTarget : byte {
+    None = 0,
+    Translation = 1,
+    Rotation = 2,
+    Scale = 3,
+    Weights = 4,
+}
+enum InterpolationMethod : byte {
+    Linear = 0,
+    Step = 1,
+    CubicSpline = 2,
+}
+table AnimationSampler {
+    input: uint32; // buffer size (in floats) = number of keyframes
+    outputs: [AnimationSamplerChannel];
+}
+table AnimationSamplerChannel {
+    interpolation: InterpolationMethod = Linear;
+    values: uint32; // buffer size (in floats) = number of keyframes (* 3 if CubicSpline)
+}
+table AnimationChannel {
+    target: AnimationTarget;
+    object: uint; // SceneNode*
+    sampler: uint; // AnimationSampler*
+    sampler_channel: uint; // AnimationSamplerChannel*
+}
+table Animation {
+    samplers: [AnimationSampler];
+    channels: [AnimationChannel];
+}
+
+table Assets {
+    buffers: [ulong];
+    images: [uint32];
+    materials: [Material];
+    meshes: [Mesh];
+    nodes: [SceneNode];
+    roots: [uint]; // SceneNode*
+    skeletons: [Skeleton];
+    animations: [Animation];
+}
+
+root_type Assets;

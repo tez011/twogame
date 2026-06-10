@@ -68,6 +68,12 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
     return VK_FALSE;
 }
 
+ImageGenerator::SerializedImage::SerializedImage(const void* data, size_t size)
+    : m_data(reinterpret_cast<const std::byte*>(data), [](const void* p) { std::free(const_cast<void*>(p)); })
+    , m_size(size)
+{
+}
+
 ImageGenerator::ImageGenerator()
 {
     create_instance();
@@ -313,53 +319,55 @@ static int stb_io_eof(void* user)
     return self->eof();
 }
 
-void ImageGenerator::generate(std::ostream& out, std::span<std::byte> image_data, std::string_view mimetype)
+ImageGenerator::SerializedImage ImageGenerator::generate(std::span<const std::byte> image_data)
 {
     int width, height, n;
     const stbi_uc* image_ptr = reinterpret_cast<const stbi_uc*>(image_data.data());
     if (stbi_is_hdr_from_memory(image_ptr, image_data.size())) {
         float* rd = stbi_loadf_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
         if (rd)
-            return generate(out, rd, width, height, VK_FORMAT_R32G32B32A32_SFLOAT);
+            return generate(rd, width, height, VK_FORMAT_R32G32B32A32_SFLOAT);
         else
             std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
     } else if (stbi_is_16_bit_from_memory(image_ptr, image_data.size())) {
         stbi_us* rd = stbi_load_16_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
         if (rd)
-            return generate(out, rd, width, height, VK_FORMAT_R16G16B16A16_UINT);
+            return generate(rd, width, height, VK_FORMAT_R16G16B16A16_UINT);
         else
             std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
     } else {
         stbi_uc* rd = stbi_load_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
         if (rd)
-            return generate(out, rd, width, height, VK_FORMAT_R8G8B8A8_SRGB);
+            return generate(rd, width, height, VK_FORMAT_R8G8B8A8_SRGB);
         else
             std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
     }
+    return SerializedImage();
 }
 
-void ImageGenerator::generate(std::ostream& out, const std::filesystem::path& in)
+ImageGenerator::SerializedImage ImageGenerator::generate(const std::filesystem::path& in)
 {
     int x, y, n;
     if (stbi_is_hdr(in.c_str())) {
         float* rd = stbi_loadf(in.c_str(), &x, &y, &n, 4);
         if (rd)
-            return generate(out, rd, x, y, VK_FORMAT_R32G32B32A32_SFLOAT);
+            return generate(rd, x, y, VK_FORMAT_R32G32B32A32_SFLOAT);
         else
             std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
     } else if (stbi_is_16_bit(in.c_str())) {
         stbi_us* rd = stbi_load_16(in.c_str(), &x, &y, &n, 4);
         if (rd)
-            return generate(out, rd, x, y, VK_FORMAT_R16G16B16A16_UINT);
+            return generate(rd, x, y, VK_FORMAT_R16G16B16A16_UINT);
         else
             std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
     } else {
         stbi_uc* rd = stbi_load(in.c_str(), &x, &y, &n, 4);
         if (rd)
-            return generate(out, rd, x, y, VK_FORMAT_R8G8B8A8_SRGB);
+            return generate(rd, x, y, VK_FORMAT_R8G8B8A8_SRGB);
         else
             std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
     }
+    return SerializedImage();
 }
 
 static int format_size(VkFormat fmt)
@@ -377,7 +385,7 @@ static int format_size(VkFormat fmt)
     }
 }
 
-void ImageGenerator::generate(std::ostream& out, void* raw_image_data, int width, int height, VkFormat input_format)
+ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, int width, int height, VkFormat input_format)
 {
     size_t mip_count = 1 + floor(log2(std::max(width, height)));
     VkDescriptorPool descriptor_pool;
@@ -672,8 +680,7 @@ void ImageGenerator::generate(std::ostream& out, void* raw_image_data, int width
     ktx_uint8_t* out_buffer;
     ktxTexture_WriteToMemory(ktxTexture(out_handle), &out_buffer, &out_size);
 
-    out.write(reinterpret_cast<char*>(out_buffer), out_size);
-    free(out_buffer);
+    SerializedImage ser(out_buffer, out_size);
     ktxTexture_Destroy(ktxTexture(out_handle));
 
     for (auto it = image_views.begin(); it != image_views.end(); ++it)
@@ -687,4 +694,5 @@ void ImageGenerator::generate(std::ostream& out, void* raw_image_data, int width
     vkFreeMemory(m_device, storage_image_mem, nullptr);
     vkFreeMemory(m_device, output_image_mem, nullptr);
     vkDestroyDescriptorPool(m_device, descriptor_pool, nullptr);
+    return ser;
 }

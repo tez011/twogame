@@ -27,9 +27,13 @@ include_directories(AFTER "${CMAKE_CURRENT_BINARY_DIR}")
 add_executable(gltf2tg
     "${CMAKE_CURRENT_BINARY_DIR}/embedded_shaders.cpp"
     "gltf2tg/image.cpp"
-    "gltf2tg/main.cpp")
+    "gltf2tg/gltf2tg.cpp")
 target_link_libraries(gltf2tg
+    cglm
+    fastgltf
+    flatbuffers
     ktx
+    schema
     stb_image
     Vulkan::Vulkan
     Vulkan::volk

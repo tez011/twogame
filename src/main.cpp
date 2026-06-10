@@ -5,6 +5,7 @@
 #include <ktx.h>
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
+#include "asset.h"
 #include "display.h"
 #include "physfs.h"
 #include "scene.h"
@@ -25,9 +26,7 @@ public:
 
 DuckScene::DuckScene()
 {
-    // load assets
-    m_meshes.emplace_back();
-    m_images.emplace_back();
+    m_assets += twogame::AssetManifest("/data/duck.asset");
 }
 
 void DuckScene::handle_event(const SDL_Event& evt, twogame::SceneHost* stage)
@@ -122,12 +121,16 @@ SDL_AppResult SDL_AppInit(void** _appstate, int argc, char** argv)
     SDL_free(pref_path);
 #endif
 
+#ifndef DEBUG_BUILD
     try {
+#endif
         twogame::DisplayHost::init();
         twogame::SceneHost::init(new twogame::SimpleForwardRenderer, new DuckScene);
+#ifndef DEBUG_BUILD
     } catch (...) {
         return SDL_APP_FAILURE;
     }
+#endif
 
     return SDL_APP_CONTINUE;
 }
