@@ -7,6 +7,7 @@
 #include <iostream>
 #include <map>
 #include <queue>
+#include <stack>
 #include <vector>
 #include <cglm/struct.h>
 #include <fastgltf/core.hpp>
@@ -480,47 +481,7 @@ std::vector<size_t> load_skins(fbs::AssetsT& out_assets, BufferTrain& out_data, 
     return out_dedup;
 }
 
-void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, std::vector<std::vector<uint32_t>> mesh_groups, std::vector<size_t> skin_to_skeleton)
-{
-    out_assets.nodes.reserve(asset.nodes.size());
-    for (size_t i = 0; i < asset.nodes.size(); i++) {
-        out_assets.nodes.emplace_back(std::make_unique<fbs::SceneNodeT>());
-    }
-    for (size_t i = 0; i < asset.nodes.size(); i++) {
-        if (asset.nodes[i].cameraIndex)
-            out_assets.nodes[i]->camera = asset.nodes[i].cameraIndex.value() + 1;
-        std::copy(asset.nodes[i].children.begin(), asset.nodes[i].children.end(), std::back_inserter(out_assets.nodes[i]->children));
-        if (asset.nodes[i].meshIndex)
-            out_assets.nodes[i]->mesh = mesh_groups[asset.nodes[i].meshIndex.value()];
-        if (asset.nodes[i].skinIndex) {
-            out_assets.nodes[i]->skeleton = skin_to_skeleton[asset.nodes[i].skinIndex.value()];
-            auto& jni = asset.skins[asset.nodes[i].skinIndex.value()].joints;
-            std::copy(jni.begin(), jni.end(), std::back_inserter(out_assets.nodes[i]->skin));
-        }
-        std::copy(asset.nodes[i].weights.begin(), asset.nodes[i].weights.end(), std::back_inserter(out_assets.nodes[i]->displace_weights));
-        std::visit(fastgltf::visitor {
-                       [&](const fastgltf::TRS& trs) {
-                           out_assets.nodes[i]->transform.Set(fbs::TRS(
-                               fbs::Vec4(std::span<const float, 4> { trs.rotation.data(), 4 }),
-                               fbs::Vec3(std::span<const float, 3> { trs.translation.data(), 3 }),
-                               fbs::Vec3(std::span<const float, 3> { trs.scale.data(), 3 })));
-                       },
-                       [&](const fastgltf::math::fmat4x4& mat) {
-                           auto columns = std::to_array({ fbs::Vec4(std::span<const float, 4> { mat.col(0).data(), 4 }),
-                               fbs::Vec4(std::span<const float, 4> { mat.col(1).data(), 4 }),
-                               fbs::Vec4(std::span<const float, 4> { mat.col(2).data(), 4 }),
-                               fbs::Vec4(std::span<const float, 4> { mat.col(3).data(), 4 }) });
-                           out_assets.nodes[i]->transform.Set(fbs::Mat4(columns));
-                       },
-                   },
-            asset.nodes[i].transform);
-    }
-
-    auto& root_nodes = asset.scenes[asset.defaultScene.value_or(0)].nodeIndices;
-    std::copy(root_nodes.begin(), root_nodes.end(), std::back_inserter(out_assets.roots));
-}
-
-void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset)
+void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset, std::span<size_t> skin_to_skeleton)
 {
     out_assets.animations.reserve(asset.animations.size());
     for (auto anim = asset.animations.begin(); anim != asset.animations.end(); ++anim) {
@@ -574,8 +535,98 @@ void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fast
                 out_channel->target = static_cast<fbs::AnimationTarget>(it->path);
                 out_channel->sampler = sampler_indexes[sampler_lookup[it->samplerIndex].first];
                 out_channel->sampler_channel = sampler_lookup[it->samplerIndex].second;
+
+                // If this node is part of a skeleton, it might get pruned.
+                for (size_t i = 0; i < asset.skins.size(); i++) {
+                    auto it = std::find(asset.skins[i].joints.begin(), asset.skins[i].joints.end(), out_channel->object);
+                    if (it != asset.skins[i].joints.end()) {
+                        out_channel->skeleton = skin_to_skeleton[i];
+                        out_channel->object = std::distance(asset.skins[i].joints.begin(), it);
+                    }
+                }
             }
         }
+    }
+}
+
+void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, const std::vector<std::vector<uint32_t>>& mesh_groups, std::span<size_t> skin_to_skeleton)
+{
+    std::set<uint32_t> prune_set;
+    std::stack<std::pair<uint32_t, bool>> prune_stack;
+    prune_stack.emplace(0, false);
+    while (prune_stack.empty() == false) {
+        auto [node, visited] = prune_stack.top();
+        prune_stack.pop();
+
+        if (visited) {
+            if (asset.nodes[node].cameraIndex.has_value() == false && asset.nodes[node].meshIndex.has_value() == false && asset.nodes[node].lightIndex.has_value() == false) {
+                std::set<uint32_t> node_children(asset.nodes[node].children.begin(), asset.nodes[node].children.end());
+                if (std::includes(prune_set.begin(), prune_set.end(), node_children.begin(), node_children.end())) {
+                    prune_set.insert(node);
+                }
+            }
+        } else {
+            prune_stack.emplace(node, true);
+            for (auto it = asset.nodes[node].children.begin(); it != asset.nodes[node].children.end(); ++it) {
+                if (prune_set.contains(*it) == false)
+                    prune_stack.emplace(*it, false);
+            }
+        }
+    }
+
+    std::vector<uint32_t> ossified_prune_set(prune_set.begin(), prune_set.end());
+    auto translate_node_index = [prune_set = std::move(ossified_prune_set)](uint32_t in_index) -> uint32_t {
+        auto it = std::lower_bound(prune_set.begin(), prune_set.end(), in_index);
+        if (it != prune_set.end() && *it == in_index)
+            return std::numeric_limits<uint32_t>::max();
+        else
+            return in_index - std::distance(prune_set.begin(), it);
+    };
+
+    std::generate_n(std::back_inserter(out_assets.nodes), asset.nodes.size() - prune_set.size(), []() { return std::make_unique<fbs::SceneNodeT>(); });
+    for (size_t i = 0; i < asset.nodes.size(); i++) {
+        if (prune_set.contains(i))
+            continue;
+
+        std::unique_ptr<fbs::SceneNodeT>& out_node = out_assets.nodes[translate_node_index(i)];
+        if (asset.nodes[i].cameraIndex)
+            out_node->camera = asset.nodes[i].cameraIndex.value() + 1;
+        for (auto it = asset.nodes[i].children.begin(); it != asset.nodes[i].children.end(); ++it) {
+            uint32_t out_index = translate_node_index(*it);
+            if (out_index != std::numeric_limits<uint32_t>::max())
+                out_node->children.push_back(out_index);
+        }
+        if (asset.nodes[i].meshIndex)
+            out_node->mesh = mesh_groups[asset.nodes[i].meshIndex.value()];
+        if (asset.nodes[i].skinIndex) {
+            out_node->skeleton = skin_to_skeleton[asset.nodes[i].skinIndex.value()];
+            auto& jni = asset.skins[asset.nodes[i].skinIndex.value()].joints;
+            std::transform(jni.begin(), jni.end(), std::back_inserter(out_node->skin), translate_node_index);
+        }
+        std::copy(asset.nodes[i].weights.begin(), asset.nodes[i].weights.end(), std::back_inserter(out_node->displace_weights));
+        std::visit(fastgltf::visitor {
+                       [&](const fastgltf::TRS& trs) {
+                           out_node->transform.Set(fbs::TRS(
+                               fbs::Vec4(std::span<const float, 4> { trs.rotation.data(), 4 }),
+                               fbs::Vec3(std::span<const float, 3> { trs.translation.data(), 3 }),
+                               fbs::Vec3(std::span<const float, 3> { trs.scale.data(), 3 })));
+                       },
+                       [&](const fastgltf::math::fmat4x4& mat) {
+                           auto columns = std::to_array({ fbs::Vec4(std::span<const float, 4> { mat.col(0).data(), 4 }),
+                               fbs::Vec4(std::span<const float, 4> { mat.col(1).data(), 4 }),
+                               fbs::Vec4(std::span<const float, 4> { mat.col(2).data(), 4 }),
+                               fbs::Vec4(std::span<const float, 4> { mat.col(3).data(), 4 }) });
+                           out_node->transform.Set(fbs::Mat4(columns));
+                       },
+                   },
+            asset.nodes[i].transform);
+    }
+
+    auto& root_nodes = asset.scenes[asset.defaultScene.value_or(0)].nodeIndices;
+    for (auto it = root_nodes.begin(); it != root_nodes.end(); ++it) {
+        uint32_t out_index = translate_node_index(*it);
+        if (out_index != std::numeric_limits<uint32_t>::max())
+            out_assets.roots.push_back(out_index);
     }
 }
 
@@ -684,9 +735,9 @@ int main(int argc, char** argv)
     load_materials(out_assets, asset->materials, asset->textures);
     std::vector<std::vector<uint32_t>> mesh_groups = load_meshes(out_assets, out_data, asset.get(), max_uv_channels, max_color_channels, max_joint_channels);
     std::vector<size_t> skin_to_skeleton = load_skins(out_assets, out_data, asset.get());
-    load_scene(out_assets, asset.get(), mesh_groups, skin_to_skeleton);
-    load_animations(out_assets, out_data, asset.get());
+    load_animations(out_assets, out_data, asset.get(), skin_to_skeleton);
     load_images(out_assets, out_data, asset.get(), makeimage, outparam);
+    load_scene(out_assets, asset.get(), mesh_groups, skin_to_skeleton);
 
     flatbuffers::FlatBufferBuilder fbb;
     for (size_t i = 0; i < out_data.count(); i++)

@@ -98,7 +98,8 @@ table AnimationSamplerChannel {
 }
 table AnimationChannel {
     target: AnimationTarget;
-    object: uint; // SceneNode*
+    skeleton: uint = null; // Skeleton*
+    object: uint; // BoneNode* if skeleton is set; else SceneNode*
     sampler: uint; // AnimationSampler*
     sampler_channel: uint; // AnimationSamplerChannel*
 }
