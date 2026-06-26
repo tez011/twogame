@@ -49,7 +49,7 @@ IRenderer::IRenderer()
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[3].binding = 3;
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    bindings[3].descriptorCount = PICTUREBOOK_CAPACITY;
+    bindings[3].descriptorCount = Constants::PICTUREBOOK_CAPACITY;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     binding_flags[3] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
     VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &binding_layout_ci, nullptr, &m_descriptor_set_layout[0]));
@@ -69,7 +69,7 @@ IRenderer::IRenderer()
     m_descriptor_pool_sizes.resize(bindings.size());
     for (size_t i = 0; i < bindings.size(); i++) {
         m_descriptor_pool_sizes[i].type = bindings[i].descriptorType;
-        m_descriptor_pool_sizes[i].descriptorCount = bindings[i].descriptorCount * SIMULTANEOUS_FRAMES;
+        m_descriptor_pool_sizes[i].descriptorCount = bindings[i].descriptorCount * FRAMES_IN_FLIGHT;
     }
 
     resize_frames(DisplayHost::swapchain_extent());
@@ -95,7 +95,7 @@ VkDescriptorPool IRenderer::create_descriptor_pool() const
     VkDescriptorPool pool;
     VkDescriptorPoolCreateInfo createinfo {};
     createinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    createinfo.maxSets = SIMULTANEOUS_FRAMES;
+    createinfo.maxSets = FRAMES_IN_FLIGHT;
     createinfo.poolSizeCount = m_descriptor_pool_sizes.size();
     createinfo.pPoolSizes = m_descriptor_pool_sizes.data();
     VK_DEMAND(vkCreateDescriptorPool(DisplayHost::device(), &createinfo, nullptr, &pool));
@@ -104,7 +104,7 @@ VkDescriptorPool IRenderer::create_descriptor_pool() const
 
 void IRenderer::resize_frames(VkExtent2D surface_extent)
 {
-    constexpr float vertical_fov = VERTICAL_FOV * M_PI / 180.0f;
+    constexpr float vertical_fov = Constants::VERTICAL_FOV * M_PI / 180.0f;
     const float cot_vertical_fov = 1.f / SDL_tanf(0.5f * vertical_fov);
     m_perspective_projection.m00 = cot_vertical_fov * surface_extent.height / surface_extent.width;
     m_perspective_projection.m11 = -cot_vertical_fov;
@@ -154,11 +154,14 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     std::array<VkSubpassDescription2, 1> subpasses {};
     std::array<VkAttachmentReference2, 1> p0_color_atts = {};
     VkAttachmentReference2 p0_depth_att {};
+    std::array<VkSubpassDependency2, 1> deps {};
     render_pass_ci.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2;
     render_pass_ci.attachmentCount = attachments.size();
     render_pass_ci.pAttachments = attachments.data();
     render_pass_ci.subpassCount = subpasses.size();
     render_pass_ci.pSubpasses = subpasses.data();
+    render_pass_ci.dependencyCount = deps.size();
+    render_pass_ci.pDependencies = deps.data();
     attachments[0].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
     attachments[0].format = DisplayHost::swapchain_format();
     attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -169,7 +172,7 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     attachments[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     attachments[0].finalLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     attachments[1].sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
-    attachments[1].format = DisplayHost::DEPTH_FORMAT;
+    attachments[1].format = DEPTH_FORMAT;
     attachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
     attachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     attachments[1].storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -188,6 +191,13 @@ void SimpleForwardRenderer::create_graphics_pipeline()
     p0_depth_att.sType = VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2;
     p0_depth_att.attachment = 1;
     p0_depth_att.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    deps[0].sType = VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2;
+    deps[0].srcSubpass = 0;
+    deps[0].dstSubpass = VK_SUBPASS_EXTERNAL;
+    deps[0].srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+    deps[0].dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT;
+    deps[0].srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+    deps[0].dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT;
     VK_DEMAND(vkCreateRenderPass2(DisplayHost::device(), &render_pass_ci, nullptr, &m_render_pass));
 
     std::array<VkShaderModule, 2> shader_modules;
@@ -349,7 +359,7 @@ void SimpleForwardRenderer::create_subpass_data(AllSubpasses& subpasses)
         iv_createinfo.image = pass.color_buffer;
         VK_DEMAND(vkCreateImageView(DisplayHost::device(), &iv_createinfo, nullptr, &pass.color_buffer_view));
 
-        i_createinfo.format = DisplayHost::DEPTH_FORMAT;
+        i_createinfo.format = DEPTH_FORMAT;
         i_createinfo.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
         VK_DEMAND(vmaCreateImage(DisplayHost::allocator(), &i_createinfo, &mem_createinfo, &pass.depth_buffer, &pass.depth_buffer_mem, nullptr));
         iv_createinfo.format = i_createinfo.format;

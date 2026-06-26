@@ -79,7 +79,7 @@ public:
     }
     void dump(const std::string& asset_path)
     {
-        size_t ext_offset = asset_path.find_last_of(".asset") - 5;
+        size_t ext_offset = asset_path.find_last_of('.');
         std::vector<char> slice_name(ext_offset + 16);
         std::copy(asset_path.begin(), asset_path.begin() + ext_offset, slice_name.begin());
         for (size_t i = 0; i < m_train.size(); i++) {
@@ -300,7 +300,6 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
 {
     std::vector<std::vector<uint32_t>> mesh_groups;
     for (auto ht = asset.meshes.begin(); ht != asset.meshes.end(); ++ht) {
-        unsigned total_morph_targets = 0;
         mesh_groups.emplace_back();
         for (auto it = ht->primitives.begin(); it != ht->primitives.end(); ++it) {
             mesh_groups.back().push_back(out_assets.meshes.size());
@@ -367,10 +366,9 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
             else
                 ot->material = std::nullopt;
 
-            std::span<const float> displace_weights = std::span(ht->weights).subspan(total_morph_targets, it->targets.size());
+            std::span<const float> displace_weights = std::span(ht->weights);
             std::vector<vec4s> position_displacements(positions.size() * displace_weights.size()), normal_displacements(normals.size() * displace_weights.size());
-            total_morph_targets += it->targets.size();
-            ot->displace_weights = std::vector(displace_weights.begin(), displace_weights.end());
+            ot->displace_weights.assign(displace_weights.begin(), displace_weights.end());
             for (size_t i = 0; i < displace_weights.size(); i++) {
                 std::span<vec4s> positions_data = std::span(position_displacements).subspan(i * positions.size()), normals_data = std::span(normal_displacements).subspan(i * normals.size());
                 load_mesh_buffers(asset, positions_data, normals_data, uv_channels, color_channels, [i, it](std::string_view name) {
@@ -471,7 +469,7 @@ std::vector<size_t> load_skins(fbs::AssetsT& out_assets, BufferTrain& out_data, 
                     asset.nodes[bone_to_node[i]].children.end(),
                     skeleton->nodes[i]->children.begin(), node_to_bone_fn);
             }
-            std::transform(asset_skin.joints.begin(), asset_skin.joints.end(), skeleton->joints.begin(), node_to_bone_fn);
+            std::transform(asset_skin.joints.begin(), asset_skin.joints.end(), std::back_inserter(skeleton->joints), node_to_bone_fn);
         }
     }
 
@@ -551,7 +549,7 @@ void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fast
 
 void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, const std::vector<std::vector<uint32_t>>& mesh_groups, std::span<size_t> skin_to_skeleton)
 {
-    std::set<uint32_t> prune_set;
+    std::set<uint32_t> prune_set, unprune_set;
     std::stack<std::pair<uint32_t, bool>> prune_stack;
     prune_stack.emplace(0, false);
     while (prune_stack.empty() == false) {
@@ -573,6 +571,14 @@ void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, const st
             }
         }
     }
+    for (auto it = asset.skins.begin(); it != asset.skins.end(); ++it) {
+        // If any nodes in that skin are not to be pruned, we cannot prune any of them. This keeps logic simple in the rendering engine.
+        if (!std::all_of(it->joints.begin(), it->joints.end(), [&prune_set](size_t j) { return prune_set.contains(j); })) {
+            for (auto jt = it->joints.begin(); jt != it->joints.end(); ++jt)
+                unprune_set.insert(*jt);
+        }
+    }
+    std::erase_if(prune_set, [&unprune_set](uint32_t n) { return unprune_set.contains(n); });
 
     std::vector<uint32_t> ossified_prune_set(prune_set.begin(), prune_set.end());
     auto translate_node_index = [prune_set = std::move(ossified_prune_set)](uint32_t in_index) -> uint32_t {
@@ -580,7 +586,7 @@ void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, const st
         if (it != prune_set.end() && *it == in_index)
             return std::numeric_limits<uint32_t>::max();
         else
-            return in_index - std::distance(prune_set.begin(), it);
+            return in_index - static_cast<uint32_t>(it - prune_set.begin());
     };
 
     std::generate_n(std::back_inserter(out_assets.nodes), asset.nodes.size() - prune_set.size(), []() { return std::make_unique<fbs::SceneNodeT>(); });
@@ -599,9 +605,12 @@ void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, const st
         if (asset.nodes[i].meshIndex)
             out_node->mesh = mesh_groups[asset.nodes[i].meshIndex.value()];
         if (asset.nodes[i].skinIndex) {
-            out_node->skeleton = skin_to_skeleton[asset.nodes[i].skinIndex.value()];
+            std::vector<uint32_t> skin;
             auto& jni = asset.skins[asset.nodes[i].skinIndex.value()].joints;
-            std::transform(jni.begin(), jni.end(), std::back_inserter(out_node->skin), translate_node_index);
+            std::transform(jni.begin(), jni.end(), std::back_inserter(skin), translate_node_index);
+            out_node->skeleton = skin_to_skeleton[asset.nodes[i].skinIndex.value()];
+            if (std::any_of(skin.begin(), skin.end(), [](uint32_t i) { return i != std::numeric_limits<uint32_t>::max(); }))
+                out_node->skin = std::move(skin);
         }
         std::copy(asset.nodes[i].weights.begin(), asset.nodes[i].weights.end(), std::back_inserter(out_node->displace_weights));
         std::visit(fastgltf::visitor {
@@ -746,7 +755,7 @@ int main(int argc, char** argv)
 
     std::ofstream ofs;
     fs::path ofs_path = outparam;
-    ofs_path.replace_extension(".asset");
+    ofs_path.replace_extension(".tgs");
     ofs.open(ofs_path, std::ios::binary);
     ofs.write(reinterpret_cast<const char*>(fbb.GetBufferPointer()), fbb.GetSize());
     ofs.close();

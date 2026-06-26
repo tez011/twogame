@@ -1,20 +1,32 @@
 #pragma once
 #include <atomic>
+#include <functional>
 #include <queue>
 #include <set>
 #include <span>
-#include <stack>
 #include <thread>
 #include <unordered_map>
 #include <variant>
+#include <vector>
 #include <SDL3/SDL_events.h>
 #include <volk.h>
-#include "asset.h"
-#include "display.h"
+#include "constants.h"
 #include "mpmc.h"
+#include "structs.h"
 #include "vk_mem_alloc.h"
 
 namespace twogame {
+
+class IAsset;
+class IRenderer;
+namespace asset {
+    class Image;
+    class Mesh;
+    class Skeleton;
+}
+namespace fbs {
+    struct Assets;
+}
 
 class StagingBuffer {
     friend class SceneHost;
@@ -38,66 +50,94 @@ public:
         , m_tail(0)
     {
     }
+    constexpr inline VkDeviceSize size() const { return Constants::STAGING_BUFFER_SIZE; }
     inline VkDeviceSize tail_offset() const { return m_tail; }
     inline std::byte* tail() { return m_src_data.subspan(m_tail).data(); }
     void advance(size_t);
 
-    void copy_image(VkImage dst, VkImageCreateInfo& info, std::span<const VkBufferImageCopy2> copies, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout final_layout);
+    void copy_image(VkImage dst, const VkImageCreateInfo& info, std::span<const VkBufferImageCopy2> copies, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access, VkImageLayout final_layout);
     void copy_buffer(VkBuffer dst, std::span<const VkBufferCopy2> regions, VkPipelineStageFlags2 dst_stage, VkAccessFlags2 dst_access);
+
+    /**
+     * @warning It is illegal to do any operations on this object until this staging buffer has been submitted to a queue,
+     * and the host has been signaled that that operation is complete.
+     */
     void finalize();
 };
 
-class IScene {
-    friend class SceneHost;
-
+class AssetContainer {
 protected:
-    constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
-    AssetContainer m_assets;
-
-    VkDescriptorPool m_descriptor_pool;
-    std::array<std::array<VkDescriptorSet, 1>, SIMULTANEOUS_FRAMES> m_descriptor_set;
-
-    std::span<IRenderer::BindingZero> m_binding_zero;
-    std::span<IRenderer::MeshEntry> m_mesh_refs;
-    std::array<std::span<IRenderer::InstanceEntry>, SIMULTANEOUS_FRAMES> m_instances;
-    std::array<std::span<VkDrawIndirectCommand>, SIMULTANEOUS_FRAMES> m_draw_commands;
-
-    IScene();
-
-private:
-    std::array<VkCommandPool, SIMULTANEOUS_FRAMES> m_draw_cmd_pool;
-    std::array<std::array<VkCommandBuffer, 1>, SIMULTANEOUS_FRAMES> m_draw_cmd;
-    struct {
-        VkBuffer handle;
-        VmaAllocation mem;
-        VkMemoryPropertyFlags memflags;
-    } m_vertices_buffer, m_mesh_refs_buffer, m_binding_zero_buffer, m_instances_buffer[SIMULTANEOUS_FRAMES], m_indirect_buffer[SIMULTANEOUS_FRAMES];
-    std::span<std::byte> m_vertices_ptr;
+    std::vector<std::shared_ptr<asset::Image>> m_images;
+    std::vector<std::shared_ptr<asset::Mesh>> m_meshes;
+    std::vector<std::shared_ptr<asset::Skeleton>> m_skeletons;
 
 public:
-    virtual ~IScene();
-    inline std::span<const IRenderer::MeshEntry> mesh_references() const { return m_mesh_refs; }
-    inline VkBuffer mesh_data_buffer() const { return m_vertices_buffer.handle; }
-    inline std::span<std::byte> mesh_data_pointer() const { return m_vertices_ptr; }
-    inline VkCommandBuffer draw_commands(uint32_t frame_number, int subpass) const { return m_draw_cmd[frame_number % SIMULTANEOUS_FRAMES][subpass]; }
+    virtual ~AssetContainer() { }
+    AssetContainer& operator+=(const AssetContainer& other);
 
-    virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
-    virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
-    virtual void render(IRenderer*, uint32_t frame_number) = 0;
-
-    std::vector<std::vector<IAsset*>> begin_construct_assets(IRenderer*, StagingBuffer& commands);
-    void end_construct_assets(IRenderer*);
-    void record_commands(IRenderer*, uint32_t frame_number);
+    std::vector<std::shared_ptr<asset::Image>>& images() { return m_images; }
+    std::span<const std::shared_ptr<asset::Image>> images() const { return m_images; }
+    std::vector<std::shared_ptr<asset::Mesh>>& meshes() { return m_meshes; }
+    std::span<const std::shared_ptr<asset::Mesh>> meshes() const { return m_meshes; }
+    std::vector<std::shared_ptr<asset::Skeleton>>& skeletons() { return m_skeletons; }
+    std::span<const std::shared_ptr<asset::Skeleton>> skeletons() const { return m_skeletons; }
 };
+
+class SceneGraph {
+    std::vector<uint32_t> m_parents, m_children, m_siblings;
+    std::vector<std::variant<mat4s, TRS>> m_local_transforms;
+    std::vector<mat4s> m_global_transforms;
+
+public:
+    constexpr static uint32_t NONE = std::numeric_limits<uint32_t>::max();
+
+    SceneGraph() { }
+    SceneGraph(std::vector<uint32_t>&& parents, std::vector<std::variant<mat4s, TRS>>&& transforms);
+    inline size_t node_count() const { return m_parents.size(); }
+    inline std::span<const mat4s> global_transforms() const { return m_global_transforms; }
+    inline TRS* transform(uint32_t node) { return std::get_if<TRS>(&m_local_transforms[node]); }
+
+    /** @return the index of the newly inserted, empty scene node */
+    uint32_t insert(uint32_t parent, const std::variant<mat4s, TRS>& xfm);
+    /** Inserts an `other` scene graph into this one, preserving node order in both.
+     * @return the index of the first node of the inserted scene graph. */
+    uint32_t insert(uint32_t parent, const SceneGraph& other);
+    void reparent(uint32_t node, uint32_t new_parent);
+    /** Erases a node from the scene without modifying existing elements.
+     * No memory is reclaimed. */
+    void remove(uint32_t node);
+
+    void update_global_transforms();
+};
+
+class SceneManifest {
+public:
+    using BufferResolver = std::function<std::vector<std::byte>(size_t)>;
+
+private:
+    std::shared_ptr<const fbs::Assets> m_manifest;
+    AssetContainer m_container;
+    SceneGraph m_scenegraph;
+    std::vector<CameraNode> m_cameras;
+    std::vector<MeshNode> m_meshes;
+    BufferResolver m_slurp_buffer;
+
+public:
+    SceneManifest(const std::string& path);
+    inline std::shared_ptr<const fbs::Assets> manifest() const { return m_manifest; }
+    inline const AssetContainer& assets() const { return m_container; }
+    inline const SceneGraph& scene() const { return m_scenegraph; }
+    inline std::span<const CameraNode> cameras() const { return m_cameras; }
+    inline std::span<const MeshNode> meshes() const { return m_meshes; }
+    const BufferResolver& buffer_resolver() const { return m_slurp_buffer; }
+    std::vector<std::byte> buffer(size_t i) const { return m_slurp_buffer(i); }
+};
+
+class IScene;
 
 class SceneHost final {
     static std::unique_ptr<SceneHost> s_self;
 
-public:
-    constexpr static VkDeviceSize STAGING_BUFFER_SIZE = 1 << 29;
-
-private:
-    constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
     struct BQData {
         IScene* scene;
         bool bringup;
@@ -167,6 +207,54 @@ public:
     static void submit_transfers();
 
     static void execute_draws(VkCommandBuffer container, uint32_t frame_number, int subpass);
+};
+
+class IScene {
+    friend class SceneHost;
+
+protected:
+    constexpr static int FRAMES_IN_FLIGHT = Constants::FRAMES_IN_FLIGHT;
+    AssetContainer m_assets;
+    SceneGraph m_scenegraph;
+    std::vector<CameraNode> m_cameras;
+    std::vector<MeshNode> m_draw_meshes;
+
+    VkDescriptorPool m_descriptor_pool;
+    std::array<std::array<VkDescriptorSet, 1>, FRAMES_IN_FLIGHT> m_descriptor_set;
+
+    std::span<BindingZero> m_binding_zero;
+    std::span<MeshEntry> m_mesh_refs;
+    std::array<std::span<InstanceEntry>, FRAMES_IN_FLIGHT> m_instances;
+    std::array<std::span<VkDrawIndirectCommand>, FRAMES_IN_FLIGHT> m_draw_commands;
+
+    IScene();
+
+private:
+    struct ManagedBuffer {
+        VkBuffer handle;
+        VmaAllocation mem;
+        VkMemoryPropertyFlags memflags;
+    };
+
+    std::array<VkCommandPool, FRAMES_IN_FLIGHT> m_draw_cmd_pool;
+    std::array<std::array<VkCommandBuffer, 1>, FRAMES_IN_FLIGHT> m_draw_cmd;
+    ManagedBuffer m_vertices_buffer, m_mesh_refs_buffer, m_binding_zero_buffer, m_instances_buffer[FRAMES_IN_FLIGHT], m_indirect_buffer[FRAMES_IN_FLIGHT];
+    std::span<std::byte> m_vertices_ptr;
+
+public:
+    virtual ~IScene();
+    inline std::span<const MeshEntry> mesh_references() const { return m_mesh_refs; }
+    inline VkBuffer mesh_data_buffer() const { return m_vertices_buffer.handle; }
+    inline std::span<std::byte> mesh_data_pointer() const { return m_vertices_ptr; }
+    inline VkCommandBuffer draw_commands(uint32_t frame_number, int subpass) const { return m_draw_cmd[frame_number % FRAMES_IN_FLIGHT][subpass]; }
+
+    virtual void handle_event(const SDL_Event&, SceneHost*) = 0;
+    virtual void tick(uint64_t frame_time, uint64_t delta_time, SceneHost*) = 0;
+    virtual void render(IRenderer*, uint32_t frame_number) = 0;
+
+    std::vector<std::vector<IAsset*>> begin_construct_assets(IRenderer*, StagingBuffer& commands);
+    void end_construct_assets(IRenderer*);
+    void record_commands(IRenderer*, uint32_t frame_number);
 };
 
 }

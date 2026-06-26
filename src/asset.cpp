@@ -1,48 +1,23 @@
 #include "asset.h"
 #include <ktx.h>
-#include <physfs.h>
+#include <SDL3/SDL.h>
 #include "asset.fbs.hpp"
+#include "display.h"
 #include "scene.h"
 
 namespace twogame {
 
+mat4s TRS::transform_matrix() const
+{
+    mat4s t = glms_translate_make(translation),
+          r = glms_quat_mat4(rotation),
+          s = glms_scale_make(scale);
+    return glms_mat4_mul(t, glms_mat4_mul(r, s));
+}
+
 void IAsset::post_prepare(uint64_t ready)
 {
     m_prepared = ready;
-}
-
-AssetManifest::AssetManifest(const std::string& path)
-{
-    PHYSFS_File* fh = PHYSFS_openRead(path.c_str());
-    size_t manifest_size = PHYSFS_fileLength(fh);
-    std::shared_ptr<std::byte[]> manifest_data = std::make_shared<std::byte[]>(manifest_size);
-    PHYSFS_readBytes(fh, manifest_data.get(), manifest_size);
-    PHYSFS_close(fh);
-    m_manifest = std::shared_ptr<const fbs::Assets>(manifest_data, fbs::GetAssets(manifest_data.get()));
-
-    std::string path_buf(path.size() + 10, 0);
-    size_t ext_offset = path.size() - 6;
-    std::copy(path.begin(), path.begin() + ext_offset, path_buf.begin());
-    m_slurp_buffer = [path_buf, ext_offset](size_t i) mutable {
-        std::vector<std::byte> out;
-        if (i > 0) {
-            snprintf(path_buf.data() + ext_offset, 16, ".%u.bin", (unsigned int)i);
-            PHYSFS_File* sfh = PHYSFS_openRead(path_buf.c_str());
-            out.resize(PHYSFS_fileLength(sfh));
-            PHYSFS_readBytes(sfh, out.data(), out.size());
-            PHYSFS_close(sfh);
-        }
-        return out;
-    };
-}
-
-AssetContainer& AssetContainer::operator+=(const AssetManifest& new_assets)
-{
-    for (size_t i = 0; i < new_assets.manifest()->images()->size(); i++)
-        m_images.emplace_back(std::make_shared<asset::Image>(new_assets, i, *this, m_images.size()));
-    for (size_t i = 0; i < new_assets.manifest()->meshes()->size(); i++)
-        m_meshes.emplace_back(std::make_shared<asset::Mesh>(new_assets, i, *this, m_meshes.size()));
-    return *this;
 }
 
 }
@@ -99,7 +74,7 @@ namespace image {
         std::vector<std::byte> fh_data;
         ktxTexture2* ktx2 = nullptr;
 
-        prep(const AssetManifest& asset_source, size_t image_index)
+        prep(const SceneManifest& asset_source, size_t image_index)
         {
             fh_data = asset_source.buffer(asset_source.manifest()->images()->Get(image_index));
             ktx_error_code_e k_res = ktxTexture2_CreateFromMemory(reinterpret_cast<ktx_uint8_t*>(fh_data.data()), fh_data.size(), 0, &ktx2);
@@ -143,12 +118,12 @@ namespace image {
 
 }
 
-Image::Image(const AssetManifest& source, size_t source_index, const AssetContainer& dst, size_t dst_index)
+Image::Image(const SceneManifest& assets, size_t source_index, size_t dst_index)
     : m_image(VK_NULL_HANDLE)
     , m_mem(VK_NULL_HANDLE)
     , m_image_view(VK_NULL_HANDLE)
 {
-    m_prepared = std::make_shared<image::prep>(source, source_index);
+    m_prepared = std::make_shared<image::prep>(assets, source_index);
 }
 
 Image::~Image()
@@ -171,7 +146,7 @@ size_t Image::prepare_needs() const
 
 size_t Image::prepare(IScene* scene, StagingBuffer& commands)
 {
-    image::prep* prepare_data = static_cast<image::prep*>(std::get<std::shared_ptr<void>>(m_prepared).get());
+    auto prepare_data = std::static_pointer_cast<image::prep>(std::get<std::shared_ptr<void>>(m_prepared));
     ktxTexture* ktx = reinterpret_cast<ktxTexture*>(prepare_data->ktx2);
 
     VmaAllocationCreateInfo alloc_info {};
@@ -234,7 +209,7 @@ size_t Image::prepare(IScene* scene, StagingBuffer& commands)
         memcpy(staging_data, ktx->pData, ktx->dataSize);
         return (ktx->dataSize + 15) & ~15;
     } else {
-        res = ktxTexture_LoadImageData(ktx, reinterpret_cast<ktx_uint8_t*>(staging_data), SceneHost::STAGING_BUFFER_SIZE - commands.tail_offset());
+        res = ktxTexture_LoadImageData(ktx, reinterpret_cast<ktx_uint8_t*>(staging_data), commands.size() - commands.tail_offset());
         SDL_assert_release(res == KTX_SUCCESS);
         return (ktxTexture_GetDataSizeUncompressed(ktx) + 15) & ~15;
     }
@@ -253,11 +228,11 @@ namespace mesh {
     };
 
     struct prep {
-        AssetManifest::BufferResolver buffer_resolver;
+        SceneManifest::BufferResolver buffer_resolver;
         std::array<size_t, SubBuffer_MAX_VALUE> buffers, buffer_sizes;
         size_t mesh_index;
 
-        prep(const AssetManifest& source, size_t source_index, size_t dst_index)
+        prep(const SceneManifest& source, size_t source_index, size_t dst_index)
             : buffer_resolver(source.buffer_resolver())
             , mesh_index(dst_index)
         {
@@ -278,10 +253,10 @@ namespace mesh {
 
 }
 
-Mesh::Mesh(const AssetManifest& source, size_t source_index, const AssetContainer& dst, size_t dst_index)
+Mesh::Mesh(const SceneManifest& assets, size_t source_index, size_t dst_index)
 {
-    std::shared_ptr<mesh::prep> prepare_data = std::make_shared<mesh::prep>(source, source_index, dst_index);
-    const fbs::Mesh* info = source.manifest()->meshes()->Get(source_index);
+    std::shared_ptr<mesh::prep> prepare_data = std::make_shared<mesh::prep>(assets, source_index, dst_index);
+    const fbs::Mesh* info = assets.manifest()->meshes()->Get(source_index);
     m_vertex_count = info->vertex_count();
     m_index_count = info->index_count();
 
@@ -317,22 +292,6 @@ size_t Mesh::prepare_needs() const
     } else {
         return 0;
     }
-}
-
-size_t Mesh::write_buffer_addresses(std::span<IRenderer::MeshEntry> mesh_entries, VkDeviceAddress base_vertices_addr) const
-{
-    size_t delta = 0;
-    mesh::prep* prepare_data = static_cast<mesh::prep*>(std::get<std::shared_ptr<void>>(m_prepared).get());
-    mesh_entries[prepare_data->mesh_index].index_buffer_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Index] + 15) & ~15;
-    mesh_entries[prepare_data->mesh_index].vertex_buffer_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Position] + 15) & ~15;
-    mesh_entries[prepare_data->mesh_index].normal_buffer_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Normal] + 15) & ~15;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Joints] + 15) & ~15;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DPosition] + 15) & ~15;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DNormal] + 15) & ~15;
-    return delta;
 }
 
 size_t Mesh::prepare(IScene* scene, StagingBuffer& commands)
@@ -371,6 +330,66 @@ size_t Mesh::prepare(IScene* scene, StagingBuffer& commands)
         }
         return 0;
     }
+}
+
+size_t Mesh::write_buffer_addresses(std::span<MeshEntry> mesh_entries, VkDeviceAddress base_vertices_addr) const
+{
+    size_t delta = 0;
+    auto prepare_data = std::static_pointer_cast<mesh::prep>(std::get<std::shared_ptr<void>>(m_prepared));
+    mesh_entries[prepare_data->mesh_index].index_buffer_address = base_vertices_addr + delta;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Index] + 15) & ~15;
+    mesh_entries[prepare_data->mesh_index].vertex_buffer_address = base_vertices_addr + delta;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Position] + 15) & ~15;
+    mesh_entries[prepare_data->mesh_index].normal_buffer_address = base_vertices_addr + delta;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Normal] + 15) & ~15;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Joints] + 15) & ~15;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DPosition] + 15) & ~15;
+    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DNormal] + 15) & ~15;
+    return delta;
+}
+
+Skeleton::Skeleton(const SceneManifest& assets, size_t source_index, size_t dst_index)
+{
+    const fbs::Skeleton* info = assets.manifest()->skeletons()->Get(source_index);
+    auto inverse_bind_matrices = assets.buffer(info->skin_matrices());
+
+    // Steal this pointer and invalidate the old vector
+    mat4s* inverse_bind_matrices_data = reinterpret_cast<mat4s*>(inverse_bind_matrices.data());
+    m_skin_matrices = std::vector<mat4s>(inverse_bind_matrices_data, inverse_bind_matrices_data + inverse_bind_matrices.size() / sizeof(mat4s));
+    decltype(inverse_bind_matrices)().swap(inverse_bind_matrices);
+
+    m_bone_parents.resize(info->nodes()->size(), std::numeric_limits<uint32_t>::max());
+    m_bone_transforms.resize(info->nodes()->size(), TRS());
+    for (size_t i = 0; i < info->nodes()->size(); i++) {
+        const fbs::BoneNode* bnode = info->nodes()->Get(i);
+        for (auto it = bnode->children()->begin(); bnode->children() && it != bnode->children()->end(); ++it) {
+            SDL_assert(i < *it); // require that parents are ordered before children
+            m_bone_parents[*it] = i;
+        }
+
+        if (bnode->transform_type() == fbs::Transform::Mat4) {
+            mat4s& xfm = m_bone_transforms[i].emplace<mat4s>();
+            memcpy(xfm.raw, bnode->transform_as_Mat4(), sizeof(mat4s));
+        } else if (bnode->transform_type() == fbs::Transform::TRS) {
+            TRS& trs = m_bone_transforms[i].emplace<TRS>();
+            memcpy(trs.translation.raw, bnode->transform_as_TRS()->translation().v(), sizeof(vec3));
+            memcpy(trs.rotation.raw, bnode->transform_as_TRS()->rotation().v(), sizeof(versor));
+            memcpy(trs.scale.raw, bnode->transform_as_TRS()->scale().v(), sizeof(vec3));
+        }
+    }
+
+    m_joints.reserve(info->joints()->size());
+    std::copy(info->joints()->begin(), info->joints()->end(), std::back_inserter(m_joints));
+}
+
+size_t Skeleton::prepare_needs() const
+{
+    return 0;
+}
+
+size_t Skeleton::prepare(IScene* scene, StagingBuffer& commands)
+{
+    return 0;
 }
 
 }

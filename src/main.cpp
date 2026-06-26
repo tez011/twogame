@@ -26,7 +26,19 @@ public:
 
 DuckScene::DuckScene()
 {
-    m_assets += twogame::AssetManifest("/data/duck.asset");
+    twogame::SceneManifest assets("/data/duck.tgs");
+    m_assets += assets.assets();
+    m_scenegraph = assets.scene();
+    m_cameras.assign(assets.cameras().begin(), assets.cameras().end());
+    m_draw_meshes.assign(assets.meshes().begin(), assets.meshes().end());
+
+    // We need to do these sorting operations every time m_cameras or m_draw_meshes changes. But for now, they don't.
+    std::sort(m_cameras.begin(), m_cameras.end(), [](const twogame::CameraNode& a, const twogame::CameraNode& b) {
+        return a.camera_index < b.camera_index;
+    });
+    std::sort(m_draw_meshes.begin(), m_draw_meshes.end(), [](const twogame::MeshNode& a, const twogame::MeshNode& b) {
+        return a.mesh_index < b.mesh_index;
+    });
 }
 
 void DuckScene::handle_event(const SDL_Event& evt, twogame::SceneHost* stage)
@@ -35,21 +47,37 @@ void DuckScene::handle_event(const SDL_Event& evt, twogame::SceneHost* stage)
 
 void DuckScene::tick(uint64_t frame_time, uint64_t delta_time, twogame::SceneHost* stage)
 {
+    m_scenegraph.update_global_transforms();
 }
 
 void DuckScene::render(twogame::IRenderer* renderer, uint32_t frame_number)
 {
-    m_instances[frame_number % SIMULTANEOUS_FRAMES][0].model = GLMS_MAT4_IDENTITY_INIT;
-    m_instances[frame_number % SIMULTANEOUS_FRAMES][0].mesh_id = 0;
-    m_instances[frame_number % SIMULTANEOUS_FRAMES][0].material_id = 0;
-    m_draw_commands[frame_number % SIMULTANEOUS_FRAMES][0].vertexCount = 12636;
-    m_draw_commands[frame_number % SIMULTANEOUS_FRAMES][0].instanceCount = 1;
-    m_draw_commands[frame_number % SIMULTANEOUS_FRAMES][0].firstVertex = 0;
-    m_draw_commands[frame_number % SIMULTANEOUS_FRAMES][0].firstInstance = 0;
+    std::span instances = m_instances[frame_number % FRAMES_IN_FLIGHT];
+    std::span draw_commands = m_draw_commands[frame_number % FRAMES_IN_FLIGHT];
+    for (int ii = 0, di = -1, last_mesh; ii < m_draw_meshes.size(); ii++) {
+        const twogame::MeshNode& drawable = m_draw_meshes[ii];
+        instances[ii].model = m_scenegraph.global_transforms()[drawable.node_index];
+        instances[ii].mesh_id = drawable.mesh_index;
+        instances[ii].material_id = 0;
+        if (ii == 0 || last_mesh != drawable.mesh_index) {
+            ++di;
+            draw_commands[di].vertexCount = m_assets.meshes()[drawable.mesh_index]->index_count();
+            draw_commands[di].instanceCount = 1;
+            draw_commands[di].firstVertex = 0;
+            draw_commands[di].firstInstance = ii;
+            last_mesh = drawable.mesh_index;
+        } else {
+            draw_commands[di].instanceCount++;
+        }
+    }
 
-    vec3s eye = { { 0, 250, (float)frame_number - 500 } }, toward = { { 0, 100, 0 } }, up = { { 0, frame_number <= 500 ? 1.f : -1.f, 0 } };
-    m_binding_zero[frame_number % SIMULTANEOUS_FRAMES].proj = renderer->projection();
-    m_binding_zero[frame_number % SIMULTANEOUS_FRAMES].view = glms_lookat(eye, toward, up);
+    m_binding_zero[frame_number % FRAMES_IN_FLIGHT].proj = renderer->projection();
+    if (false && m_cameras.size() > 0) {
+        m_binding_zero[frame_number % FRAMES_IN_FLIGHT].view = glms_mat4_inv_fast(m_scenegraph.global_transforms()[m_cameras.front().node_index]);
+    } else {
+        vec3s eye = { { 0, 2.5f, ((float)frame_number / 50.f) - 5.f } }, toward = { { 0, 1, 0 } }, up = { { 0, frame_number <= 250 ? 1.f : -1.f, 0 } };
+        m_binding_zero[frame_number % FRAMES_IN_FLIGHT].view = glms_lookat(eye, toward, up);
+    }
 }
 
 SDL_AppResult SDL_AppInit(void** _appstate, int argc, char** argv)
@@ -146,7 +174,10 @@ SDL_AppResult SDL_AppEvent(void* _appstate, SDL_Event* evt)
 
 SDL_AppResult SDL_AppIterate(void* _appstate)
 {
-    twogame::DisplayHost::owned().draw_frame();
+    if (twogame::DisplayHost::owned().draw_frame(twogame::SceneHost::renderer()) < 0)
+        return SDL_APP_FAILURE;
+
+    twogame::SceneHost::submit_transfers();
     return SDL_APP_CONTINUE;
 }
 

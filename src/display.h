@@ -11,6 +11,7 @@
 #include <cglm/struct.h>
 #include <SDL3/SDL.h>
 #include <volk.h>
+#include "constants.h"
 #include "vk_mem_alloc.h"
 
 #ifdef DEBUG_BUILD
@@ -36,20 +37,57 @@
 #endif
 namespace twogame {
 
-class IRenderer;
-class DisplayHost;
 class SceneHost;
+
+class IRenderer {
+    mat4s m_perspective_projection, m_ortho_projection;
+    std::vector<VkDescriptorPoolSize> m_descriptor_pool_sizes;
+    std::array<VkDescriptorSetLayout, 1> m_descriptor_set_layout;
+    std::array<VkSampler, 1> m_samplers;
+
+protected:
+    constexpr static auto FRAMES_IN_FLIGHT = Constants::FRAMES_IN_FLIGHT;
+    VkRenderPass m_render_pass;
+    std::vector<VkPipelineLayout> m_pipeline_layouts;
+    std::vector<VkPipeline> m_graphics_pipelines, m_compute_pipelines;
+
+    IRenderer();
+
+public:
+    constexpr static VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+    struct Output {
+        VkImage image;
+        VkSemaphore signal;
+        Output(VkImage image, VkSemaphore signal)
+            : image(image)
+            , signal(signal)
+        {
+        }
+    };
+
+    virtual ~IRenderer();
+
+    inline VkRenderPass render_pass() const { return m_render_pass; }
+    inline mat4s projection() const { return m_perspective_projection; }
+    inline mat4s ortho_projection() const { return m_ortho_projection; }
+    inline VkPipeline graphics_pipeline(size_t i) const { return m_graphics_pipelines.at(i); }
+    inline VkPipelineLayout pipeline_layout(size_t i) const { return m_pipeline_layouts.at(i); }
+    inline auto descriptor_set_layouts() const { return m_descriptor_set_layout; }
+    inline auto samplers() const { return m_samplers; }
+
+    virtual Output draw(uint32_t frame_number) = 0;
+    virtual void recreate_subpass_data(uint32_t frame_number) = 0;
+
+    VkDescriptorPool create_descriptor_pool() const;
+    void resize_frames(VkExtent2D surface_extent);
+};
 
 class DisplayHost final {
     friend class SceneHost;
     static std::unique_ptr<DisplayHost> s_self;
-
-public:
     constexpr static uint32_t API_VERSION = VK_API_VERSION_1_3;
-    constexpr static int SIMULTANEOUS_FRAMES = 2;
-    constexpr static VkFormat DEPTH_FORMAT = VK_FORMAT_D32_SFLOAT;
+    constexpr static auto FRAMES_IN_FLIGHT = Constants::FRAMES_IN_FLIGHT;
 
-private:
     std::atomic_uint32_t m_frame_number = 0;
     SDL_Window* m_window = nullptr;
     VkInstance m_instance = VK_NULL_HANDLE;
@@ -68,9 +106,9 @@ private:
     VkCommandPool m_present_command_pool;
 
     std::vector<VkSemaphore> m_sem_submit_image;
-    std::array<VkSemaphore, SIMULTANEOUS_FRAMES> m_sem_acquire_image;
-    std::array<VkFence, SIMULTANEOUS_FRAMES> m_fence_frame;
-    std::array<VkCommandBuffer, SIMULTANEOUS_FRAMES> m_present_commands;
+    std::array<VkSemaphore, FRAMES_IN_FLIGHT> m_sem_acquire_image;
+    std::array<VkFence, FRAMES_IN_FLIGHT> m_fence_frame;
+    std::array<VkCommandBuffer, FRAMES_IN_FLIGHT> m_present_commands;
 
     bool create_instance();
     bool create_debug_messenger();
@@ -113,70 +151,7 @@ public:
     static inline VkPipelineCache pipeline_cache() { return s_self->m_pipeline_cache; }
     static size_t format_width(VkFormat);
 
-    SDL_AppResult draw_frame();
-};
-
-class IRenderer {
-    friend class IScene;
-
-public:
-    constexpr static int SIMULTANEOUS_FRAMES = DisplayHost::SIMULTANEOUS_FRAMES;
-    constexpr static uint32_t PICTUREBOOK_CAPACITY = 1;
-    constexpr static float VERTICAL_FOV = 70.f;
-    struct BindingZero {
-        mat4s proj;
-        mat4s view;
-    };
-    struct InstanceEntry {
-        mat4s model;
-        uint32_t mesh_id;
-        uint32_t material_id;
-    };
-    struct MeshEntry {
-        VkDeviceAddress vertex_buffer_address;
-        VkDeviceAddress normal_buffer_address;
-        VkDeviceAddress index_buffer_address;
-    };
-
-private:
-    mat4s m_perspective_projection, m_ortho_projection;
-    std::vector<VkDescriptorPoolSize> m_descriptor_pool_sizes;
-    std::array<VkDescriptorSetLayout, 1> m_descriptor_set_layout;
-    std::array<VkSampler, 1> m_samplers;
-
-protected:
-    VkRenderPass m_render_pass;
-    std::vector<VkPipelineLayout> m_pipeline_layouts;
-    std::vector<VkPipeline> m_graphics_pipelines, m_compute_pipelines;
-
-    IRenderer();
-
-public:
-    struct Output {
-        VkImage image;
-        VkSemaphore signal;
-        Output(VkImage image, VkSemaphore signal)
-            : image(image)
-            , signal(signal)
-        {
-        }
-    };
-
-    virtual ~IRenderer();
-
-    inline VkRenderPass render_pass() const { return m_render_pass; }
-    inline mat4s projection() const { return m_perspective_projection; }
-    inline mat4s ortho_projection() const { return m_ortho_projection; }
-    inline VkPipeline graphics_pipeline(size_t i) const { return m_graphics_pipelines.at(i); }
-    inline VkPipelineLayout pipeline_layout(size_t i) const { return m_pipeline_layouts.at(i); }
-    inline auto descriptor_set_layouts() const { return m_descriptor_set_layout; }
-    inline auto samplers() const { return m_samplers; }
-
-    virtual Output draw(uint32_t frame_number) = 0;
-    virtual void recreate_subpass_data(uint32_t frame_number) = 0;
-
-    VkDescriptorPool create_descriptor_pool() const;
-    void resize_frames(VkExtent2D surface_extent);
+    int draw_frame(IRenderer*);
 };
 
 class SimpleForwardRenderer final : public IRenderer {
@@ -200,7 +175,7 @@ class SimpleForwardRenderer final : public IRenderer {
     };
 
     VkQueue m_graphics_queue;
-    std::array<FrameData, SIMULTANEOUS_FRAMES> m_frame_data;
+    std::array<FrameData, FRAMES_IN_FLIGHT> m_frame_data;
     AllSubpasses m_pass_discard;
 
     void create_graphics_pipeline();
