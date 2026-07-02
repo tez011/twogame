@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <numeric>
 #include <queue>
 #include <stack>
 #include <vector>
@@ -199,11 +200,11 @@ void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, 
         });
     }
     if ((attribute = find_attribute("TANGENT")) != nullptr) {
-        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, asset.accessors[attribute->accessorIndex], [&](fastgltf::math::fvec3 value, size_t index) {
+        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(asset, asset.accessors[attribute->accessorIndex], [&](fastgltf::math::fvec4 value, size_t index) {
             normal[index * (2 + color_channels) + 1].x = value[0];
             normal[index * (2 + color_channels) + 1].y = value[1];
             normal[index * (2 + color_channels) + 1].z = value[2];
-            normal[index * (2 + color_channels) + 1].w = 0.f;
+            normal[index * (2 + color_channels) + 1].w = value[3];
         });
     }
     for (size_t i = 0; i < color_channels; i++) {
@@ -366,10 +367,9 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
             else
                 ot->material = std::nullopt;
 
-            std::span<const float> displace_weights = std::span(ht->weights);
-            std::vector<vec4s> position_displacements(positions.size() * displace_weights.size()), normal_displacements(normals.size() * displace_weights.size());
-            ot->displace_weights.assign(displace_weights.begin(), displace_weights.end());
-            for (size_t i = 0; i < displace_weights.size(); i++) {
+            std::vector<vec4s> position_displacements(positions.size() * ht->weights.size()), normal_displacements(normals.size() * ht->weights.size());
+            ot->displace_weights.assign(ht->weights.begin(), ht->weights.end());
+            for (size_t i = 0; i < ht->weights.size(); i++) {
                 std::span<vec4s> positions_data = std::span(position_displacements).subspan(i * positions.size()), normals_data = std::span(normal_displacements).subspan(i * normals.size());
                 load_mesh_buffers(asset, positions_data, normals_data, uv_channels, color_channels, [i, it](std::string_view name) {
                     const fastgltf::Attribute* attr = it->findTargetAttribute(i, name);
@@ -479,71 +479,137 @@ std::vector<size_t> load_skins(fbs::AssetsT& out_assets, BufferTrain& out_data, 
     return out_dedup;
 }
 
+struct AnimationTargetT : public fbs::AnimationTargetT {
+    size_t sampler;
+    size_t channel;
+    bool operator<(const AnimationTargetT& other) const
+    {
+        if (sampler != other.sampler)
+            return sampler < other.sampler;
+        return channel < other.channel;
+    }
+};
+
 void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset, std::span<size_t> skin_to_skeleton)
 {
     out_assets.animations.reserve(asset.animations.size());
     for (auto anim = asset.animations.begin(); anim != asset.animations.end(); ++anim) {
-        auto& out_anim = out_assets.animations.emplace_back(std::make_unique<fbs::AnimationT>());
-        out_anim->channels.reserve(anim->channels.size());
-
-        std::map<size_t, std::vector<std::pair<size_t, fastgltf::AnimationInterpolation>>> samplers;
-        std::vector<std::pair<size_t, size_t>> sampler_lookup; // [glTF sampler index] -> [input accessor, index of output channel]
-        std::map<size_t, size_t> sampler_indexes;
+        std::map<size_t, std::array<std::vector<size_t>, 3>> sampler_outputs;
+        std::vector<std::bitset<static_cast<int>(fbs::AnimationTargetField::MAX) + 1>> sampler_paths(anim->samplers.size());
+        for (auto it = anim->channels.begin(); it != anim->channels.end(); ++it)
+            sampler_paths[it->samplerIndex].set(static_cast<int>(it->path));
         for (auto it = anim->samplers.begin(); it != anim->samplers.end(); ++it) {
-            sampler_lookup.emplace_back(it->inputAccessor, samplers[it->inputAccessor].size());
-            samplers[it->inputAccessor].emplace_back(it->outputAccessor, it->interpolation);
-        }
-        for (auto [i, it] = std::pair { 0, samplers.begin() }; it != samplers.end(); ++it) {
-            auto& out_sampler = out_anim->samplers.emplace_back(std::make_unique<fbs::AnimationSamplerT>());
-            std::vector<float> input(asset.accessors[it->first].count);
-            out_sampler->outputs.reserve(it->second.size());
-            sampler_indexes[it->first] = i++;
-
-            fastgltf::copyFromAccessor<float>(asset, asset.accessors[it->first], input.data());
-            out_sampler->input = out_data.push(std::move(input));
-            for (auto jt = it->second.begin(); jt != it->second.end(); ++jt) {
-                auto& out_channel = out_sampler->outputs.emplace_back(std::make_unique<fbs::AnimationSamplerChannelT>());
-                const auto& accessor = asset.accessors[jt->first];
-                std::vector<float> values;
-                out_channel->interpolation = static_cast<fbs::InterpolationMethod>(jt->second);
-                switch (accessor.type) {
-                case fastgltf::AccessorType::Scalar:
-                    values.resize(accessor.count);
-                    fastgltf::copyFromAccessor<float>(asset, accessor, values.data());
-                    break;
-                case fastgltf::AccessorType::Vec3:
-                    values.resize(accessor.count * 3);
-                    fastgltf::copyFromAccessor<fastgltf::math::fvec3>(asset, accessor, reinterpret_cast<fastgltf::math::fvec3*>(values.data()));
-                    break;
-                case fastgltf::AccessorType::Vec4:
-                    values.resize(accessor.count * 4);
-                    fastgltf::copyFromAccessor<fastgltf::math::fvec4>(asset, accessor, reinterpret_cast<fastgltf::math::fvec4*>(values.data()));
-                    break;
-                default:
-                    assert(false);
-                }
-                out_channel->values = out_data.push(std::move(values));
+            assert(it->interpolation != fastgltf::AnimationInterpolation::CubicSpline);
+            int sampler_index = std::distance(anim->samplers.begin(), it), bucket;
+            if (it->interpolation == fastgltf::AnimationInterpolation::Step)
+                sampler_outputs[it->inputAccessor][0].push_back(it->outputAccessor);
+            else {
+                auto paths = sampler_paths[sampler_index], paths_xr = paths;
+                if (paths_xr.reset(static_cast<int>(fbs::AnimationTargetField::Rotation)).any())
+                    sampler_outputs[it->inputAccessor][1].push_back(it->outputAccessor);
+                if (paths.test(static_cast<int>(fbs::AnimationTargetField::Rotation)))
+                    sampler_outputs[it->inputAccessor][2].push_back(it->outputAccessor);
             }
         }
+        for (auto it = sampler_outputs.begin(); it != sampler_outputs.end(); ++it) {
+            for (auto jt = it->second.begin(); jt != it->second.end(); ++jt)
+                std::sort(jt->begin(), jt->end());
+        }
 
+        std::vector<AnimationTargetT> targets;
+        targets.reserve(anim->channels.size());
         for (auto it = anim->channels.begin(); it != anim->channels.end(); ++it) {
             if (it->nodeIndex) {
-                auto& out_channel = out_anim->channels.emplace_back(std::make_unique<fbs::AnimationChannelT>());
-                out_channel->object = it->nodeIndex.value();
-                out_channel->target = static_cast<fbs::AnimationTarget>(it->path);
-                out_channel->sampler = sampler_indexes[sampler_lookup[it->samplerIndex].first];
-                out_channel->sampler_channel = sampler_lookup[it->samplerIndex].second;
+                AnimationTargetT& target = targets.emplace_back();
+                size_t sampler_key = anim->samplers[it->samplerIndex].inputAccessor, channel_bucket = 1;
+                if (anim->samplers[it->samplerIndex].interpolation == fastgltf::AnimationInterpolation::Step)
+                    channel_bucket = 0;
+                else if (it->path == fastgltf::AnimationPath::Rotation)
+                    channel_bucket = 2;
+                auto channel_it = std::find(sampler_outputs[sampler_key][channel_bucket].begin(),
+                    sampler_outputs[sampler_key][channel_bucket].end(),
+                    anim->samplers[it->samplerIndex].outputAccessor);
+                assert(channel_it != sampler_outputs[sampler_key][channel_bucket].end());
+                target.object = it->nodeIndex.value();
+                target.width = 1;
+                target.field = static_cast<fbs::AnimationTargetField>(it->path);
+                target.sampler = sampler_key;
+                target.channel = std::distance(sampler_outputs[sampler_key][channel_bucket].begin(), channel_it);
 
-                // If this node is part of a skeleton, it might get pruned.
-                for (size_t i = 0; i < asset.skins.size(); i++) {
-                    auto it = std::find(asset.skins[i].joints.begin(), asset.skins[i].joints.end(), out_channel->object);
-                    if (it != asset.skins[i].joints.end()) {
-                        out_channel->skeleton = skin_to_skeleton[i];
-                        out_channel->object = std::distance(asset.skins[i].joints.begin(), it);
+                if (it->path == fastgltf::AnimationPath::Weights) {
+                    const fastgltf::Accessor& output_data = asset.accessors[anim->samplers[it->samplerIndex].outputAccessor];
+                    size_t unpadded_size = fastgltf::getNumComponents(output_data.type) * output_data.count,
+                           unpadded_width = unpadded_size / asset.accessors[anim->samplers[it->samplerIndex].inputAccessor].count;
+                    target.width = ((unpadded_width + 3) >> 2);
+                } else {
+                    // If this node is part of a skeleton, it might get pruned.
+                    for (size_t i = 0; i < asset.skins.size(); i++) {
+                        auto it = std::find(asset.skins[i].joints.begin(), asset.skins[i].joints.end(), target.object);
+                        if (it != asset.skins[i].joints.end()) {
+                            target.object = std::distance(asset.skins[i].joints.begin(), it);
+                            target.object_is_bone = true;
+                        }
                     }
                 }
             }
         }
+        std::sort(targets.begin(), targets.end());
+
+        auto& out_anim = out_assets.animations.emplace_back(std::make_unique<fbs::AnimationT>());
+        for (auto it = sampler_outputs.begin(); it != sampler_outputs.end(); ++it) {
+            auto& sampler = out_anim->samplers.emplace_back(std::make_unique<fbs::AnimationSamplerT>());
+            std::vector<float> timeline(asset.accessors[it->first].count), channels, channel_data;
+            channels.resize(std::transform_reduce(it->second.begin(), it->second.end(), 0, std::plus<size_t>(), [&](const std::vector<size_t>& v) {
+                return std::transform_reduce(v.begin(), v.end(), 0, std::plus<size_t>(), [&](size_t ai) {
+                    const fastgltf::Accessor& acc = asset.accessors[ai];
+                    size_t unpadded_size = fastgltf::getNumComponents(acc.type) * acc.count,
+                           unpadded_width = unpadded_size / timeline.size(),
+                           padded_width = (unpadded_width + 3) & (~3);
+                    return padded_width * timeline.size();
+                });
+            }));
+
+            std::array<uint32_t, 3> target_count {};
+            size_t keyframe_width = channels.size() / timeline.size(), kf_offset = 0;
+            fastgltf::copyFromAccessor<float>(asset, asset.accessors[it->first], timeline.data());
+            for (auto jt = it->second.begin(); jt != it->second.end(); ++jt) {
+                for (auto at = jt->begin(); at != jt->end(); ++at) {
+                    const fastgltf::Accessor& acc = asset.accessors[*at];
+                    size_t unpadded_size = fastgltf::getNumComponents(acc.type) * acc.count,
+                           unpadded_width = unpadded_size / timeline.size(),
+                           padded_width = (unpadded_width + 3) & (~3);
+                    channel_data.resize(unpadded_size);
+                    switch (acc.type) {
+                    case fastgltf::AccessorType::Scalar:
+                        fastgltf::copyFromAccessor<float>(asset, acc, channel_data.data());
+                        break;
+                    case fastgltf::AccessorType::Vec3:
+                        fastgltf::copyFromAccessor<fastgltf::math::fvec3>(asset, acc, reinterpret_cast<fastgltf::math::fvec3*>(channel_data.data()));
+                        break;
+                    case fastgltf::AccessorType::Vec4:
+                        fastgltf::copyFromAccessor<fastgltf::math::fvec4>(asset, acc, reinterpret_cast<fastgltf::math::fvec4*>(channel_data.data()));
+                        break;
+                    default:
+                        assert(false);
+                    }
+
+                    for (size_t i = 0; i < timeline.size(); i++) {
+                        std::copy_n(channel_data.begin() + unpadded_width * i, unpadded_width, channels.begin() + keyframe_width * i + kf_offset);
+                        std::fill_n(channels.begin() + keyframe_width * i + kf_offset + unpadded_width, padded_width - unpadded_width, 0.f);
+                    }
+                    kf_offset += padded_width;
+                    target_count[jt - it->second.begin()] += padded_width;
+                }
+            }
+
+            sampler->timeline = out_data.push(std::move(timeline));
+            sampler->channels = out_data.push(std::move(channels));
+            sampler->step_targets = target_count[0] >> 2;
+            sampler->lerp_targets = target_count[1] >> 2;
+            sampler->slerp_targets = target_count[2] >> 2;
+        }
+        std::transform(targets.begin(), targets.end(), std::back_inserter(out_anim->targets),
+            [](const AnimationTargetT& target) { return std::make_unique<fbs::AnimationTargetT>(target); });
     }
 }
 
@@ -673,6 +739,19 @@ void load_images(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf
     }
 }
 
+void load_names(fbs::AssetsT& out_assets, const fastgltf::Asset& asset)
+{
+    out_assets.names = std::make_unique<fbs::NamesT>();
+    for (auto it = asset.images.begin(); it != asset.images.end(); ++it)
+        out_assets.names->images.emplace_back(it->name);
+    for (auto it = asset.materials.begin(); it != asset.materials.end(); ++it)
+        out_assets.names->materials.emplace_back(it->name);
+    for (auto it = asset.meshes.begin(); it != asset.meshes.end(); ++it)
+        out_assets.names->meshes.emplace_back(it->name);
+    for (auto it = asset.animations.begin(); it != asset.animations.end(); ++it)
+        out_assets.names->animations.emplace_back(it->name);
+}
+
 int main(int argc, char** argv)
 {
     fs::path infile, outparam;
@@ -747,6 +826,7 @@ int main(int argc, char** argv)
     load_animations(out_assets, out_data, asset.get(), skin_to_skeleton);
     load_images(out_assets, out_data, asset.get(), makeimage, outparam);
     load_scene(out_assets, asset.get(), mesh_groups, skin_to_skeleton);
+    load_names(out_assets, asset.get());
 
     flatbuffers::FlatBufferBuilder fbb;
     for (size_t i = 0; i < out_data.count(); i++)

@@ -76,38 +76,37 @@ table Mesh {
     normal_displacements: uint32; // buffer size (in Vec4) = normals.size * displace_weights.size
 }
 
-enum AnimationTarget : byte {
+enum AnimationTargetField : byte {
     None = 0,
     Translation = 1,
     Rotation = 2,
     Scale = 3,
     Weights = 4,
 }
-enum InterpolationMethod : byte {
-    Linear = 0,
-    Step = 1,
-    CubicSpline = 2,
-}
 table AnimationSampler {
-    input: uint32; // buffer size (in floats) = number of keyframes
-    outputs: [AnimationSamplerChannel];
+    timeline: uint32; // buffer size (in floats) = number of keyframes
+    channels: uint32; // buffer size (in Vec4) = number of keyframes * number of targets
+    step_targets: uint;
+    lerp_targets: uint;
+    slerp_targets: uint;
 }
-table AnimationSamplerChannel {
-    interpolation: InterpolationMethod = Linear;
-    values: uint32; // buffer size (in floats) = number of keyframes (* 3 if CubicSpline)
-}
-table AnimationChannel {
-    target: AnimationTarget;
-    skeleton: uint = null; // Skeleton*
-    object: uint; // BoneNode* if skeleton is set; else SceneNode*
-    sampler: uint; // AnimationSampler*
-    sampler_channel: uint; // AnimationSamplerChannel*
+table AnimationTarget {
+    object: uint; // SceneNode* or BoneNode*
+    width: ushort;
+    field: AnimationTargetField;
+    object_is_bone: bool;
 }
 table Animation {
     samplers: [AnimationSampler];
-    channels: [AnimationChannel];
+    targets: [AnimationTarget];
 }
 
+table Names {
+    images: [string];
+    materials: [string];
+    meshes: [string];
+    animations: [string];
+}
 table Assets {
     buffers: [ulong];
     images: [uint32];
@@ -117,6 +116,7 @@ table Assets {
     roots: [uint]; // SceneNode*
     skeletons: [Skeleton];
     animations: [Animation];
+    names: Names;
 }
 
 root_type Assets;

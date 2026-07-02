@@ -130,8 +130,10 @@ void StagingBuffer::finalize()
 
 AssetContainer& AssetContainer::operator+=(const AssetContainer& other)
 {
+    m_animations.insert(m_animations.end(), other.m_animations.begin(), other.m_animations.end());
     m_images.insert(m_images.end(), other.m_images.begin(), other.m_images.end());
     m_meshes.insert(m_meshes.end(), other.m_meshes.begin(), other.m_meshes.end());
+    m_skeletons.insert(m_skeletons.end(), other.m_skeletons.begin(), other.m_skeletons.end());
     return *this;
 }
 
@@ -147,6 +149,15 @@ SceneGraph::SceneGraph(std::vector<uint32_t>&& parents, std::vector<std::variant
             m_siblings[i] = m_children[parent];
             m_children[parent] = i;
         }
+    }
+}
+
+TRS& SceneGraph::transform(uint32_t node)
+{
+    if (TRS* m = std::get_if<TRS>(&m_local_transforms[node])) {
+        return *m;
+    } else {
+        return m_local_transforms[node].emplace<TRS>();
     }
 }
 
@@ -286,19 +297,26 @@ SceneManifest::SceneManifest(const std::string& path)
     PHYSFS_close(fh);
     m_manifest = std::shared_ptr<const fbs::Assets>(manifest_data, fbs::GetAssets(manifest_data.get()));
 
-    m_slurp_buffer = [path_pfx = path.substr(0, path.find_last_of('.'))](size_t i) {
-        std::vector<std::byte> out;
+    m_slurp_buffer = [path_pfx = path.substr(0, path.find_last_of('.'))](size_t i, std::function<void*(size_t)> resize) {
         if (i > 0) {
             char path_buf[512];
             snprintf(path_buf, 512, "%s.%u.bin", path_pfx.c_str(), static_cast<unsigned int>(i));
             PHYSFS_File* sfh = PHYSFS_openRead(path_buf);
-            out.resize(PHYSFS_fileLength(sfh));
-            PHYSFS_readBytes(sfh, out.data(), out.size());
-            PHYSFS_close(sfh);
+            if (sfh == nullptr)
+                return false;
+
+            size_t size = PHYSFS_fileLength(sfh);
+            void* dst = resize(size);
+            if (PHYSFS_readBytes(sfh, dst, size) < size)
+                return false;
+            if (PHYSFS_close(sfh) == 0)
+                return false;
         }
-        return out;
+        return true;
     };
 
+    for (size_t i = 0; m_manifest->animations() && i < m_manifest->animations()->size(); i++)
+        m_container.animations().emplace_back(std::make_shared<asset::Animation>(*this, i, m_container.animations().size()));
     for (size_t i = 0; m_manifest->images() && i < m_manifest->images()->size(); i++)
         m_container.images().emplace_back(std::make_shared<asset::Image>(*this, i, m_container.images().size()));
     for (size_t i = 0; m_manifest->meshes() && i < m_manifest->meshes()->size(); i++)

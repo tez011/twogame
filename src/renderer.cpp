@@ -399,7 +399,7 @@ IRenderer::Output SimpleForwardRenderer::draw(uint32_t frame_number)
     VK_DEMAND(vkBeginCommandBuffer(frame.ctx.command_container, &begin_info));
 
     VkRenderPassBeginInfo render_pass_begin {};
-    std::array<VkClearValue, 2> clear_values = { { { { { 0.9375f, 0.6953125f, 0.734375f, 1.0f } } }, { { { 0.0f, 0.0f } } } } };
+    std::array<VkClearValue, 2> clear_values = { { { { { 0.9375f, 0.6953f, 0.7344f, 1.0f } } }, { { { 0.0f, 0.0f } } } } };
     render_pass_begin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     render_pass_begin.renderPass = m_render_pass;
     render_pass_begin.framebuffer = std::get<0>(frame.pass).framebuffer;

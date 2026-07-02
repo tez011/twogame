@@ -51,4 +51,35 @@ struct MeshNode : public SceneNode {
     std::shared_ptr<float[]> weights;
 };
 
+struct AnimationTarget {
+    struct Field {
+        enum {
+            Translation = 1,
+            Rotation,
+            Scale,
+            Weights,
+        };
+    };
+    uint32_t object;
+    uint16_t width;
+    union {
+        uint16_t _uv;
+        struct {
+            unsigned field : 4;
+            unsigned object_is_bone : 1;
+        };
+    };
+};
+struct AnimationInstance {
+    uint64_t start_time;
+    uint32_t animation_index;
+    std::unique_ptr<uint32_t[]> keyframe_hints;
+    std::variant<std::monostate, // Use the node target from the animation asset
+        std::unique_ptr<uint32_t[]>, // We specify our own node target
+        std::weak_ptr<uint32_t[]> // This is a skeletal animation, and these are the skin nodes
+        >
+        custom_targets;
+    bool loop;
+};
+
 }

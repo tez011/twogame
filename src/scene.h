@@ -20,6 +20,7 @@ namespace twogame {
 class IAsset;
 class IRenderer;
 namespace asset {
+    class Animation;
     class Image;
     class Mesh;
     class Skeleton;
@@ -67,6 +68,7 @@ public:
 
 class AssetContainer {
 protected:
+    std::vector<std::shared_ptr<asset::Animation>> m_animations;
     std::vector<std::shared_ptr<asset::Image>> m_images;
     std::vector<std::shared_ptr<asset::Mesh>> m_meshes;
     std::vector<std::shared_ptr<asset::Skeleton>> m_skeletons;
@@ -75,6 +77,8 @@ public:
     virtual ~AssetContainer() { }
     AssetContainer& operator+=(const AssetContainer& other);
 
+    std::vector<std::shared_ptr<asset::Animation>>& animations() { return m_animations; }
+    std::span<const std::shared_ptr<asset::Animation>> animations() const { return m_animations; }
     std::vector<std::shared_ptr<asset::Image>>& images() { return m_images; }
     std::span<const std::shared_ptr<asset::Image>> images() const { return m_images; }
     std::vector<std::shared_ptr<asset::Mesh>>& meshes() { return m_meshes; }
@@ -95,7 +99,7 @@ public:
     SceneGraph(std::vector<uint32_t>&& parents, std::vector<std::variant<mat4s, TRS>>&& transforms);
     inline size_t node_count() const { return m_parents.size(); }
     inline std::span<const mat4s> global_transforms() const { return m_global_transforms; }
-    inline TRS* transform(uint32_t node) { return std::get_if<TRS>(&m_local_transforms[node]); }
+    TRS& transform(uint32_t node);
 
     /** @return the index of the newly inserted, empty scene node */
     uint32_t insert(uint32_t parent, const std::variant<mat4s, TRS>& xfm);
@@ -111,16 +115,12 @@ public:
 };
 
 class SceneManifest {
-public:
-    using BufferResolver = std::function<std::vector<std::byte>(size_t)>;
-
-private:
     std::shared_ptr<const fbs::Assets> m_manifest;
     AssetContainer m_container;
     SceneGraph m_scenegraph;
     std::vector<CameraNode> m_cameras;
     std::vector<MeshNode> m_meshes;
-    BufferResolver m_slurp_buffer;
+    std::function<bool(size_t, std::function<void*(size_t)>)> m_slurp_buffer;
 
 public:
     SceneManifest(const std::string& path);
@@ -129,8 +129,32 @@ public:
     inline const SceneGraph& scene() const { return m_scenegraph; }
     inline std::span<const CameraNode> cameras() const { return m_cameras; }
     inline std::span<const MeshNode> meshes() const { return m_meshes; }
-    const BufferResolver& buffer_resolver() const { return m_slurp_buffer; }
-    std::vector<std::byte> buffer(size_t i) const { return m_slurp_buffer(i); }
+
+    template <typename T = std::byte>
+    std::vector<T> buffer(size_t i) const
+    {
+        std::vector<T> out;
+        auto resize = [&out](size_t nsz) -> void* {
+            out.resize((nsz + sizeof(T) - 1) / sizeof(T));
+            return out.data();
+        };
+        SDL_assert(m_slurp_buffer(i, resize));
+        return out;
+    }
+    template <typename T = std::byte>
+    std::function<std::vector<T>(size_t)> buffer_resolver() const
+    {
+        return [slurp = this->m_slurp_buffer](size_t i) -> std::vector<T> {
+            std::vector<T> out;
+            auto resize = [&out](size_t nsz) -> void* {
+                out.resize((nsz + sizeof(T) - 1) / sizeof(T));
+                return out.data();
+            };
+            SDL_assert(slurp(i, resize));
+            return out;
+        };
+    }
+    using BufferResolver = std::function<std::vector<std::byte>(size_t)>;
 };
 
 class IScene;
@@ -218,6 +242,8 @@ protected:
     SceneGraph m_scenegraph;
     std::vector<CameraNode> m_cameras;
     std::vector<MeshNode> m_draw_meshes;
+    std::vector<uint32_t> m_sparse_meshes;
+    std::vector<AnimationInstance> m_animations;
 
     VkDescriptorPool m_descriptor_pool;
     std::array<std::array<VkDescriptorSet, 1>, FRAMES_IN_FLIGHT> m_descriptor_set;
