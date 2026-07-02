@@ -31,10 +31,11 @@ IRenderer::IRenderer()
     std::array<VkDescriptorBindingFlags, std::size(bindings)> binding_flags {};
     binding_layout_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     binding_layout_ci.pNext = &binding_flags_ci;
-    binding_layout_ci.pBindings = bindings.data();
+    binding_layout_ci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT;
     binding_flags_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-    binding_flags_ci.pBindingFlags = binding_flags.data();
     binding_layout_ci.bindingCount = binding_flags_ci.bindingCount = bindings.size();
+    binding_layout_ci.pBindings = bindings.data();
+    binding_flags_ci.pBindingFlags = binding_flags.data();
     bindings[0].binding = 0;
     bindings[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     bindings[0].descriptorCount = 1;
@@ -51,7 +52,7 @@ IRenderer::IRenderer()
     bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     bindings[3].descriptorCount = Constants::PICTUREBOOK_CAPACITY;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    binding_flags[3] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT;
+    binding_flags[3] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
     VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &binding_layout_ci, nullptr, &m_descriptor_set_layout[0]));
 
     VkPipelineLayoutCreateInfo pipeline_layout_ci {};
@@ -95,6 +96,7 @@ VkDescriptorPool IRenderer::create_descriptor_pool() const
     VkDescriptorPool pool;
     VkDescriptorPoolCreateInfo createinfo {};
     createinfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    createinfo.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
     createinfo.maxSets = FRAMES_IN_FLIGHT;
     createinfo.poolSizeCount = m_descriptor_pool_sizes.size();
     createinfo.pPoolSizes = m_descriptor_pool_sizes.data();
