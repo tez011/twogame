@@ -16,30 +16,38 @@ struct Normal {
 };
 
 struct Mesh {
+    uint64_t index_buffer;
     uint64_t vertex_buffer;
     uint64_t normal_buffer;
-    uint64_t index_buffer;
+    uint64_t joints_buffer;
+    uint64_t vertex_displacements;
+    uint64_t normal_displacements;
+    uint32_t joint_count;
+    uint32_t displacement_count;
 };
 
 struct Instance {
     mat4 model;
+    uint64_t joint_matrices;
+    uint64_t morph_weights;
     uint32_t mesh_id;
     uint32_t material_id;
+    uint32_t padding[2];
 };
 
 layout(buffer_reference, std430) readonly buffer VertexBuffer { Vertex verts[]; };
 layout(buffer_reference, std430) readonly buffer NormalBuffer { Normal normals[]; };
 layout(buffer_reference, std430) readonly buffer IndexBuffer { uint16_t index[]; };
 layout(buffer_reference, std430) readonly buffer InstanceBuffer { Instance instances[]; };
+layout(buffer_reference, std430) readonly buffer VaryingMat4Buffer { mat4 m[]; };
+layout(buffer_reference, std430) readonly buffer VaryingFloatBuffer { float f[]; };
 
 layout(set = 0, binding = 0) uniform BindingZero {
     mat4 proj;
     mat4 view;
 };
 
-layout(set = 0, binding = 1) readonly buffer MeshBuffer {
-    Mesh meshes[];
-};
+layout(set = 0, binding = 1) readonly buffer MeshBuffer { Mesh meshes[]; };
 
 layout(push_constant, std430) uniform PC {
     uint64_t instance_buffer_address;
@@ -54,16 +62,32 @@ void main()
     InstanceBuffer instance_buffer = InstanceBuffer(instance_buffer_address);
     Instance instance = instance_buffer.instances[gl_InstanceIndex];
     Mesh mesh = meshes[instance.mesh_id];
+    IndexBuffer index_buffer = IndexBuffer(mesh.index_buffer);
     VertexBuffer vertex_buffer = VertexBuffer(mesh.vertex_buffer);
     NormalBuffer normal_buffer = NormalBuffer(mesh.normal_buffer);
-    IndexBuffer index_buffer = IndexBuffer(mesh.index_buffer);
 
     uint vertex_index = uint(index_buffer.index[gl_VertexIndex]);
     Vertex v = vertex_buffer.verts[vertex_index];
     Normal n = normal_buffer.normals[vertex_index];
+    vec3 position = v.position, normal = n.normal;
+    vec2 uv[2] = v.uv;
 
-    gl_Position = proj * view * instance.model * vec4(v.position, 1.0);
-    out_normal = n.normal;
-    out_uv = v.uv[0];
+    if (instance.morph_weights != 0) {
+        VaryingFloatBuffer morph_weights = VaryingFloatBuffer(instance.morph_weights);
+        VertexBuffer morph_posns = VertexBuffer(mesh.vertex_displacements);
+        NormalBuffer morph_norms = NormalBuffer(mesh.normal_displacements);
+        for (uint i = 0; i < mesh.displacement_count; i++) {
+            Vertex morph_posn = morph_posns.verts[vertex_index * mesh.displacement_count + i];
+            Normal morph_norm = morph_norms.normals[vertex_index * mesh.displacement_count + i];
+            position += morph_weights.f[i] * morph_posn.position;
+            uv[0] += morph_weights.f[i] * morph_posn.uv[0];
+            uv[1] += morph_weights.f[i] * morph_posn.uv[1];
+            normal += morph_weights.f[i] * morph_norm.normal;
+        }
+    }
+
+    gl_Position = proj * view * instance.model * vec4(position, 1.0);
+    out_normal = normal;
+    out_uv = uv[0];
     out_material_id = instance.material_id;
 }

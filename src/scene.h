@@ -250,6 +250,7 @@ protected:
 
     std::span<BindingZero> m_binding_zero;
     std::span<MeshEntry> m_mesh_refs;
+    std::array<std::span<vec4s>, FRAMES_IN_FLIGHT> m_varying;
     std::array<std::span<InstanceEntry>, FRAMES_IN_FLIGHT> m_instances;
     std::array<std::span<VkDrawIndirectCommand>, FRAMES_IN_FLIGHT> m_draw_commands;
 
@@ -264,10 +265,13 @@ private:
 
     std::array<VkCommandPool, FRAMES_IN_FLIGHT> m_draw_cmd_pool;
     std::array<std::array<VkCommandBuffer, 1>, FRAMES_IN_FLIGHT> m_draw_cmd;
-    ManagedBuffer m_vertices_buffer, m_mesh_refs_buffer, m_binding_zero_buffer, m_instances_buffer[FRAMES_IN_FLIGHT], m_indirect_buffer[FRAMES_IN_FLIGHT];
+    ManagedBuffer m_vertices_buffer, m_mesh_refs_buffer, m_binding_zero_buffer;
+    std::array<ManagedBuffer, FRAMES_IN_FLIGHT> m_instances_buffer, m_indirect_buffer;
     std::span<std::byte> m_vertices_ptr;
 
 public:
+    std::array<ManagedBuffer, FRAMES_IN_FLIGHT> m_varying_buffer; // TODO this should be private once logic is moved into `IScene`
+
     virtual ~IScene();
     inline std::span<const MeshEntry> mesh_references() const { return m_mesh_refs; }
     inline VkBuffer mesh_data_buffer() const { return m_vertices_buffer.handle; }

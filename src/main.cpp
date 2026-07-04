@@ -26,7 +26,7 @@ public:
 
 DemoScene::DemoScene()
 {
-    twogame::SceneManifest assets("/data/cube.tgs");
+    twogame::SceneManifest assets("/data/bars.tgs");
     m_assets += assets.assets();
     m_scenegraph = assets.scene();
     m_cameras.assign(assets.cameras().begin(), assets.cameras().end());
@@ -34,7 +34,7 @@ DemoScene::DemoScene()
     m_sparse_meshes.assign(m_scenegraph.node_count(), std::numeric_limits<uint32_t>::max());
 
     twogame::AnimationInstance& anim = m_animations.emplace_back();
-    anim.start_time = 1800;
+    anim.start_time = 4000;
     anim.animation_index = 0;
     anim.keyframe_hints = std::make_unique<uint32_t[]>(m_assets.animations().at(anim.animation_index)->total_samplers());
     anim.loop = true;
@@ -44,7 +44,10 @@ DemoScene::DemoScene()
     std::sort(m_cameras.begin(), m_cameras.end(), [](const twogame::CameraNode& a, const twogame::CameraNode& b) {
         return a.camera_index < b.camera_index;
     });
-    std::sort(m_draw_meshes.begin(), m_draw_meshes.end(), [](const twogame::MeshNode& a, const twogame::MeshNode& b) {
+    std::sort(m_draw_meshes.begin(), m_draw_meshes.end(), [this](const twogame::MeshNode& a, const twogame::MeshNode& b) {
+        const auto ma = m_assets.meshes()[a.mesh_index], mb = m_assets.meshes()[b.mesh_index];
+        if (ma->pipeline_key() != mb->pipeline_key())
+            return ma->pipeline_key() < mb->pipeline_key();
         return a.mesh_index < b.mesh_index;
     });
     for (size_t i = 0; i < m_draw_meshes.size(); i++)
@@ -60,11 +63,13 @@ void DemoScene::tick(uint64_t frame_time, uint64_t delta_time, twogame::SceneHos
     static std::vector<vec4s> animation_data;
     for (auto it = m_animations.begin(); it != m_animations.end(); ++it) {
         const std::shared_ptr<twogame::asset::Animation>& anim = m_assets.animations().at(it->animation_index);
-        float anim_time = (frame_time - it->start_time) / 1000.f;
-        if (anim_time > 0 && it->loop)
-            anim_time = fmodf(anim_time, anim->duration());
+        int64_t anim_time = frame_time - it->start_time, anim_duration = ceilf(1000.f * anim->duration());
+        if (anim_time < 0)
+            continue;
+        else if (anim_time > anim_duration && it->loop)
+            anim_time %= anim_duration;
         animation_data.resize(anim->keyframe_width());
-        anim->interpolate(anim_time, (vec4*)animation_data.data(), std::span(it->keyframe_hints.get(), anim->total_samplers()));
+        anim->interpolate(anim_time / 1000.f, (vec4*)animation_data.data(), std::span(it->keyframe_hints.get(), anim->total_samplers()));
 
         for (size_t i = 0, off = 0; i < anim->targets().size(); i++) {
             uint32_t object = anim->targets()[i].object;
@@ -87,7 +92,7 @@ void DemoScene::tick(uint64_t frame_time, uint64_t delta_time, twogame::SceneHos
                 break;
             case twogame::AnimationTarget::Field::Weights:
                 if (m_sparse_meshes[object] != std::numeric_limits<uint32_t>::max())
-                    memcpy(m_draw_meshes[m_sparse_meshes[object]].weights.get(), animation_data[off].raw, m_assets.meshes().at(m_draw_meshes[m_sparse_meshes[object]].mesh_index)->displacement_count());
+                    memcpy(m_draw_meshes[m_sparse_meshes[object]].weights.get(), animation_data[off].raw, m_assets.meshes().at(m_draw_meshes[m_sparse_meshes[object]].mesh_index)->displacement_count() * sizeof(float));
                 break;
             }
         }
@@ -98,23 +103,55 @@ void DemoScene::tick(uint64_t frame_time, uint64_t delta_time, twogame::SceneHos
 
 void DemoScene::render(twogame::IRenderer* renderer, uint32_t frame_number)
 {
+    std::span varying = m_varying[frame_number % FRAMES_IN_FLIGHT];
     std::span instances = m_instances[frame_number % FRAMES_IN_FLIGHT];
     std::span draw_commands = m_draw_commands[frame_number % FRAMES_IN_FLIGHT];
-    for (int ii = 0, di = -1, last_mesh; ii < m_draw_meshes.size(); ii++) {
-        const twogame::MeshNode& drawable = m_draw_meshes[ii];
-        instances[ii].model = m_scenegraph.global_transforms()[drawable.node_index];
-        instances[ii].mesh_id = drawable.mesh_index;
-        instances[ii].material_id = 0;
-        if (ii == 0 || last_mesh != drawable.mesh_index) {
-            ++di;
-            draw_commands[di].vertexCount = m_assets.meshes()[drawable.mesh_index]->index_count();
-            draw_commands[di].instanceCount = 1;
-            draw_commands[di].firstVertex = 0;
-            draw_commands[di].firstInstance = ii;
-            last_mesh = drawable.mesh_index;
+    VkDeviceAddress varying_buffer_address = 0;
+    if (varying.empty() == false) {
+        VkBufferDeviceAddressInfo bda_info {};
+        bda_info.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+        bda_info.buffer = m_varying_buffer[frame_number % FRAMES_IN_FLIGHT].handle;
+        varying_buffer_address = vkGetBufferDeviceAddress(twogame::DisplayHost::device(), &bda_info);
+    }
+
+    size_t v_tail = 0;
+    for (size_t i = 0; i < m_draw_meshes.size(); i++) {
+        const twogame::MeshNode& drawable = m_draw_meshes[i];
+        instances[i].model = m_scenegraph.global_transforms()[drawable.node_index];
+        instances[i].mesh_id = drawable.mesh_index;
+        instances[i].material_id = 0;
+        if (drawable.skeleton_index != std::numeric_limits<uint32_t>::max()) {
+            instances[i].joint_matrices = varying_buffer_address + v_tail * sizeof(vec4);
+            for (size_t j = 0; j < m_assets.skeletons()[drawable.skeleton_index]->joints().size(); j++) {
+                // TODO: While carrying skeleton_index in drawable, shall we also generate (mesh_to_joint_relative) in tick(),
+                // then here, pre-multiply by ibm and shove the result into varying?
+                v_tail += 4;
+            }
         } else {
-            draw_commands[di].instanceCount++;
+            instances[i].joint_matrices = 0;
         }
+    }
+    for (size_t i = 0; i < m_draw_meshes.size(); i++) {
+        if (m_draw_meshes[i].weights) {
+            size_t count = m_assets.meshes()[m_draw_meshes[i].mesh_index]->displacement_count();
+            instances[i].morph_weights = varying_buffer_address + v_tail * sizeof(vec4);
+            memcpy(varying.subspan(v_tail).data(), m_draw_meshes[i].weights.get(), count * sizeof(float));
+            v_tail += (count + 3) >> 2;
+        } else {
+            instances[i].morph_weights = 0;
+        }
+    }
+
+    for (size_t i = 0, di = 0, last_mesh = m_draw_meshes.begin()->mesh_index; i < m_draw_meshes.size(); i++) {
+        if (last_mesh != m_draw_meshes[i].mesh_index) {
+            ++di;
+            draw_commands[di].instanceCount = 0;
+            draw_commands[di].firstVertex = 0;
+            draw_commands[di].firstInstance = i;
+        }
+        draw_commands[di].vertexCount = m_assets.meshes()[m_draw_meshes[i].mesh_index]->index_count();
+        draw_commands[di].instanceCount++;
+        last_mesh = m_draw_meshes[i].mesh_index;
     }
 
     m_binding_zero[frame_number % FRAMES_IN_FLIGHT].proj = renderer->projection();
@@ -124,7 +161,7 @@ void DemoScene::render(twogame::IRenderer* renderer, uint32_t frame_number)
 #if 0
         vec3s eye = { { 100.f, 100.f, 150.f } }, toward = { { 0, 50.f, 0 } }, up = { { 0, 1.f, 0 } }; // Fox
 #elif 1
-        vec3s eye = { { 0.f, 5.f, -5.f } }, toward = { { 0, 0.f, 0 } }, up = { { 0, 1.f, 0 } }; // Bars/Cube
+        vec3s eye = { { 0.f, 2.f, -5.f } }, toward = { { 0, 0.f, 0 } }, up = { { 0, 1.f, 0 } }; // Bars/Cube
 #endif
         m_binding_zero[frame_number % FRAMES_IN_FLIGHT].view = glms_lookat(eye, toward, up);
     }

@@ -1,4 +1,5 @@
 #include "gltf2tg.h"
+#include <bitset>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
@@ -327,7 +328,8 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
                 assert(false);
             }
 
-            std::vector<vec4s> positions(ot->vertex_count * ((uv_channels + 3) / 2)), normals(ot->vertex_count * (2 + color_channels));
+            size_t posn_bsize = (uv_channels + 3) / 2, norm_bsize = 2 + color_channels;
+            std::vector<vec4s> positions(ot->vertex_count * posn_bsize), normals(ot->vertex_count * norm_bsize);
             load_mesh_buffers(asset, positions, normals, uv_channels, color_channels, [it](std::string_view name) {
                 const fastgltf::Attribute* attr = it->findAttribute(name);
                 return attr == it->attributes.end() ? nullptr : attr;
@@ -367,18 +369,31 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
             else
                 ot->material = std::nullopt;
 
-            std::vector<vec4s> position_displacements(positions.size() * ht->weights.size()), normal_displacements(normals.size() * ht->weights.size());
+            std::vector<vec4s> position_displacements(positions.size() * ht->weights.size()), normal_displacements(normals.size() * ht->weights.size()),
+                ptp_pos(position_displacements.size()), ptp_nor(normal_displacements.size());
             ot->displace_weights.assign(ht->weights.begin(), ht->weights.end());
-            for (size_t i = 0; i < ht->weights.size(); i++) {
-                std::span<vec4s> positions_data = std::span(position_displacements).subspan(i * positions.size()), normals_data = std::span(normal_displacements).subspan(i * normals.size());
-                load_mesh_buffers(asset, positions_data, normals_data, uv_channels, color_channels, [i, it](std::string_view name) {
-                    const fastgltf::Attribute* attr = it->findTargetAttribute(i, name);
-                    return attr == it->targets[i].end() ? nullptr : attr;
+            for (size_t w = 0; w < ht->weights.size(); w++) {
+                std::span<vec4s> positions_data = std::span(ptp_pos).subspan(w * positions.size()), normals_data = std::span(ptp_nor).subspan(w * normals.size());
+                load_mesh_buffers(asset, positions_data, normals_data, uv_channels, color_channels, [w, it](std::string_view name) {
+                    const fastgltf::Attribute* attr = it->findTargetAttribute(w, name);
+                    return attr == it->targets[w].end() ? nullptr : attr;
                 });
+            }
+            for (size_t w = 0; w < ht->weights.size(); w++) {
+                for (size_t v = 0; v < ot->vertex_count; v++) {
+                    memcpy(position_displacements[posn_bsize * (v * ht->weights.size() + w)].raw,
+                        ptp_pos[posn_bsize * (v + ot->vertex_count * w)].raw,
+                        posn_bsize * sizeof(vec4));
+                    memcpy(normal_displacements[norm_bsize * (v * ht->weights.size() + w)].raw,
+                        ptp_nor[norm_bsize * (v + ot->vertex_count * w)].raw,
+                        norm_bsize * sizeof(vec4));
+                }
             }
 
             ot->positions = out_data.push(std::move(positions));
             ot->normals = out_data.push(std::move(normals));
+            ot->position_displacements = out_data.push(std::move(position_displacements));
+            ot->normal_displacements = out_data.push(std::move(normal_displacements));
         }
     }
 

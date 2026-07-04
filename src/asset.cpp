@@ -354,6 +354,7 @@ Mesh::Mesh(const SceneManifest& source, size_t source_index, size_t dst_index)
 
     m_uv_channels = 2 * (prepare_data->buffer_sizes[mesh::SubBuffer_Position] / (m_vertex_count * sizeof(vec4))) - 2;
     m_color_channels = prepare_data->buffer_sizes[mesh::SubBuffer_Normal] / (m_vertex_count * sizeof(vec4)) - 2;
+    m_joint_count = prepare_data->buffer_sizes[mesh::SubBuffer_Joints] / ((sizeof(vec4) + sizeof(ivec4)) * m_vertex_count);
     switch (prepare_data->buffer_sizes[mesh::SubBuffer_Index] / m_index_count) {
     case 2:
         m_32bit_indexes = false;
@@ -428,15 +429,21 @@ size_t Mesh::write_buffer_addresses(std::span<MeshEntry> mesh_entries, VkDeviceA
 {
     size_t delta = 0;
     auto prepare_data = std::static_pointer_cast<mesh::prep>(std::get<std::shared_ptr<void>>(m_prepared));
-    mesh_entries[prepare_data->mesh_index].index_buffer_address = base_vertices_addr + delta;
+    MeshEntry& e = mesh_entries[prepare_data->mesh_index];
+    e.index_buffer_address = base_vertices_addr + delta;
     delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Index] + 15) & ~15;
-    mesh_entries[prepare_data->mesh_index].vertex_buffer_address = base_vertices_addr + delta;
+    e.vertex_buffer_address = base_vertices_addr + delta;
     delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Position] + 15) & ~15;
-    mesh_entries[prepare_data->mesh_index].normal_buffer_address = base_vertices_addr + delta;
+    e.normal_buffer_address = base_vertices_addr + delta;
     delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Normal] + 15) & ~15;
+    e.joints_buffer_address = base_vertices_addr + delta;
     delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Joints] + 15) & ~15;
+    e.vertex_displacement_address = base_vertices_addr + delta;
     delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DPosition] + 15) & ~15;
+    e.normal_displacement_address = base_vertices_addr + delta;
     delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DNormal] + 15) & ~15;
+    e.joint_count = m_joint_count;
+    e.displacement_count = m_displacement_count;
     return delta;
 }
 

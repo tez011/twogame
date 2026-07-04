@@ -94,7 +94,7 @@ public:
 
 class Mesh final : public IAsset {
     size_t m_vertex_count, m_index_count;
-    uint32_t m_displacement_count;
+    uint32_t m_displacement_count, m_joint_count;
 
     union {
         uint32_t m_pipeline_key;
@@ -102,7 +102,6 @@ class Mesh final : public IAsset {
             unsigned m_uv_channels : 4;
             unsigned m_color_channels : 2;
             unsigned m_32bit_indexes : 1;
-            unsigned m_joints : 1;
         };
     };
 

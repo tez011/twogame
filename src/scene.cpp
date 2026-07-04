@@ -379,6 +379,9 @@ SceneManifest::SceneManifest(const std::string& path)
                 if (node->displace_weights()) {
                     mesh_weights = std::make_shared<float[]>(node->displace_weights()->size());
                     std::copy(node->displace_weights()->begin(), node->displace_weights()->end(), mesh_weights.get());
+                } else if (auto manifest_weights = m_manifest->meshes()->Get(node->mesh()->Get(0))->displace_weights()) {
+                    mesh_weights = std::make_shared<float[]>(manifest_weights->size());
+                    std::copy(manifest_weights->begin(), manifest_weights->end(), mesh_weights.get());
                 }
                 for (size_t i = 0; i < node->mesh()->size(); i++) {
                     MeshNode& mesh = m_meshes.emplace_back();
@@ -421,6 +424,7 @@ IScene::~IScene()
     vmaDestroyBuffer(DisplayHost::allocator(), m_mesh_refs_buffer.handle, m_mesh_refs_buffer.mem);
     vmaDestroyBuffer(DisplayHost::allocator(), m_binding_zero_buffer.handle, m_binding_zero_buffer.mem);
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
+        vmaDestroyBuffer(DisplayHost::allocator(), m_varying_buffer[i].handle, m_varying_buffer[i].mem);
         vmaDestroyBuffer(DisplayHost::allocator(), m_instances_buffer[i].handle, m_instances_buffer[i].mem);
         vmaDestroyBuffer(DisplayHost::allocator(), m_indirect_buffer[i].handle, m_indirect_buffer[i].mem);
     }
@@ -508,10 +512,27 @@ std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* rend
     VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_binding_zero_buffer.handle, &m_binding_zero_buffer.mem, &alloc_info));
     m_binding_zero = std::span(static_cast<BindingZero*>(alloc_info.pMappedData), FRAMES_IN_FLIGHT);
 
-    size_t max_instance_count = 1;
-    buffer_ci.size = sizeof(InstanceEntry) * max_instance_count;
+    size_t max_joints_and_weights = std::transform_reduce(m_draw_meshes.begin(), m_draw_meshes.end(),
+        0, std::plus<size_t>(),
+        [this](const MeshNode& m) {
+            size_t weights = m_assets.meshes()[m.mesh_index]->displacement_count(), // in floats
+                joints = m.skeleton_index == std::numeric_limits<uint32_t>::max()
+                ? 0
+                : m_assets.skeletons()[m.skeleton_index]->joints().size(); // in mat4s
+            return joints * 4 + ((weights + 3) >> 2);
+        });
+    buffer_ci.size = sizeof(vec4) * max_joints_and_weights;
     buffer_ci.usage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
     alloc_ci.preferredFlags = 0;
+    if (max_joints_and_weights > 0) {
+        for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
+            VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_varying_buffer[i].handle, &m_varying_buffer[i].mem, &alloc_info));
+            m_varying[i] = std::span(static_cast<vec4s*>(alloc_info.pMappedData), max_joints_and_weights);
+        }
+    }
+
+    size_t max_instance_count = m_draw_meshes.size();
+    buffer_ci.size = sizeof(InstanceEntry) * max_instance_count;
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_instances_buffer[i].handle, &m_instances_buffer[i].mem, &alloc_info));
         m_instances[i] = std::span(static_cast<InstanceEntry*>(alloc_info.pMappedData), max_instance_count);
@@ -681,7 +702,7 @@ void IScene::record_commands(IRenderer* renderer, uint32_t frame_number)
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->graphics_pipeline(0));
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->pipeline_layout(0), 0, m_descriptor_set[frame_number % FRAMES_IN_FLIGHT].size(), m_descriptor_set[frame_number % FRAMES_IN_FLIGHT].data(), 0, nullptr);
     vkCmdPushConstants(cmd, renderer->pipeline_layout(0), VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &instance_buffer_address);
-    vkCmdDrawIndirect(cmd, m_indirect_buffer[frame_number % FRAMES_IN_FLIGHT].handle, 0, 1 /*draw count*/, sizeof(VkDrawIndirectCommand));
+    vkCmdDrawIndirect(cmd, m_indirect_buffer[frame_number % FRAMES_IN_FLIGHT].handle, 0, 2 /* TODO */, sizeof(VkDrawIndirectCommand));
     vkEndCommandBuffer(cmd);
 }
 

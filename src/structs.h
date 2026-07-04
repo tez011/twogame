@@ -13,13 +13,20 @@ struct BindingZero {
 };
 struct InstanceEntry {
     mat4s model;
+    VkDeviceAddress joint_matrices;
+    VkDeviceAddress morph_weights;
     uint32_t mesh_id;
     uint32_t material_id;
 };
 struct MeshEntry {
+    VkDeviceAddress index_buffer_address;
     VkDeviceAddress vertex_buffer_address;
     VkDeviceAddress normal_buffer_address;
-    VkDeviceAddress index_buffer_address;
+    VkDeviceAddress joints_buffer_address;
+    VkDeviceAddress vertex_displacement_address;
+    VkDeviceAddress normal_displacement_address;
+    uint32_t joint_count;
+    uint32_t displacement_count;
 };
 
 struct TRS {
