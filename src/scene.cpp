@@ -248,15 +248,13 @@ void SceneGraph::remove(uint32_t node)
 
 void SceneGraph::update_global_transforms()
 {
-    // keep this around to prevent reallocation overhead
-    static std::vector<mat4s> local_transforms;
-    static std::vector<uint32_t> stack;
-    m_global_transforms.resize(m_local_transforms.size());
-    local_transforms.resize(std::max(local_transforms.size(), m_local_transforms.size()));
-    stack.clear();
+    std::vector<mat4s> local_mats(node_count());
+    std::vector<uint32_t> stack;
+    m_global_transforms.resize(node_count());
+    stack.reserve(64);
 
     for (size_t i = 0; i < node_count(); i++) {
-        local_transforms[i] = std::visit([](auto&& xfm) -> mat4s {
+        local_mats[i] = std::visit([](auto&& xfm) -> mat4s {
             using T = std::decay_t<decltype(xfm)>;
             if constexpr (std::is_same<T, mat4s>::value)
                 return xfm;
@@ -266,24 +264,16 @@ void SceneGraph::update_global_transforms()
             m_local_transforms[i]);
 
         if (m_parents[i] == NONE) {
-            m_global_transforms[i] = local_transforms[i];
+            m_global_transforms[i] = local_mats[i];
             stack.push_back(i);
         }
     }
     while (stack.empty() == false) {
-        uint32_t i = stack.back();
+        uint32_t node = stack.back();
         stack.pop_back();
 
-        uint32_t parent = m_parents[i], sibling = m_siblings[i], child = m_children[i];
-        if (sibling != NONE) {
-            if (parent == NONE)
-                m_global_transforms[sibling] = local_transforms[sibling];
-            else
-                m_global_transforms[sibling] = glms_mat4_mul(m_global_transforms[parent], local_transforms[sibling]);
-            stack.push_back(sibling);
-        }
-        if (child != NONE) {
-            m_global_transforms[child] = glms_mat4_mul(m_global_transforms[i], local_transforms[child]);
+        for (uint32_t child = m_children[node]; child != NONE; child = m_siblings[child]) {
+            glm_mat4_mul(m_global_transforms[node].raw, local_mats[child].raw, m_global_transforms[child].raw);
             stack.push_back(child);
         }
     }

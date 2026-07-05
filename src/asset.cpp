@@ -81,6 +81,7 @@ Animation::Animation(const SceneManifest& source, size_t source_index, size_t ds
     size_t keyframe_width_by_sampler = 0;
 #endif
 
+    float duration = 0;
     for (auto it = info->samplers()->begin(); it != info->samplers()->end(); ++it) {
         Sampler& sampler = m_samplers.emplace_back();
         sampler.timeline = source.buffer<float>(it->timeline());
@@ -88,7 +89,7 @@ Animation::Animation(const SceneManifest& source, size_t source_index, size_t ds
         sampler.lerp_targets = it->lerp_targets();
         sampler.step_targets = it->step_targets();
         sampler.slerp_targets = it->slerp_targets();
-        m_duration = std::max(m_duration, sampler.timeline.back());
+        duration = std::max(duration, sampler.timeline.back());
 #ifdef DEBUG_BUILD
         keyframe_width_by_sampler += sampler.lerp_targets + sampler.step_targets + sampler.slerp_targets;
 #endif
@@ -104,6 +105,8 @@ Animation::Animation(const SceneManifest& source, size_t source_index, size_t ds
 #ifdef DEBUG_BUILD
     SDL_assert(keyframe_width_by_sampler == m_keyframe_width);
 #endif
+
+    m_duration = ceilf(1000.f * duration);
 }
 
 void Animation::interpolate(float t, vec4* dest, std::span<uint32_t> hints, bool force_step) const
@@ -503,7 +506,7 @@ size_t Mesh::write_buffer_addresses(std::span<MeshEntry> mesh_entries, VkDeviceA
     delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DPosition] + 15) & ~15;
     e.normal_displacement_address = base_vertices_addr + delta;
     delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DNormal] + 15) & ~15;
-    e.joint_count = m_joint_count;
+    e.joint_count = 4 * m_joint_count;
     e.displacement_count = m_displacement_count;
     return delta;
 }

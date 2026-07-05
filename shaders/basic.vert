@@ -39,8 +39,9 @@ layout(buffer_reference, std430) readonly buffer VertexBuffer { Vertex verts[]; 
 layout(buffer_reference, std430) readonly buffer NormalBuffer { Normal normals[]; };
 layout(buffer_reference, std430) readonly buffer IndexBuffer { uint16_t index[]; };
 layout(buffer_reference, std430) readonly buffer InstanceBuffer { Instance instances[]; };
-layout(buffer_reference, std430) readonly buffer VaryingMat4Buffer { mat4 m[]; };
-layout(buffer_reference, std430) readonly buffer VaryingFloatBuffer { float f[]; };
+layout(buffer_reference, std430) readonly buffer DenseMat4Buffer { mat4 m[]; };
+layout(buffer_reference, std430) readonly buffer DenseFloatBuffer { float f[]; };
+layout(buffer_reference, std430) readonly buffer DenseUintBuffer { uint32_t i[]; };
 
 layout(set = 0, binding = 0) uniform BindingZero {
     mat4 proj;
@@ -65,6 +66,8 @@ void main()
     IndexBuffer index_buffer = IndexBuffer(mesh.index_buffer);
     VertexBuffer vertex_buffer = VertexBuffer(mesh.vertex_buffer);
     NormalBuffer normal_buffer = NormalBuffer(mesh.normal_buffer);
+    DenseUintBuffer joint_indexes = DenseUintBuffer(mesh.joints_buffer);
+    DenseFloatBuffer joint_weights = DenseFloatBuffer(mesh.joints_buffer);
 
     uint vertex_index = uint(index_buffer.index[gl_VertexIndex]);
     Vertex v = vertex_buffer.verts[vertex_index];
@@ -73,7 +76,7 @@ void main()
     vec2 uv[2] = v.uv;
 
     if (instance.morph_weights != 0) {
-        VaryingFloatBuffer morph_weights = VaryingFloatBuffer(instance.morph_weights);
+        DenseFloatBuffer morph_weights = DenseFloatBuffer(instance.morph_weights);
         VertexBuffer morph_posns = VertexBuffer(mesh.vertex_displacements);
         NormalBuffer morph_norms = NormalBuffer(mesh.normal_displacements);
         for (uint i = 0; i < mesh.displacement_count; i++) {
@@ -86,7 +89,19 @@ void main()
         }
     }
 
-    gl_Position = proj * view * instance.model * vec4(position, 1.0);
+    mat4 skin;
+    if (instance.joint_matrices != 0) {
+        DenseMat4Buffer joint_mats = DenseMat4Buffer(instance.joint_matrices);
+        skin = mat4(0.0);
+        for (uint i = 0; i < mesh.joint_count; i++) {
+            float weight = joint_weights.f[vertex_index * mesh.joint_count * 2 + mesh.joint_count + i];
+            skin += weight * joint_mats.m[joint_indexes.i[vertex_index * mesh.joint_count * 2 + i]];
+        }
+    } else {
+        skin = mat4(1.0);
+    }
+
+    gl_Position = proj * view * instance.model * skin * vec4(position, 1.0);
     out_normal = normal;
     out_uv = uv[0];
     out_material_id = instance.material_id;

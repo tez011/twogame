@@ -497,12 +497,13 @@ std::vector<size_t> load_skins(fbs::AssetsT& out_assets, BufferTrain& out_data, 
 }
 
 struct AnimationTargetT : public fbs::AnimationTargetT {
-    size_t sampler;
-    size_t channel;
+    size_t sampler, bucket, channel;
     bool operator<(const AnimationTargetT& other) const
     {
         if (sampler != other.sampler)
             return sampler < other.sampler;
+        if (bucket != other.bucket)
+            return bucket < other.bucket;
         return channel < other.channel;
     }
 };
@@ -551,6 +552,7 @@ void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fast
                 target.width = 1;
                 target.field = static_cast<fbs::AnimationTargetField>(it->path);
                 target.sampler = sampler_key;
+                target.bucket = channel_bucket;
                 target.channel = std::distance(sampler_outputs[sampler_key][channel_bucket].begin(), channel_it);
 
                 if (it->path == fastgltf::AnimationPath::Weights) {

@@ -59,8 +59,7 @@ class Animation final : public IAsset {
 
     std::vector<Sampler> m_samplers;
     std::vector<AnimationTarget> m_targets;
-    size_t m_keyframe_width;
-    float m_duration;
+    size_t m_keyframe_width, m_duration;
 
 public:
     Animation(const SceneManifest& source, size_t source_index, size_t dst_index);
@@ -69,8 +68,8 @@ public:
     virtual size_t prepare_needs() const override { return 0; }
     virtual size_t prepare(IScene* scene, StagingBuffer& commands) override { return 0; }
 
-    float duration() const { return m_duration; }
-    float keyframe_width() const { return m_keyframe_width; }
+    size_t duration() const { return m_duration; }
+    size_t keyframe_width() const { return m_keyframe_width; }
     size_t total_samplers() const { return m_samplers.size(); }
     std::span<const AnimationTarget> targets() const { return m_targets; }
 
