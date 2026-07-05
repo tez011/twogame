@@ -47,7 +47,7 @@ layout(set = 0, binding = 0) uniform BindingZero {
     mat4 view;
 };
 
-layout(set = 0, binding = 1) readonly buffer MeshBuffer { Mesh meshes[]; };
+layout(set = 0, binding = 1, std430) readonly buffer MeshBuffer { Mesh meshes[]; };
 
 layout(push_constant, std430) uniform PC {
     uint64_t instance_buffer_address;

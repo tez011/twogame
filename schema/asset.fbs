@@ -51,6 +51,8 @@ table Material {
     emissive_factor: Vec3;
     emissive_texture: Texture;
     emissive_uv: uint;
+    alpha_cutoff: float;
+    alpha_mask: bool;
     double_sided: bool;
     unlit: bool;
 }
@@ -65,7 +67,7 @@ table Mesh {
     index_count: ulong;
     vertex_count: uint;
     primitive_topology: uint = 4;
-    material: uint = null; // Material*
+    material: uint; // Material*
 
     indexes: uint32; // buffer size (in bytes) = index_count * index byte width
     positions: uint32; // buffer size (in Vec4) = vertex_count * (uv_channels + 1)//2

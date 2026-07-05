@@ -28,6 +28,24 @@ struct MeshEntry {
     uint32_t joint_count;
     uint32_t displacement_count;
 };
+struct MaterialEntry {
+    vec4s base_color_factor;
+    vec3s emissive_factor;
+    float metallic_factor;
+    float roughness_factor;
+    float alpha_cutoff;
+
+    uint16_t base_color_texture;
+    uint16_t metallic_roughness_texture;
+    uint16_t normal_texture;
+    uint16_t occlusion_texture;
+    uint16_t base_color_uv;
+    uint16_t metallic_roughness_uv;
+    uint16_t normal_uv;
+    uint16_t occlusion_uv;
+    uint16_t emissive_uv;
+};
+constexpr auto a = sizeof(MaterialEntry);
 
 struct TRS {
     versors rotation;

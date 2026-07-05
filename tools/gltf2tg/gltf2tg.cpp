@@ -137,6 +137,8 @@ void load_materials(fbs::AssetsT& out_assets, const std::vector<fastgltf::Materi
             ot->occlusion_texture->sampler = texture.samplerIndex.value_or(0);
             ot->occlusion_uv = it->occlusionTexture.value().texCoordIndex;
         }
+        ot->alpha_cutoff = it->alphaCutoff;
+        ot->alpha_mask = it->alphaMode == fastgltf::AlphaMode::Mask;
         ot->roughness_factor = it->pbrData.roughnessFactor;
         ot->unlit = it->unlit;
     }
@@ -367,7 +369,7 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
             if (it->materialIndex)
                 ot->material = it->materialIndex.value();
             else
-                ot->material = std::nullopt;
+                ot->material = 0;
 
             std::vector<vec4s> position_displacements(positions.size() * ht->weights.size()), normal_displacements(normals.size() * ht->weights.size()),
                 ptp_pos(position_displacements.size()), ptp_nor(normal_displacements.size());

@@ -130,10 +130,14 @@ void StagingBuffer::finalize()
 
 AssetContainer& AssetContainer::operator+=(const AssetContainer& other)
 {
+    auto p_images = m_images.insert(m_images.end(), other.m_images.begin(), other.m_images.end());
+    auto p_materials = m_materials.insert(m_materials.end(), other.m_materials.begin(), other.m_materials.end());
     m_animations.insert(m_animations.end(), other.m_animations.begin(), other.m_animations.end());
-    m_images.insert(m_images.end(), other.m_images.begin(), other.m_images.end());
     m_meshes.insert(m_meshes.end(), other.m_meshes.begin(), other.m_meshes.end());
     m_skeletons.insert(m_skeletons.end(), other.m_skeletons.begin(), other.m_skeletons.end());
+
+    for (auto it = p_materials; it != m_materials.end(); ++it)
+        (*it)->advance_images(std::distance(m_images.begin(), p_images));
     return *this;
 }
 
@@ -319,6 +323,8 @@ SceneManifest::SceneManifest(const std::string& path)
         m_container.animations().emplace_back(std::make_shared<asset::Animation>(*this, i, m_container.animations().size()));
     for (size_t i = 0; m_manifest->images() && i < m_manifest->images()->size(); i++)
         m_container.images().emplace_back(std::make_shared<asset::Image>(*this, i, m_container.images().size()));
+    for (size_t i = 0; m_manifest->materials() && i < m_manifest->materials()->size(); i++)
+        m_container.materials().emplace_back(std::make_shared<asset::Material>(*this, i, m_container.materials().size()));
     for (size_t i = 0; m_manifest->meshes() && i < m_manifest->meshes()->size(); i++)
         m_container.meshes().emplace_back(std::make_shared<asset::Mesh>(*this, i, m_container.meshes().size()));
     for (size_t i = 0; m_manifest->skeletons() && i < m_manifest->skeletons()->size(); i++)
@@ -387,7 +393,7 @@ SceneManifest::SceneManifest(const std::string& path)
                     MeshNode& mesh = m_meshes.emplace_back();
                     mesh.node_index = node_index;
                     mesh.mesh_index = node->mesh()->Get(i);
-                    mesh.material_index = 0;
+                    mesh.material_index = m_container.meshes()[mesh.mesh_index]->material_index();
                     mesh.skeleton_index = node->skeleton().value_or(std::numeric_limits<uint32_t>::max());
                     mesh.skin = mesh_skin;
                     mesh.weights = mesh_weights;
@@ -422,6 +428,7 @@ IScene::~IScene()
 {
     vmaDestroyBuffer(DisplayHost::allocator(), m_vertices_buffer.handle, m_vertices_buffer.mem);
     vmaDestroyBuffer(DisplayHost::allocator(), m_mesh_refs_buffer.handle, m_mesh_refs_buffer.mem);
+    vmaDestroyBuffer(DisplayHost::allocator(), m_materials_buffer.handle, m_materials_buffer.mem);
     vmaDestroyBuffer(DisplayHost::allocator(), m_binding_zero_buffer.handle, m_binding_zero_buffer.mem);
     for (size_t i = 0; i < FRAMES_IN_FLIGHT; i++) {
         vmaDestroyBuffer(DisplayHost::allocator(), m_varying_buffer[i].handle, m_varying_buffer[i].mem);
@@ -503,6 +510,18 @@ std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* rend
         vmaFlushAllocation(DisplayHost::allocator(), m_mesh_refs_buffer.mem, 0, VK_WHOLE_SIZE);
     }
 
+    buffer_ci.size = sizeof(MaterialEntry) * std::max(1UL, m_assets.materials().size());
+    buffer_ci.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+    VK_DEMAND(vmaCreateBuffer(DisplayHost::allocator(), &buffer_ci, &alloc_ci, &m_materials_buffer.handle, &m_materials_buffer.mem, &alloc_info));
+    vmaGetMemoryTypeProperties(DisplayHost::allocator(), alloc_info.memoryType, &m_materials_buffer.memflags);
+    if (m_materials_buffer.memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
+        void* mapped;
+        VK_DEMAND(vmaMapMemory(DisplayHost::allocator(), m_materials_buffer.mem, &mapped));
+        m_material_ptr = std::span(static_cast<MaterialEntry*>(mapped), m_assets.materials().size());
+    } else {
+        m_material_ptr = std::span(static_cast<MaterialEntry*>(nullptr), 0);
+    }
+
     buffer_ci.size = sizeof(BindingZero) * FRAMES_IN_FLIGHT;
     buffer_ci.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
     alloc_ci.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT;
@@ -547,6 +566,8 @@ std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* rend
     std::vector<IAsset*> all_assets;
     for (auto it = m_assets.meshes().begin(); it != m_assets.meshes().end(); ++it)
         all_assets.push_back(it->get());
+    for (auto it = m_assets.materials().begin(); it != m_assets.materials().end(); ++it)
+        all_assets.push_back(it->get());
     for (auto it = m_assets.images().begin(); it != m_assets.images().end(); ++it)
         all_assets.push_back(it->get());
 
@@ -586,10 +607,13 @@ void IScene::end_construct_assets(IRenderer* renderer)
     binding_zero_writes[1].offset = sizeof(BindingZero);
     binding_zero_writes[1].range = sizeof(BindingZero);
 
-    VkDescriptorBufferInfo mesh_refs_write {};
+    VkDescriptorBufferInfo mesh_refs_write {}, materials_write {};
     mesh_refs_write.buffer = m_mesh_refs_buffer.handle;
     mesh_refs_write.offset = 0;
     mesh_refs_write.range = sizeof(MeshEntry) * m_assets.meshes().size();
+    materials_write.buffer = m_materials_buffer.handle;
+    materials_write.offset = 0;
+    materials_write.range = sizeof(MaterialEntry) * m_assets.materials().size();
 
     std::array<VkDescriptorImageInfo, std::tuple_size<decltype(renderer->samplers())>::value> sampler_writes;
     for (size_t i = 0; i < std::tuple_size<decltype(renderer->samplers())>::value; i++) {
@@ -603,7 +627,7 @@ void IScene::end_construct_assets(IRenderer* renderer)
         picturebook_writes[i].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     }
 
-    std::array<VkWriteDescriptorSet, 8> writes {};
+    std::array<VkWriteDescriptorSet, 10> writes {};
     writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[0].dstSet = m_descriptor_set[0][0];
     writes[0].dstBinding = 0;
@@ -631,27 +655,39 @@ void IScene::end_construct_assets(IRenderer* renderer)
     writes[4].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[4].dstSet = m_descriptor_set[0][0];
     writes[4].dstBinding = 2;
-    writes[4].descriptorCount = sampler_writes.size();
-    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    writes[4].pImageInfo = sampler_writes.data();
+    writes[4].descriptorCount = 1;
+    writes[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[4].pBufferInfo = &materials_write;
     writes[5].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[5].dstSet = m_descriptor_set[1][0];
     writes[5].dstBinding = 2;
-    writes[5].descriptorCount = sampler_writes.size();
-    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    writes[5].pImageInfo = sampler_writes.data();
+    writes[5].descriptorCount = 1;
+    writes[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    writes[5].pBufferInfo = &materials_write;
     writes[6].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[6].dstSet = m_descriptor_set[0][0];
     writes[6].dstBinding = 3;
-    writes[6].descriptorCount = picturebook_writes.size();
-    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[6].pImageInfo = picturebook_writes.data();
+    writes[6].descriptorCount = sampler_writes.size();
+    writes[6].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[6].pImageInfo = sampler_writes.data();
     writes[7].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     writes[7].dstSet = m_descriptor_set[1][0];
     writes[7].dstBinding = 3;
-    writes[7].descriptorCount = picturebook_writes.size();
-    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    writes[7].pImageInfo = picturebook_writes.data();
+    writes[7].descriptorCount = sampler_writes.size();
+    writes[7].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    writes[7].pImageInfo = sampler_writes.data();
+    writes[8].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[8].dstSet = m_descriptor_set[0][0];
+    writes[8].dstBinding = 4;
+    writes[8].descriptorCount = picturebook_writes.size();
+    writes[8].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[8].pImageInfo = picturebook_writes.data();
+    writes[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    writes[9].dstSet = m_descriptor_set[1][0];
+    writes[9].dstBinding = 4;
+    writes[9].descriptorCount = picturebook_writes.size();
+    writes[9].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    writes[9].pImageInfo = picturebook_writes.data();
     vkUpdateDescriptorSets(DisplayHost::device(), writes.size(), writes.data(), 0, nullptr);
 }
 
@@ -666,6 +702,8 @@ void IScene::record_commands(IRenderer* renderer, uint32_t frame_number)
     offsets.fill(0);
     sizes.fill(VK_WHOLE_SIZE);
     vmaFlushAllocations(DisplayHost::allocator(), allocations.size(), allocations.data(), offsets.data(), sizes.data());
+    if (m_varying_buffer[frame_number % FRAMES_IN_FLIGHT].mem)
+        vmaFlushAllocation(DisplayHost::allocator(), m_varying_buffer[frame_number % FRAMES_IN_FLIGHT].mem, 0, VK_WHOLE_SIZE);
     vkResetCommandPool(DisplayHost::device(), m_draw_cmd_pool[frame_number % FRAMES_IN_FLIGHT], 0);
 
     VkBufferDeviceAddressInfo bda_info {};
@@ -702,7 +740,7 @@ void IScene::record_commands(IRenderer* renderer, uint32_t frame_number)
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->graphics_pipeline(0));
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, renderer->pipeline_layout(0), 0, m_descriptor_set[frame_number % FRAMES_IN_FLIGHT].size(), m_descriptor_set[frame_number % FRAMES_IN_FLIGHT].data(), 0, nullptr);
     vkCmdPushConstants(cmd, renderer->pipeline_layout(0), VK_SHADER_STAGE_ALL, 0, sizeof(VkDeviceAddress), &instance_buffer_address);
-    vkCmdDrawIndirect(cmd, m_indirect_buffer[frame_number % FRAMES_IN_FLIGHT].handle, 0, 2 /* TODO */, sizeof(VkDrawIndirectCommand));
+    vkCmdDrawIndirect(cmd, m_indirect_buffer[frame_number % FRAMES_IN_FLIGHT].handle, 0, m_draw_meshes.size(), sizeof(VkDrawIndirectCommand));
     vkEndCommandBuffer(cmd);
 }
 

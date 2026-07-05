@@ -27,7 +27,7 @@ IRenderer::IRenderer()
 
     VkDescriptorSetLayoutCreateInfo binding_layout_ci {};
     VkDescriptorSetLayoutBindingFlagsCreateInfo binding_flags_ci {};
-    std::array<VkDescriptorSetLayoutBinding, 4> bindings {};
+    std::array<VkDescriptorSetLayoutBinding, 5> bindings {};
     std::array<VkDescriptorBindingFlags, std::size(bindings)> binding_flags {};
     binding_layout_ci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     binding_layout_ci.pNext = &binding_flags_ci;
@@ -45,14 +45,18 @@ IRenderer::IRenderer()
     bindings[1].descriptorCount = 1;
     bindings[1].stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
     bindings[2].binding = 2;
-    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    bindings[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     bindings[2].descriptorCount = 1;
     bindings[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     bindings[3].binding = 3;
-    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    bindings[3].descriptorCount = Constants::PICTUREBOOK_CAPACITY;
+    bindings[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    bindings[3].descriptorCount = 1;
     bindings[3].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
-    binding_flags[3] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
+    bindings[4].binding = 4;
+    bindings[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    bindings[4].descriptorCount = Constants::PICTUREBOOK_CAPACITY;
+    bindings[4].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    binding_flags[4] = VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT | VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT | VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT;
     VK_DEMAND(vkCreateDescriptorSetLayout(DisplayHost::device(), &binding_layout_ci, nullptr, &m_descriptor_set_layout[0]));
 
     VkPipelineLayoutCreateInfo pipeline_layout_ci {};

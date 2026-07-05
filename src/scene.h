@@ -22,6 +22,7 @@ class IRenderer;
 namespace asset {
     class Animation;
     class Image;
+    class Material;
     class Mesh;
     class Skeleton;
 }
@@ -70,6 +71,7 @@ class AssetContainer {
 protected:
     std::vector<std::shared_ptr<asset::Animation>> m_animations;
     std::vector<std::shared_ptr<asset::Image>> m_images;
+    std::vector<std::shared_ptr<asset::Material>> m_materials;
     std::vector<std::shared_ptr<asset::Mesh>> m_meshes;
     std::vector<std::shared_ptr<asset::Skeleton>> m_skeletons;
 
@@ -81,6 +83,8 @@ public:
     std::span<const std::shared_ptr<asset::Animation>> animations() const { return m_animations; }
     std::vector<std::shared_ptr<asset::Image>>& images() { return m_images; }
     std::span<const std::shared_ptr<asset::Image>> images() const { return m_images; }
+    std::vector<std::shared_ptr<asset::Material>>& materials() { return m_materials; }
+    std::span<const std::shared_ptr<asset::Material>> materials() const { return m_materials; }
     std::vector<std::shared_ptr<asset::Mesh>>& meshes() { return m_meshes; }
     std::span<const std::shared_ptr<asset::Mesh>> meshes() const { return m_meshes; }
     std::vector<std::shared_ptr<asset::Skeleton>>& skeletons() { return m_skeletons; }
@@ -249,7 +253,6 @@ protected:
     std::array<std::array<VkDescriptorSet, 1>, FRAMES_IN_FLIGHT> m_descriptor_set;
 
     std::span<BindingZero> m_binding_zero;
-    std::span<MeshEntry> m_mesh_refs;
     std::array<std::span<vec4s>, FRAMES_IN_FLIGHT> m_varying;
     std::array<std::span<InstanceEntry>, FRAMES_IN_FLIGHT> m_instances;
     std::array<std::span<VkDrawIndirectCommand>, FRAMES_IN_FLIGHT> m_draw_commands;
@@ -265,15 +268,19 @@ private:
 
     std::array<VkCommandPool, FRAMES_IN_FLIGHT> m_draw_cmd_pool;
     std::array<std::array<VkCommandBuffer, 1>, FRAMES_IN_FLIGHT> m_draw_cmd;
-    ManagedBuffer m_vertices_buffer, m_mesh_refs_buffer, m_binding_zero_buffer;
+    ManagedBuffer m_vertices_buffer, m_mesh_refs_buffer, m_materials_buffer, m_binding_zero_buffer;
     std::array<ManagedBuffer, FRAMES_IN_FLIGHT> m_instances_buffer, m_indirect_buffer;
     std::span<std::byte> m_vertices_ptr;
+    std::span<MeshEntry> m_mesh_refs;
+    std::span<MaterialEntry> m_material_ptr;
 
 public:
     std::array<ManagedBuffer, FRAMES_IN_FLIGHT> m_varying_buffer; // TODO this should be private once logic is moved into `IScene`
 
     virtual ~IScene();
-    inline std::span<const MeshEntry> mesh_references() const { return m_mesh_refs; }
+    inline VkBuffer material_entries_buffer() const { return m_materials_buffer.handle; }
+    inline std::span<MaterialEntry> material_entries() const { return m_material_ptr; }
+    inline std::span<const MeshEntry> mesh_entries() const { return m_mesh_refs; }
     inline VkBuffer mesh_data_buffer() const { return m_vertices_buffer.handle; }
     inline std::span<std::byte> mesh_data_pointer() const { return m_vertices_ptr; }
     inline VkCommandBuffer draw_commands(uint32_t frame_number, int subpass) const { return m_draw_cmd[frame_number % FRAMES_IN_FLIGHT][subpass]; }
