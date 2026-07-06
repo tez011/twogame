@@ -4,6 +4,7 @@
 #include <atomic>
 #include <bit>
 #include <cstddef>
+#include <new>
 #include <type_traits>
 
 template <typename T, std::size_t C>

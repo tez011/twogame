@@ -1,12 +1,22 @@
 cmake_minimum_required(VERSION 3.31)
 
 add_executable(twogame
-    "allocator.cpp"
-    "asset.cpp"
-    "displayhost.cpp"
-    "renderer.cpp"
-    "scene.cpp"
+    "assets/animation.cpp"
+    "assets/image.cpp"
+    "assets/material.cpp"
+    "assets/mesh.cpp"
+    "assets/skeleton.cpp"
+    "core/math.cpp"
+    "render/allocator.cpp"
+    "render/display_host.cpp"
+    "render/renderer.cpp"
+    "render/staging_buffer.cpp"
+    "scene/scene_graph.cpp"
+    "scene/scene_host.cpp"
+    "scene/scene_manifest.cpp"
+    "scene/scene.cpp"
     "main.cpp")
+target_include_directories(twogame PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(twogame
     cglm_headers
     embedded_shaders

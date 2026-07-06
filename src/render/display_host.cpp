@@ -1,16 +1,15 @@
 #define VK_ENABLE_BETA_EXTENSIONS
+#define VK_USE_PLATFORM_METAL_EXT
+#include "display_host.h"
 #include <algorithm>
-#include <array>
 #include <cmath>
-#include <cstddef>
-#include <cstdint>
-#include <cstdlib>
 #include <set>
+#include <string_view>
 #include <SDL3/SDL.h>
+#include <SDL3/SDL_log.h>
 #include <SDL3/SDL_vulkan.h>
-#include <volk.h>
-#include <vulkan/vulkan_metal.h>
-#include "display.h"
+#include "core/debug.h"
+#include "renderer.h"
 
 #ifdef DEBUG_BUILD
 constexpr static bool ENABLE_VALIDATION_LAYERS = true;

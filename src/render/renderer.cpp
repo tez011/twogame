@@ -1,7 +1,8 @@
-#include <set>
-#include "display.h"
+#include "renderer.h"
+#include "core/debug.h"
+#include "display_host.h"
 #include "embedded_shaders.h"
-#include "scene.h"
+#include "scene/scene_host.h"
 
 namespace twogame {
 
@@ -112,18 +113,18 @@ void IRenderer::resize_frames(VkExtent2D surface_extent)
 {
     constexpr float vertical_fov = Constants::VERTICAL_FOV * M_PI / 180.0f;
     const float cot_vertical_fov = 1.f / SDL_tanf(0.5f * vertical_fov);
-    m_perspective_projection.m00 = cot_vertical_fov * surface_extent.height / surface_extent.width;
-    m_perspective_projection.m11 = -cot_vertical_fov;
-    m_perspective_projection.m22 = 0.0f; // infinite far plane
-    m_perspective_projection.m23 = -1.0f; // Right-handed look at -Z
-    m_perspective_projection.m32 = 0.1f; // near Z plane
+    m_perspective_projection.raw[0][0] = cot_vertical_fov * surface_extent.height / surface_extent.width;
+    m_perspective_projection.raw[1][1] = -cot_vertical_fov;
+    m_perspective_projection.raw[2][2] = 0.0f; // infinite far plane
+    m_perspective_projection.raw[2][3] = -1.0f; // Right-handed look at -Z
+    m_perspective_projection.raw[3][2] = 0.1f; // near Z plane
 
-    m_ortho_projection.m00 = 2.f / surface_extent.width;
-    m_ortho_projection.m11 = -2.f / surface_extent.height;
-    m_ortho_projection.m30 = -1.f;
-    m_ortho_projection.m31 = 1.f;
-    m_ortho_projection.m32 = 1.f;
-    m_ortho_projection.m33 = 1.f;
+    m_ortho_projection.raw[0][0] = 2.f / surface_extent.width;
+    m_ortho_projection.raw[1][1] = -2.f / surface_extent.height;
+    m_ortho_projection.raw[3][0] = -1.f;
+    m_ortho_projection.raw[3][1] = 1.f;
+    m_ortho_projection.raw[3][2] = 1.f;
+    m_ortho_projection.raw[3][3] = 1.f;
 }
 
 SimpleForwardRenderer::SimpleForwardRenderer()
