@@ -47,8 +47,8 @@ public:
     {
         if (m_cameras.empty()) {
 #if 1
-            vec3s eye = { { -100.f,
-                100.f,
+            vec3s eye = { { 100.f,
+                200.f,
                 150.f } },
                   toward = { { 0,
                       50.f,

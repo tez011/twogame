@@ -37,5 +37,6 @@ void main()
     Material mtl = materials[in_material_id];
 
     vec4 base_color = vec4(texture(sampler2D(picture_book[nonuniformEXT(mtl.base_color_texture)], global_samplers[0]), in_uv).xyz, 1.0);
-    out_color = vec4(base_color.xyz, 1.0);
+    float lighting = 0.3 + clamp(1.5 * dot(in_normal, vec3(1.0, 0.0, 0.0)), 0.0, 0.7);
+    out_color = vec4(base_color.xyz * lighting, 1.0);
 }

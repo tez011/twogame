@@ -102,7 +102,7 @@ void main()
     }
 
     gl_Position = proj * view * instance.model * skin * vec4(position, 1.0);
-    out_normal = normal;
+    out_normal = normalize(mat3(instance.model) * normal);
     out_uv = uv[0];
     out_material_id = instance.material_id;
 }

@@ -258,8 +258,8 @@ void ImageGenerator::create_pipeline()
 {
     VkShaderModuleCreateInfo shader_ci {};
     shader_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shader_ci.codeSize = twogame::shaders::gltf2tg_resample_comp_size;
-    shader_ci.pCode = twogame::shaders::gltf2tg_resample_comp_spv;
+    shader_ci.codeSize = twogame::shaders::resample_comp_size;
+    shader_ci.pCode = twogame::shaders::resample_comp_spv;
     VK_DEMAND(vkCreateShaderModule(m_device, &shader_ci, nullptr, &m_shader));
 
     VkDescriptorSetLayoutBinding bindings[] = {
@@ -380,7 +380,7 @@ static int format_size(VkFormat fmt)
     case VK_FORMAT_R8G8B8A8_SRGB:
         return 4;
     default:
-        assert(false);
+        std::unreachable();
         return 0;
     }
 }

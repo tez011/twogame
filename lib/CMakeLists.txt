@@ -24,6 +24,10 @@ CPMAddPackage(NAME ktx
               OPTIONS "KTX_FEATURE_TESTS OFF"
                       "KTX_FEATURE_GL_UPLOAD OFF"
                       "KTX_FEATURE_VK_UPLOAD OFF")
+CPMAddPackage(NAME mikktspace
+              GIT_REPOSITORY https://github.com/mmikk/MikkTSpace.git
+              GIT_TAG 3e895b49d05ea07e4c2133156cfa94369e19e409
+              DOWNLOAD_ONLY YES)
 CPMAddPackage(NAME physicsfs
               VERSION 3.2.0
               GIT_REPOSITORY https://github.com/icculus/physfs.git
@@ -49,6 +53,13 @@ CPMAddPackage(NAME vulkanmemoryallocator
                       "VMA_STATIC_VULKAN_FUNCTIONS OFF")
 
 # ---- library options ----
+if (flatbuffers_ADDED)
+    set_target_properties(flatc PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+if (mikktspace_ADDED)
+    add_library(mikktspace OBJECT "${mikktspace_SOURCE_DIR}/mikktspace.c")
+    target_include_directories(mikktspace PUBLIC "${mikktspace_SOURCE_DIR}")
+endif()
 if (physicsfs_ADDED)
     set(PHYSFS_EXTRA_SRCS)
     if(APPLE)

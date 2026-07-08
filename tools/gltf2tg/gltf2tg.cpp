@@ -18,7 +18,9 @@
 namespace fs = std::filesystem;
 namespace fbs = twogame::fbs;
 
-int usage(const char* argv0, const std::string& extra = "")
+extern void generate_missing_attributes(fastgltf::Asset& asset);
+
+static int usage(const char* argv0, const std::string& extra = "")
 {
     std::cerr << "usage: " << argv0 << " [-s] -o OUTFILE INFILE" << std::endl
               << "\t-s: enable UASTC compression of image mip levels" << std::endl
@@ -190,7 +192,7 @@ void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, 
                 uv[index * ((uv_channels + 3) & (~1)) + 2 + i].v = value[1];
             });
         } else {
-            assert(false);
+            std::unreachable();
         }
     }
 
@@ -253,7 +255,7 @@ void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, 
                     normal[index * (2 + color_channels) + 2 + i].a = 0;
                 });
             } else {
-                assert(false);
+                std::unreachable();
             }
         } else if (accessor.type == fastgltf::AccessorType::Vec4) {
             if (accessor.componentType == fastgltf::ComponentType::Byte) {
@@ -292,10 +294,10 @@ void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, 
                     normal[index * (2 + color_channels) + 2 + i].a = value[3];
                 });
             } else {
-                assert(false);
+                std::unreachable();
             }
         } else {
-            assert(false);
+            std::unreachable();
         }
     }
 }
@@ -327,7 +329,7 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
                 fastgltf::copyFromAccessor<uint32_t>(asset, indexes_accessor, indexes.data());
                 ot->indexes = out_data.push(std::move(indexes));
             } else {
-                assert(false);
+                std::unreachable();
             }
 
             size_t posn_bsize = (uv_channels + 3) / 2, norm_bsize = 2 + color_channels;
@@ -609,7 +611,7 @@ void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fast
                         fastgltf::copyFromAccessor<fastgltf::math::fvec4>(asset, acc, reinterpret_cast<fastgltf::math::fvec4*>(channel_data.data()));
                         break;
                     default:
-                        assert(false);
+                        std::unreachable();
                     }
 
                     for (size_t i = 0; i < timeline.size(); i++) {
@@ -833,6 +835,7 @@ int main(int argc, char** argv)
     auto asset = parser.loadGltf(data.get(), infile.parent_path(), options);
     if (asset.error() != fastgltf::Error::None)
         return usage(*argv, "INFILE: invalid glTF data");
+    generate_missing_attributes(asset.get());
 
     ImageGenerator makeimage;
     makeimage.set_uastc(enable_uastc);
