@@ -9,6 +9,7 @@
 #include <map>
 #include <numeric>
 #include <queue>
+#include <ranges>
 #include <stack>
 #include <vector>
 #include <cglm/struct.h>
@@ -31,68 +32,40 @@ static int usage(const char* argv0, const std::string& extra = "")
     return 1;
 }
 
-class BufferTrain {
-    struct IBuffer {
-        virtual ~IBuffer() = default;
-        virtual std::span<const std::byte> bytes() const = 0;
-        size_t byte_size() const { return bytes().size_bytes(); }
-    };
-    template <typename T>
-    struct TypedBuffer : public IBuffer {
-        std::vector<T> m_vec;
-        explicit TypedBuffer(std::vector<T>&& vec)
-            : m_vec(std::move(vec))
-        {
-        }
-        std::span<const std::byte> bytes() const
-        {
-            return std::as_bytes(std::span(m_vec));
-        }
-    };
-    struct ImageBuffer : public IBuffer {
-        ImageGenerator::SerializedImage m_image;
-        explicit ImageBuffer(ImageGenerator::SerializedImage&& image)
-            : m_image(std::move(image))
-        {
-        }
-        std::span<const std::byte> bytes() const
-        {
-            return m_image.as_bytes();
-        }
-    };
-    std::vector<std::unique_ptr<IBuffer>> m_train;
+class DataWriter {
+    std::string m_asset_path;
+    std::vector<size_t> m_buffer_sizes;
+
+    void dump(std::span<const std::byte> data, size_t index)
+    {
+        std::vector<char> out_name(m_asset_path.length() + 16);
+        snprintf(out_name.data(), out_name.size(), "%s.%zu.bin", m_asset_path.c_str(), index);
+        std::ofstream slice_stream(out_name.data(), std::ios::binary | std::ios::out);
+        slice_stream.write(reinterpret_cast<const char*>(data.data()), data.size_bytes());
+        slice_stream.close();
+    }
 
 public:
-    size_t count() const { return m_train.size(); }
-    size_t size(size_t index) const { return m_train.at(index)->byte_size(); }
-
-    template <typename T>
-    size_t push(std::vector<T>&& vec)
-    {
-        if (vec.empty())
-            return 0;
-        m_train.push_back(std::make_unique<TypedBuffer<T>>(std::move(vec)));
-        return m_train.size();
-    }
-    size_t push(ImageGenerator::SerializedImage&& image)
-    {
-        if (image.as_bytes().empty())
-            return 0;
-        m_train.push_back(std::make_unique<ImageBuffer>(std::move(image)));
-        return m_train.size();
-    }
-    void dump(const std::string& asset_path)
+    DataWriter(const std::string& asset_path)
     {
         size_t ext_offset = asset_path.find_last_of('.');
-        std::vector<char> slice_name(ext_offset + 16);
-        std::copy(asset_path.begin(), asset_path.begin() + ext_offset, slice_name.begin());
-        for (size_t i = 0; i < m_train.size(); i++) {
-            snprintf(slice_name.data() + ext_offset, 16, ".%zu.bin", i + 1);
-            std::ofstream slice_stream(slice_name.data(), std::ios::binary | std::ios::out);
-            std::span<const std::byte> slice = m_train[i]->bytes();
-            slice_stream.write(reinterpret_cast<const char*>(slice.data()), slice.size_bytes());
-            slice_stream.close();
-        }
+        m_asset_path = asset_path.substr(0, ext_offset);
+    }
+
+    size_t count() const { return m_buffer_sizes.size(); }
+    size_t size(size_t index) const { return m_buffer_sizes[index]; }
+
+    template <std::ranges::contiguous_range T>
+    size_t push(T&& data)
+    {
+        if (data.empty())
+            return 0;
+
+        auto span = std::span(data);
+        m_buffer_sizes.push_back(span.size_bytes());
+        size_t index = m_buffer_sizes.size();
+        dump(std::as_bytes(span), index);
+        return index;
     }
 };
 
@@ -304,7 +277,7 @@ void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, 
     }
 }
 
-std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset, size_t uv_channels, size_t color_channels, size_t joint_channels)
+std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, DataWriter& out_data, const fastgltf::Asset& asset, size_t uv_channels, size_t color_channels, size_t joint_channels)
 {
     std::vector<std::vector<uint32_t>> mesh_groups;
     for (auto ht = asset.meshes.begin(); ht != asset.meshes.end(); ++ht) {
@@ -321,15 +294,15 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
                 fastgltf::iterateAccessorWithIndex<uint8_t>(asset, indexes_accessor, [&](uint8_t value, size_t index) {
                     indexes[index] = value;
                 });
-                ot->indexes = out_data.push(std::move(indexes));
+                ot->indexes = out_data.push(indexes);
             } else if (indexes_accessor.componentType == fastgltf::ComponentType::UnsignedShort) {
                 std::vector<uint16_t> indexes(ot->index_count);
                 fastgltf::copyFromAccessor<uint16_t>(asset, indexes_accessor, indexes.data());
-                ot->indexes = out_data.push(std::move(indexes));
+                ot->indexes = out_data.push(indexes);
             } else if (indexes_accessor.componentType == fastgltf::ComponentType::UnsignedInt) {
                 std::vector<uint32_t> indexes(ot->index_count);
                 fastgltf::copyFromAccessor<uint32_t>(asset, indexes_accessor, indexes.data());
-                ot->indexes = out_data.push(std::move(indexes));
+                ot->indexes = out_data.push(indexes);
             } else {
                 std::unreachable();
             }
@@ -396,17 +369,17 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, BufferT
                 }
             }
 
-            ot->positions = out_data.push(std::move(positions));
-            ot->normals = out_data.push(std::move(normals));
-            ot->position_displacements = out_data.push(std::move(position_displacements));
-            ot->normal_displacements = out_data.push(std::move(normal_displacements));
+            ot->positions = out_data.push(positions);
+            ot->normals = out_data.push(normals);
+            ot->position_displacements = out_data.push(position_displacements);
+            ot->normal_displacements = out_data.push(normal_displacements);
         }
     }
 
     return mesh_groups;
 }
 
-std::vector<size_t> load_skins(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset)
+std::vector<size_t> load_skins(fbs::AssetsT& out_assets, DataWriter& out_data, const fastgltf::Asset& asset)
 {
     // skeletons: two "skins" are the same skeleton if they have equivalent joints.size and inverseBindMatrices accessor
     std::vector<std::pair<size_t, size_t>> skin_key(asset.skins.size());
@@ -434,7 +407,7 @@ std::vector<size_t> load_skins(fbs::AssetsT& out_assets, BufferTrain& out_data, 
             } else {
                 fastgltf::copyFromAccessor<fastgltf::math::fmat4x4>(asset, asset.accessors[k.second], skin_matrices.data());
             }
-            skeleton->skin_matrices = out_data.push(std::move(skin_matrices));
+            skeleton->skin_matrices = out_data.push(skin_matrices);
 
             // The bone nodes are all the children of the common ancestor of all the joints since the full graph is needed for rigging.
             // The joint nodes are the subset of the *bone nodes* that directly influence the skin.
@@ -512,7 +485,7 @@ struct AnimationTargetT : public fbs::AnimationTargetT {
     }
 };
 
-void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset, std::span<size_t> skin_to_skeleton)
+void load_animations(fbs::AssetsT& out_assets, DataWriter& out_data, const fastgltf::Asset& asset, std::span<size_t> skin_to_skeleton)
 {
     out_assets.animations.reserve(asset.animations.size());
     for (auto anim = asset.animations.begin(); anim != asset.animations.end(); ++anim) {
@@ -625,8 +598,8 @@ void load_animations(fbs::AssetsT& out_assets, BufferTrain& out_data, const fast
                 }
             }
 
-            sampler->timeline = out_data.push(std::move(timeline));
-            sampler->channels = out_data.push(std::move(channels));
+            sampler->timeline = out_data.push(timeline);
+            sampler->channels = out_data.push(channels);
             sampler->step_targets = target_count[0] >> 2;
             sampler->lerp_targets = target_count[1] >> 2;
             sampler->slerp_targets = target_count[2] >> 2;
@@ -728,7 +701,7 @@ void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, const st
     }
 }
 
-void load_images(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset, ImageGenerator& makeimage)
+void load_images(fbs::AssetsT& out_assets, DataWriter& out_data, const fastgltf::Asset& asset, ImageGenerator& makeimage)
 {
     std::set<uint32_t> vector_images;
     for (auto it = asset.materials.begin(); it != asset.materials.end(); ++it) {
@@ -744,7 +717,7 @@ void load_images(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf
         size_t index = std::visit(fastgltf::visitor {
                                       [&](auto& container) -> size_t {
                                           if constexpr (requires { container.bytes; }) {
-                                              return out_data.push(makeimage.generate(container.bytes, is_vector_image));
+                                              return out_data.push(makeimage.generate(container.bytes, is_vector_image).as_bytes());
                                           } else {
                                               return 0;
                                           }
@@ -755,8 +728,9 @@ void load_images(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf
                                           return std::visit(fastgltf::visitor {
                                                                 [&](auto& container) -> size_t {
                                                                     if constexpr (requires { container.bytes; }) {
-                                                                        std::span<const std::byte> container_span = container.bytes;
-                                                                        return out_data.push(makeimage.generate(container_span.subspan(buffer_view.byteOffset, buffer_view.byteLength), is_vector_image));
+                                                                        std::span<const std::byte> container_span = container.bytes,
+                                                                                                   image_span = container_span.subspan(buffer_view.byteOffset, buffer_view.byteLength);
+                                                                        return out_data.push(makeimage.generate(image_span, is_vector_image).as_bytes());
                                                                     } else {
                                                                         return 0;
                                                                     }
@@ -786,7 +760,7 @@ void load_names(fbs::AssetsT& out_assets, const fastgltf::Asset& asset)
 
 int main(int argc, char** argv)
 {
-    fs::path infile, outparam;
+    fs::path infile, outparam, ofs_path;
     fastgltf::Parser parser;
     bool enable_uastc = false;
     size_t max_uv_channels = 2, max_color_channels = 1, max_joint_channels = 1;
@@ -838,6 +812,8 @@ int main(int argc, char** argv)
         return usage(*argv, "OUTFILE: file not found");
     if (fs::is_regular_file(infile) == false)
         return usage(*argv, "INFILE: file not found");
+    ofs_path = outparam;
+    ofs_path.replace_extension(".tgs");
 
     fastgltf::Options options = fastgltf::Options::DontRequireValidAssetMember | fastgltf::Options::GenerateMeshIndices | fastgltf::Options::LoadExternalBuffers | fastgltf::Options::LoadExternalImages;
     auto data = fastgltf::GltfDataBuffer::FromPath(infile);
@@ -847,18 +823,31 @@ int main(int argc, char** argv)
     if (asset.error() != fastgltf::Error::None)
         return usage(*argv, "INFILE: invalid glTF data");
     generate_missing_attributes(asset.get());
+    std::cerr << "[I] generated missing normals/tangents" << std::endl;
 
     ImageGenerator makeimage;
     makeimage.set_uastc(enable_uastc);
 
     fbs::AssetsT out_assets;
-    BufferTrain out_data;
+    DataWriter out_data(ofs_path);
     load_materials(out_assets, asset->materials, asset->textures);
+    std::cerr << "[I] Loaded " << out_assets.materials.size() << " materials" << std::endl;
+
     std::vector<std::vector<uint32_t>> mesh_groups = load_meshes(out_assets, out_data, asset.get(), max_uv_channels, max_color_channels, max_joint_channels);
+    std::cerr << "[I] Extracted " << mesh_groups.size() << " -> " << out_assets.meshes.size() << " meshes" << std::endl;
+
     std::vector<size_t> skin_to_skeleton = load_skins(out_assets, out_data, asset.get());
+    std::cerr << "[I] Loaded " << skin_to_skeleton.size() << " skins to " << out_assets.skeletons.size() << " skeletons" << std::endl;
+
     load_animations(out_assets, out_data, asset.get(), skin_to_skeleton);
+    std::cerr << "[I] Extracted " << out_assets.animations.size() << " animations" << std::endl;
+
     load_images(out_assets, out_data, asset.get(), makeimage);
+    std::cerr << "[I] Extracted " << out_assets.images.size() << " images" << std::endl;
+
     load_scene(out_assets, asset.get(), mesh_groups, skin_to_skeleton);
+    std::cerr << "[I] Loaded " << out_assets.nodes.size() << " scene items" << std::endl;
+
     load_names(out_assets, asset.get());
 
     flatbuffers::FlatBufferBuilder fbb;
@@ -867,13 +856,8 @@ int main(int argc, char** argv)
     fbb.Finish(fbs::Assets::Pack(fbb, &out_assets));
 
     std::ofstream ofs;
-    fs::path ofs_path = outparam;
-    ofs_path.replace_extension(".tgs");
     ofs.open(ofs_path, std::ios::binary);
     ofs.write(reinterpret_cast<const char*>(fbb.GetBufferPointer()), fbb.GetSize());
-    ofs.close();
-
-    out_data.dump(ofs_path);
     ofs.close();
     return 0;
 }

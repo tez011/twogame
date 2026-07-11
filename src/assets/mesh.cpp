@@ -22,11 +22,13 @@ namespace mesh {
     struct prep {
         SceneManifest::BufferResolver buffer_resolver;
         std::array<size_t, SubBuffer_MAX_VALUE> buffers, buffer_sizes;
-        size_t mesh_index;
+        size_t mesh_index, joint_count;
+        MeshEntry entry;
 
         prep(const SceneManifest& source, size_t source_index, size_t dst_index)
             : buffer_resolver(source.buffer_resolver())
             , mesh_index(dst_index)
+            , entry({})
         {
             const fbs::Assets* manifest = source.manifest().get();
             const fbs::Mesh* info = manifest->meshes()->Get(source_index);
@@ -39,8 +41,30 @@ namespace mesh {
             std::transform(buffers.begin(), buffers.end(), buffer_sizes.begin(), [manifest](size_t buffer_index) {
                 return buffer_index ? manifest->buffers()->Get(buffer_index - 1) : 0;
             });
+
+            joint_count = buffer_sizes[mesh::SubBuffer_Joints] / ((sizeof(vec4) + sizeof(ivec4)) * info->vertex_count());
+            entry.joint_count = 4 * joint_count;
+            entry.displacement_count = info->displace_weights() ? info->displace_weights()->size() : 0;
         }
         ~prep() { }
+
+        size_t calculate_buffer_addresses(VkDeviceAddress base_vertices_addr)
+        {
+            size_t delta = 0;
+            entry.index_buffer_address = base_vertices_addr + delta;
+            delta += (buffer_sizes[mesh::SubBuffer_Index] + 15) & ~15;
+            entry.vertex_buffer_address = base_vertices_addr + delta;
+            delta += (buffer_sizes[mesh::SubBuffer_Position] + 15) & ~15;
+            entry.normal_buffer_address = base_vertices_addr + delta;
+            delta += (buffer_sizes[mesh::SubBuffer_Normal] + 15) & ~15;
+            entry.joints_buffer_address = base_vertices_addr + delta;
+            delta += (buffer_sizes[mesh::SubBuffer_Joints] + 15) & ~15;
+            entry.vertex_displacement_address = base_vertices_addr + delta;
+            delta += (buffer_sizes[mesh::SubBuffer_DPosition] + 15) & ~15;
+            entry.normal_displacement_address = base_vertices_addr + delta;
+            delta += (buffer_sizes[mesh::SubBuffer_DNormal] + 15) & ~15;
+            return delta;
+        }
     };
 
 }
@@ -56,7 +80,6 @@ Mesh::Mesh(const SceneManifest& source, size_t source_index, size_t dst_index)
 
     m_uv_channels = 2 * (prepare_data->buffer_sizes[mesh::SubBuffer_Position] / (m_vertex_count * sizeof(vec4))) - 2;
     m_color_channels = prepare_data->buffer_sizes[mesh::SubBuffer_Normal] / (m_vertex_count * sizeof(vec4)) - 2;
-    m_joint_count = prepare_data->buffer_sizes[mesh::SubBuffer_Joints] / ((sizeof(vec4) + sizeof(ivec4)) * m_vertex_count);
     switch (prepare_data->buffer_sizes[mesh::SubBuffer_Index] / m_index_count) {
     case 2:
         m_32bit_indexes = false;
@@ -106,7 +129,7 @@ size_t Mesh::prepare(IScene* scene, StagingBuffer& commands)
 
     std::span<std::byte> mesh_data = scene->mesh_data_pointer();
     std::array<std::vector<std::byte>, mesh::SubBuffer_MAX_VALUE> sub_buffers;
-    VkDeviceAddress base_vertices_addr = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info), base_offset = scene->mesh_entries()[prepare_data->mesh_index].index_buffer_address - base_vertices_addr;
+    VkDeviceAddress base_vertices_addr = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info), base_offset = prepare_data->entry.index_buffer_address - base_vertices_addr;
     for (size_t i = 0; i < mesh::SubBuffer_MAX_VALUE; i++)
         sub_buffers[i] = prepare_data->buffer_resolver(prepare_data->buffers[i]);
 
@@ -135,25 +158,11 @@ size_t Mesh::prepare(IScene* scene, StagingBuffer& commands)
     }
 }
 
-size_t Mesh::write_buffer_addresses(std::span<MeshEntry> mesh_entries, VkDeviceAddress base_vertices_addr) const
+size_t Mesh::get_buffer_addresses(std::span<MeshEntry> mesh_entries, VkDeviceAddress base_vertices_addr) const
 {
-    size_t delta = 0;
     auto prepare_data = std::static_pointer_cast<mesh::prep>(std::get<std::shared_ptr<void>>(m_prepared));
-    MeshEntry& e = mesh_entries[prepare_data->mesh_index];
-    e.index_buffer_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Index] + 15) & ~15;
-    e.vertex_buffer_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Position] + 15) & ~15;
-    e.normal_buffer_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Normal] + 15) & ~15;
-    e.joints_buffer_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_Joints] + 15) & ~15;
-    e.vertex_displacement_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DPosition] + 15) & ~15;
-    e.normal_displacement_address = base_vertices_addr + delta;
-    delta += (prepare_data->buffer_sizes[mesh::SubBuffer_DNormal] + 15) & ~15;
-    e.joint_count = 4 * m_joint_count;
-    e.displacement_count = m_displacement_count;
+    size_t delta = prepare_data->calculate_buffer_addresses(base_vertices_addr);
+    mesh_entries[prepare_data->mesh_index] = prepare_data->entry;
     return delta;
 }
 

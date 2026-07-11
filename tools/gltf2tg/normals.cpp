@@ -470,15 +470,13 @@ void generate_indexes(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
 
 void generate_missing_attributes(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
 {
-    bool generated_normals = false, generated_tangents = false;
+    bool generated_normals = false;
     if (mesh.findAttribute("NORMAL") == mesh.attributes.end()) {
         generate_mesh_normals(asset, mesh);
         generated_normals = true;
     }
-    if (generated_normals || mesh.findAttribute("TANGENT") == mesh.attributes.end()) {
+    if (generated_normals || mesh.findAttribute("TANGENT") == mesh.attributes.end())
         generate_mesh_tangents(asset, mesh);
-        generated_tangents = true;
-    }
     if (!mesh.indicesAccessor.has_value())
         generate_indexes(asset, mesh);
 }

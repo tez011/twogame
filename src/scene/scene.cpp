@@ -207,7 +207,7 @@ std::vector<std::vector<IAsset*>> IScene::begin_construct_assets(IRenderer* rend
     bda_info.buffer = m_vertices_buffer.handle;
     VkDeviceAddress base_vertices_addr = vkGetBufferDeviceAddress(DisplayHost::device(), &bda_info);
     for (size_t i = 0; i < m_assets.meshes().size(); i++) {
-        base_vertices_addr += std::static_pointer_cast<asset::Mesh>(m_assets.meshes()[i])->write_buffer_addresses(m_mesh_refs, base_vertices_addr);
+        base_vertices_addr += std::static_pointer_cast<asset::Mesh>(m_assets.meshes()[i])->get_buffer_addresses(m_mesh_refs, base_vertices_addr);
     }
     if (m_mesh_refs_buffer.memflags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) {
         vmaUnmapMemory(DisplayHost::allocator(), m_mesh_refs_buffer.mem);

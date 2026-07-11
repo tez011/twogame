@@ -15,7 +15,7 @@ class DemoScene : public twogame::IScene {
 public:
     DemoScene()
     {
-        twogame::SceneManifest assets("/data/fox.tgs");
+        twogame::SceneManifest assets("/data/sponza_base.tgs");
         m_assets += assets.assets();
         m_scenegraph = assets.scene();
         m_cameras.assign(assets.cameras().begin(), assets.cameras().end());
@@ -46,27 +46,36 @@ public:
     virtual void logic(uint64_t frame_number, uint64_t frame_time, uint64_t delta_time, twogame::SceneHost* stage) override
     {
         if (m_cameras.empty()) {
-#if 1
-            vec3s eye = { { 100.f,
-                200.f,
-                150.f } },
-                  toward = { { 0,
-                      50.f,
-                      0 } },
+            // Fox
+            // vec3s eye = { { 100.f,
+            //           100.f,
+            //           150.f } },
+            //       toward = { { 0,
+            //           50.f,
+            //           0 } },
+            //       up = { { 0,
+            //           1.f,
+            //           0 } };
+            // Bars/Cube
+            // vec3s eye = { { 0.f,
+            //           2.f,
+            //           3.f } },
+            //       toward = { { 0,
+            //           1.f,
+            //           0 } },
+            //       up = { { 0,
+            //           1.f,
+            //           0 } };
+            // Sponza
+            vec3s eye = { { -4.f,
+                      1.5f,
+                      -0.5f } },
+                  toward = { { -3.f,
+                      2.f,
+                      -0.5f } },
                   up = { { 0,
                       1.f,
                       0 } };
-#else
-            vec3s eye = { { 0.f,
-                      2.f,
-                      3.f } },
-                  toward = { { 0,
-                      1.f,
-                      0 } },
-                  up = { { 0,
-                      1.f,
-                      0 } }; // Bars/Cube
-#endif
             m_binding_zero[frame_number % FRAMES_IN_FLIGHT].view = glms_lookat(eye, toward, up);
         }
     }

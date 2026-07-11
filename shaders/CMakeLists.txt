@@ -21,7 +21,7 @@ add_custom_command(OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/embedded_shaders.h" "${CM
                                             -P "${CMAKE_SOURCE_DIR}/shaders/embed_spv.cmake"
                    DEPENDS "${CMAKE_SOURCE_DIR}/shaders/embed_spv.cmake" ${SPV_OUTPUTS}
                    VERBATIM)
-add_library(embedded_shaders STATIC EXCLUDE_FROM_ALL "${CMAKE_CURRENT_BINARY_DIR}/embedded_shaders.cpp")
+add_library(embedded_shaders OBJECT EXCLUDE_FROM_ALL "${CMAKE_CURRENT_BINARY_DIR}/embedded_shaders.cpp")
 target_include_directories(embedded_shaders INTERFACE "${CMAKE_CURRENT_BINARY_DIR}")
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/embedded_shaders.h" PROPERTIES GENERATED TRUE)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/embedded_shaders.cpp" PROPERTIES GENERATED TRUE)

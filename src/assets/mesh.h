@@ -8,7 +8,7 @@ namespace twogame::asset {
 
 class Mesh final : public IAsset {
     size_t m_vertex_count, m_index_count;
-    uint32_t m_displacement_count, m_joint_count, m_material_index;
+    uint32_t m_displacement_count, m_material_index;
 
     union {
         uint32_t m_pipeline_key;
@@ -36,7 +36,7 @@ public:
     inline uint32_t displacement_count() const { return m_displacement_count; }
     inline uint32_t pipeline_key() const { return m_pipeline_key; }
     inline uint32_t material_index() const { return m_material_index; }
-    size_t write_buffer_addresses(std::span<MeshEntry> mesh_entries, VkDeviceAddress base) const;
+    size_t get_buffer_addresses(std::span<MeshEntry> mesh_entries, VkDeviceAddress base) const;
 
     virtual size_t prepare_needs() const override;
     virtual size_t prepare(IScene* scene, StagingBuffer& commands) override;
