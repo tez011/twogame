@@ -10,8 +10,8 @@
 #include <string>
 #include <vector>
 #include <ktx.h>
-#include "embedded_shaders.h"
 #include "gltf2tg.h"
+#include "resample.h"
 #include "stb_image.h"
 #ifdef LINK_RENDERDOC
 #include <dlfcn.h>
@@ -97,7 +97,8 @@ ImageGenerator::ImageGenerator()
 
 ImageGenerator::~ImageGenerator()
 {
-    vkDestroyPipeline(m_device, m_pipeline, nullptr);
+    vkDestroyPipeline(m_device, m_color_pipeline, nullptr);
+    vkDestroyPipeline(m_device, m_vector_pipeline, nullptr);
     vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
     vkDestroyDescriptorSetLayout(m_device, m_descriptor_layout, nullptr);
     vkDestroyShaderModule(m_device, m_shader, nullptr);
@@ -258,8 +259,8 @@ void ImageGenerator::create_pipeline()
 {
     VkShaderModuleCreateInfo shader_ci {};
     shader_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-    shader_ci.codeSize = twogame::shaders::resample_comp_size;
-    shader_ci.pCode = twogame::shaders::resample_comp_spv;
+    shader_ci.codeSize = resample_spv_size;
+    shader_ci.pCode = resample_spv;
     VK_DEMAND(vkCreateShaderModule(m_device, &shader_ci, nullptr, &m_shader));
 
     VkDescriptorSetLayoutBinding bindings[] = {
@@ -278,14 +279,29 @@ void ImageGenerator::create_pipeline()
     layout_ci.pSetLayouts = &m_descriptor_layout;
     VK_DEMAND(vkCreatePipelineLayout(m_device, &layout_ci, nullptr, &m_pipeline_layout));
 
-    VkComputePipelineCreateInfo createinfo {};
-    createinfo.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    createinfo.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    createinfo.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-    createinfo.stage.module = m_shader;
-    createinfo.stage.pName = "main";
-    createinfo.layout = m_pipeline_layout;
-    VK_DEMAND(vkCreateComputePipelines(m_device, nullptr, 1, &createinfo, nullptr, &m_pipeline));
+    std::array<uint32_t, 2> spec_data = { 0, 1 };
+    VkSpecializationMapEntry entry {};
+    entry.size = sizeof(uint32_t);
+
+    std::array<VkPipeline, 2> pipeline;
+    std::array<VkComputePipelineCreateInfo, std::size(pipeline)> createinfo {};
+    std::array<VkSpecializationInfo, std::size(pipeline)> spec_info {};
+    for (size_t i = 0; i < pipeline.size(); i++) {
+        createinfo[i].sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+        createinfo[i].stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        createinfo[i].stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        createinfo[i].stage.module = m_shader;
+        createinfo[i].stage.pName = "main";
+        createinfo[i].stage.pSpecializationInfo = &spec_info[i];
+        createinfo[i].layout = m_pipeline_layout;
+        spec_info[i].mapEntryCount = 1;
+        spec_info[i].pMapEntries = &entry;
+        spec_info[i].dataSize = sizeof(uint32_t);
+        spec_info[i].pData = &spec_data[i];
+    }
+    VK_DEMAND(vkCreateComputePipelines(m_device, nullptr, createinfo.size(), createinfo.data(), nullptr, pipeline.data()));
+    m_color_pipeline = pipeline[0];
+    m_vector_pipeline = pipeline[1];
 }
 
 uint32_t ImageGenerator::find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags flags)
@@ -319,51 +335,51 @@ static int stb_io_eof(void* user)
     return self->eof();
 }
 
-ImageGenerator::SerializedImage ImageGenerator::generate(std::span<const std::byte> image_data)
+ImageGenerator::SerializedImage ImageGenerator::generate(std::span<const std::byte> image_data, bool is_vector_image)
 {
     int width, height, n;
     const stbi_uc* image_ptr = reinterpret_cast<const stbi_uc*>(image_data.data());
     if (stbi_is_hdr_from_memory(image_ptr, image_data.size())) {
         float* rd = stbi_loadf_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
         if (rd)
-            return generate(rd, width, height, VK_FORMAT_R32G32B32A32_SFLOAT);
+            return generate(rd, width, height, VK_FORMAT_R32G32B32A32_SFLOAT, is_vector_image);
         else
             std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
     } else if (stbi_is_16_bit_from_memory(image_ptr, image_data.size())) {
         stbi_us* rd = stbi_load_16_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
         if (rd)
-            return generate(rd, width, height, VK_FORMAT_R16G16B16A16_UINT);
+            return generate(rd, width, height, VK_FORMAT_R16G16B16A16_UINT, is_vector_image);
         else
             std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
     } else {
         stbi_uc* rd = stbi_load_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
         if (rd)
-            return generate(rd, width, height, VK_FORMAT_R8G8B8A8_SRGB);
+            return generate(rd, width, height, VK_FORMAT_R8G8B8A8_SRGB, is_vector_image);
         else
             std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
     }
     return SerializedImage();
 }
 
-ImageGenerator::SerializedImage ImageGenerator::generate(const std::filesystem::path& in)
+ImageGenerator::SerializedImage ImageGenerator::generate(const std::filesystem::path& in, bool is_vector_image)
 {
     int x, y, n;
     if (stbi_is_hdr(in.c_str())) {
         float* rd = stbi_loadf(in.c_str(), &x, &y, &n, 4);
         if (rd)
-            return generate(rd, x, y, VK_FORMAT_R32G32B32A32_SFLOAT);
+            return generate(rd, x, y, VK_FORMAT_R32G32B32A32_SFLOAT, is_vector_image);
         else
             std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
     } else if (stbi_is_16_bit(in.c_str())) {
         stbi_us* rd = stbi_load_16(in.c_str(), &x, &y, &n, 4);
         if (rd)
-            return generate(rd, x, y, VK_FORMAT_R16G16B16A16_UINT);
+            return generate(rd, x, y, VK_FORMAT_R16G16B16A16_UINT, is_vector_image);
         else
             std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
     } else {
         stbi_uc* rd = stbi_load(in.c_str(), &x, &y, &n, 4);
         if (rd)
-            return generate(rd, x, y, VK_FORMAT_R8G8B8A8_SRGB);
+            return generate(rd, x, y, VK_FORMAT_R8G8B8A8_SRGB, is_vector_image);
         else
             std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
     }
@@ -385,7 +401,7 @@ static int format_size(VkFormat fmt)
     }
 }
 
-ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, int width, int height, VkFormat input_format)
+ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, int width, int height, VkFormat input_format, bool is_vector_image)
 {
     size_t mip_count = 1 + floor(log2(std::max(width, height)));
     VkDescriptorPool descriptor_pool;
@@ -571,7 +587,7 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, is_vector_image ? m_vector_pipeline : m_color_pipeline);
 
     size_t mip_width = width / 2, mip_height = height / 2;
     for (size_t i = 1; i < mip_count; i++) {

@@ -100,7 +100,13 @@ void load_materials(fbs::AssetsT& out_assets, const std::vector<fastgltf::Materi
 {
     for (auto it = materials.begin(); it != materials.end(); ++it) {
         auto& ot = out_assets.materials.emplace_back(std::make_unique<fbs::MaterialT>());
+        ot->alpha_cutoff = it->alphaCutoff;
+        ot->alpha_mask = it->alphaMode == fastgltf::AlphaMode::Mask;
         ot->base_color_factor = std::make_unique<fbs::Vec4>(std::span<const float, 4> { it->pbrData.baseColorFactor.data(), 4 });
+        ot->double_sided = it->doubleSided;
+        ot->metallic_factor = it->pbrData.metallicFactor;
+        ot->roughness_factor = it->pbrData.roughnessFactor;
+        ot->unlit = it->unlit;
         if (it->pbrData.baseColorTexture) {
             auto& texture = textures[it->pbrData.baseColorTexture.value().textureIndex];
             ot->base_color_texture = std::make_unique<fbs::TextureT>();
@@ -108,8 +114,6 @@ void load_materials(fbs::AssetsT& out_assets, const std::vector<fastgltf::Materi
             ot->base_color_texture->sampler = texture.samplerIndex.value_or(0);
             ot->base_color_uv = it->pbrData.baseColorTexture.value().texCoordIndex;
         }
-        ot->double_sided = it->doubleSided;
-        ot->emissive_factor = std::make_unique<fbs::Vec3>(std::span<const float, 3> { it->emissiveFactor.data(), 3 });
         if (it->emissiveTexture) {
             auto& texture = textures[it->emissiveTexture.value().textureIndex];
             ot->emissive_texture = std::make_unique<fbs::TextureT>();
@@ -117,7 +121,6 @@ void load_materials(fbs::AssetsT& out_assets, const std::vector<fastgltf::Materi
             ot->emissive_texture->sampler = texture.samplerIndex.value_or(0);
             ot->emissive_uv = it->emissiveTexture.value().texCoordIndex;
         }
-        ot->metallic_factor = it->pbrData.metallicFactor;
         if (it->pbrData.metallicRoughnessTexture) {
             auto& texture = textures[it->pbrData.metallicRoughnessTexture.value().textureIndex];
             ot->metallic_roughness_texture = std::make_unique<fbs::TextureT>();
@@ -139,10 +142,9 @@ void load_materials(fbs::AssetsT& out_assets, const std::vector<fastgltf::Materi
             ot->occlusion_texture->sampler = texture.samplerIndex.value_or(0);
             ot->occlusion_uv = it->occlusionTexture.value().texCoordIndex;
         }
-        ot->alpha_cutoff = it->alphaCutoff;
-        ot->alpha_mask = it->alphaMode == fastgltf::AlphaMode::Mask;
-        ot->roughness_factor = it->pbrData.roughnessFactor;
-        ot->unlit = it->unlit;
+
+        fastgltf::math::fvec3 emissive_factor = it->emissiveFactor * it->emissiveStrength;
+        ot->emissive_factor = std::make_unique<fbs::Vec3>(std::span<const float, 3> { emissive_factor.data(), emissive_factor.size() });
     }
 }
 
@@ -726,14 +728,23 @@ void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, const st
     }
 }
 
-void load_images(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset, ImageGenerator& makeimage, const fs::path& out_name)
+void load_images(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf::Asset& asset, ImageGenerator& makeimage)
 {
+    std::set<uint32_t> vector_images;
+    for (auto it = asset.materials.begin(); it != asset.materials.end(); ++it) {
+        if (it->anisotropy && it->anisotropy->anisotropyTexture && asset.textures[it->anisotropy->anisotropyTexture->textureIndex].imageIndex.has_value())
+            vector_images.insert(asset.textures[it->anisotropy->anisotropyTexture->textureIndex].imageIndex.value());
+        if (it->normalTexture && asset.textures[it->normalTexture->textureIndex].imageIndex.has_value())
+            vector_images.insert(asset.textures[it->normalTexture->textureIndex].imageIndex.value());
+    }
+
     out_assets.images.reserve(asset.images.size());
     for (size_t i = 0; i < asset.images.size(); i++) {
+        bool is_vector_image = vector_images.contains(i);
         size_t index = std::visit(fastgltf::visitor {
                                       [&](auto& container) -> size_t {
                                           if constexpr (requires { container.bytes; }) {
-                                              return out_data.push(makeimage.generate(container.bytes));
+                                              return out_data.push(makeimage.generate(container.bytes, is_vector_image));
                                           } else {
                                               return 0;
                                           }
@@ -745,7 +756,7 @@ void load_images(fbs::AssetsT& out_assets, BufferTrain& out_data, const fastgltf
                                                                 [&](auto& container) -> size_t {
                                                                     if constexpr (requires { container.bytes; }) {
                                                                         std::span<const std::byte> container_span = container.bytes;
-                                                                        return out_data.push(makeimage.generate(container_span.subspan(buffer_view.byteOffset, buffer_view.byteLength)));
+                                                                        return out_data.push(makeimage.generate(container_span.subspan(buffer_view.byteOffset, buffer_view.byteLength), is_vector_image));
                                                                     } else {
                                                                         return 0;
                                                                     }
@@ -846,7 +857,7 @@ int main(int argc, char** argv)
     std::vector<std::vector<uint32_t>> mesh_groups = load_meshes(out_assets, out_data, asset.get(), max_uv_channels, max_color_channels, max_joint_channels);
     std::vector<size_t> skin_to_skeleton = load_skins(out_assets, out_data, asset.get());
     load_animations(out_assets, out_data, asset.get(), skin_to_skeleton);
-    load_images(out_assets, out_data, asset.get(), makeimage, outparam);
+    load_images(out_assets, out_data, asset.get(), makeimage);
     load_scene(out_assets, asset.get(), mesh_groups, skin_to_skeleton);
     load_names(out_assets, asset.get());
 

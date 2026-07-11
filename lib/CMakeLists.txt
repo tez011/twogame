@@ -7,11 +7,6 @@ CPMAddPackage(NAME cglm
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "CGLM_SHARED OFF"
                       "CGLM_STATIC ON")
-CPMAddPackage(NAME fastgltf
-              VERSION 0.9.0
-              GIT_REPOSITORY https://github.com/spnda/fastgltf.git
-              EXCLUDE_FROM_ALL TRUE
-              OPTIONS "BUILD_SHARED_LIBS OFF")
 CPMAddPackage(NAME flatbuffers
               VERSION 25.12.19
               GIT_REPOSITORY https://github.com/google/flatbuffers.git
@@ -24,10 +19,6 @@ CPMAddPackage(NAME ktx
               OPTIONS "KTX_FEATURE_TESTS OFF"
                       "KTX_FEATURE_GL_UPLOAD OFF"
                       "KTX_FEATURE_VK_UPLOAD OFF")
-CPMAddPackage(NAME mikktspace
-              GIT_REPOSITORY https://github.com/mmikk/MikkTSpace.git
-              GIT_TAG 3e895b49d05ea07e4c2133156cfa94369e19e409
-              DOWNLOAD_ONLY YES)
 CPMAddPackage(NAME physicsfs
               VERSION 3.2.0
               GIT_REPOSITORY https://github.com/icculus/physfs.git
@@ -38,11 +29,6 @@ CPMAddPackage(NAME pugixml
               GIT_REPOSITORY https://github.com/zeux/pugixml.git
               EXCLUDE_FROM_ALL TRUE
               OPTIONS "BUILD_SHARED_LIBS OFF")
-CPMAddPackage(NAME stb
-              VERSION 2.30
-              GIT_REPOSITORY https://github.com/nothings/stb.git
-              GIT_TAG 013ac3beddff3dbffafd5177e7972067cd2b5083
-              DOWNLOAD_ONLY YES)
 CPMAddPackage(NAME vulkanmemoryallocator
               VERSION 3.3.0
               GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
@@ -55,10 +41,6 @@ CPMAddPackage(NAME vulkanmemoryallocator
 # ---- library options ----
 if (flatbuffers_ADDED)
     set_target_properties(flatc PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}")
-endif()
-if (mikktspace_ADDED)
-    add_library(mikktspace OBJECT "${mikktspace_SOURCE_DIR}/mikktspace.c")
-    target_include_directories(mikktspace PUBLIC "${mikktspace_SOURCE_DIR}")
 endif()
 if (physicsfs_ADDED)
     set(PHYSFS_EXTRA_SRCS)
@@ -106,8 +88,4 @@ if (physicsfs_ADDED)
                                               "PHYSFS_SUPPORTS_ISO9660=0"
                                               "PHYSFS_SUPPORTS_VDF=0")
     set_property(TARGET physfs PROPERTY POSITION_INDEPENDENT_CODE TRUE)
-endif()
-if (stb_ADDED)
-    add_library(stb_image INTERFACE)
-    target_include_directories(stb_image INTERFACE "${stb_SOURCE_DIR}")
 endif()

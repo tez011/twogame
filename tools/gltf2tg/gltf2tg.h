@@ -47,7 +47,7 @@ private:
     VkShaderModule m_shader;
     VkDescriptorSetLayout m_descriptor_layout;
     VkPipelineLayout m_pipeline_layout;
-    VkPipeline m_pipeline;
+    VkPipeline m_color_pipeline, m_vector_pipeline;
 
     bool m_enable_uastc = false;
     void* m_debugger = nullptr;
@@ -59,13 +59,13 @@ private:
     void create_pipeline();
     uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags flags);
 
-    SerializedImage generate(void* image_data, int width, int height, VkFormat format);
+    SerializedImage generate(void* image_data, int width, int height, VkFormat format, bool is_vector_image);
 
 public:
     ImageGenerator();
     ~ImageGenerator();
 
     inline void set_uastc(bool enable_uastc) { m_enable_uastc = enable_uastc; }
-    SerializedImage generate(std::span<const std::byte> image_data);
-    SerializedImage generate(const std::filesystem::path& in);
+    SerializedImage generate(std::span<const std::byte> image_data, bool is_vector_image);
+    SerializedImage generate(const std::filesystem::path& in, bool is_vector_image);
 };
