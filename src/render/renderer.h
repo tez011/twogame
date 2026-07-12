@@ -15,7 +15,14 @@ class IRenderer {
     std::array<VkSampler, 1> m_samplers;
 
 protected:
+    struct ImageAttachment {
+        VkImage image;
+        VkImageView view;
+        VmaAllocation mem;
+    };
     constexpr static auto FRAMES_IN_FLIGHT = Constants::FRAMES_IN_FLIGHT;
+    unsigned int m_max_msaa;
+    float m_sample_rate_shading;
     VkRenderPass m_render_pass;
     std::vector<VkPipelineLayout> m_pipeline_layouts;
     std::vector<VkPipeline> m_graphics_pipelines, m_compute_pipelines;
@@ -61,9 +68,7 @@ class SimpleForwardRenderer final : public IRenderer {
         VkFramebuffer framebuffer;
     };
     struct GPass : public Subpass {
-        VkImage color_buffer, depth_buffer;
-        VkImageView color_buffer_view, depth_buffer_view;
-        VmaAllocation color_buffer_mem, depth_buffer_mem;
+        ImageAttachment msaa_color, msaa_depth, resolve_color, resolve_depth;
     };
     using AllSubpasses = std::tuple<GPass>;
     struct FrameData {

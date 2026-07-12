@@ -12,12 +12,12 @@
 #include <ranges>
 #include <stack>
 #include <vector>
-#include <cglm/struct.h>
 #include <fastgltf/core.hpp>
 #include "asset.fbs.hpp"
 
 namespace fs = std::filesystem;
 namespace fbs = twogame::fbs;
+using namespace fastgltf::math;
 
 extern void generate_missing_attributes(fastgltf::Asset& asset);
 
@@ -116,21 +116,21 @@ void load_materials(fbs::AssetsT& out_assets, const std::vector<fastgltf::Materi
             ot->occlusion_uv = it->occlusionTexture.value().texCoordIndex;
         }
 
-        fastgltf::math::fvec3 emissive_factor = it->emissiveFactor * it->emissiveStrength;
+        fvec3 emissive_factor = it->emissiveFactor * it->emissiveStrength;
         ot->emissive_factor = std::make_unique<fbs::Vec3>(std::span<const float, 3> { emissive_factor.data(), emissive_factor.size() });
     }
 }
 
 template <typename FindAttribute>
     requires std::invocable<FindAttribute, std::string_view> && std::same_as<std::invoke_result_t<FindAttribute, std::string_view>, const fastgltf::Attribute*>
-void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, std::span<vec4s> normal, size_t uv_channels, size_t color_channels, FindAttribute&& find_attribute)
+void load_mesh_buffers(const fastgltf::Asset& asset, std::span<fvec4> position, std::span<fvec4> normal, size_t uv_channels, size_t color_channels, FindAttribute&& find_attribute)
 {
-    std::span<vec2s> uv(reinterpret_cast<vec2s*>(position.data()), position.size() * 2);
-    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, asset.accessors[find_attribute("POSITION")->accessorIndex], [&](fastgltf::math::fvec3 value, size_t index) {
-        position[index * ((uv_channels + 3) / 2)].x = value[0];
-        position[index * ((uv_channels + 3) / 2)].y = value[1];
-        position[index * ((uv_channels + 3) / 2)].z = value[2];
-        position[index * ((uv_channels + 3) / 2)].w = 1.f;
+    std::span<fvec2> uv(reinterpret_cast<fvec2*>(position.data()), position.size() * 2);
+    fastgltf::iterateAccessorWithIndex<fvec3>(asset, asset.accessors[find_attribute("POSITION")->accessorIndex], [&](fvec3 value, size_t index) {
+        position[index * ((uv_channels + 3) / 2)][0] = value[0];
+        position[index * ((uv_channels + 3) / 2)][1] = value[1];
+        position[index * ((uv_channels + 3) / 2)][2] = value[2];
+        position[index * ((uv_channels + 3) / 2)][3] = 1.f;
     });
 
     const fastgltf::Attribute* attribute;
@@ -142,29 +142,29 @@ void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, 
 
         auto& accessor = asset.accessors[attribute->accessorIndex];
         if (accessor.componentType == fastgltf::ComponentType::Byte) {
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::s8vec2>(asset, accessor, [&](fastgltf::math::s8vec2 value, size_t index) {
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].u = std::clamp(value[0] / 127.f, -1.f, 1.f);
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].v = std::clamp(value[1] / 127.f, -1.f, 1.f);
+            fastgltf::iterateAccessorWithIndex<s8vec2>(asset, accessor, [&](s8vec2 value, size_t index) {
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][0] = std::clamp(value[0] / 127.f, -1.f, 1.f);
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][1] = std::clamp(value[1] / 127.f, -1.f, 1.f);
             });
         } else if (accessor.componentType == fastgltf::ComponentType::UnsignedByte) {
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::u8vec2>(asset, accessor, [&](fastgltf::math::u8vec2 value, size_t index) {
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].u = std::clamp(value[0] / 255.f, 0.f, 1.f);
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].v = std::clamp(value[1] / 255.f, 0.f, 1.f);
+            fastgltf::iterateAccessorWithIndex<u8vec2>(asset, accessor, [&](u8vec2 value, size_t index) {
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][0] = std::clamp(value[0] / 255.f, 0.f, 1.f);
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][1] = std::clamp(value[1] / 255.f, 0.f, 1.f);
             });
         } else if (accessor.componentType == fastgltf::ComponentType::Short) {
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::s16vec2>(asset, accessor, [&](fastgltf::math::s16vec2 value, size_t index) {
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].u = std::clamp(value[0] / 32767.f, -1.f, 1.f);
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].v = std::clamp(value[1] / 32767.f, -1.f, 1.f);
+            fastgltf::iterateAccessorWithIndex<s16vec2>(asset, accessor, [&](s16vec2 value, size_t index) {
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][0] = std::clamp(value[0] / 32767.f, -1.f, 1.f);
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][1] = std::clamp(value[1] / 32767.f, -1.f, 1.f);
             });
         } else if (accessor.componentType == fastgltf::ComponentType::UnsignedShort) {
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::u16vec2>(asset, accessor, [&](fastgltf::math::u16vec2 value, size_t index) {
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].u = std::clamp(value[0] / 65535.f, 0.f, 1.f);
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].v = std::clamp(value[1] / 65535.f, 0.f, 1.f);
+            fastgltf::iterateAccessorWithIndex<u16vec2>(asset, accessor, [&](u16vec2 value, size_t index) {
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][0] = std::clamp(value[0] / 65535.f, 0.f, 1.f);
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][1] = std::clamp(value[1] / 65535.f, 0.f, 1.f);
             });
         } else if (accessor.componentType == fastgltf::ComponentType::Float) {
-            fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec2>(asset, accessor, [&](fastgltf::math::fvec2 value, size_t index) {
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].u = value[0];
-                uv[index * ((uv_channels + 3) & (~1)) + 2 + i].v = value[1];
+            fastgltf::iterateAccessorWithIndex<fvec2>(asset, accessor, [&](fvec2 value, size_t index) {
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][0] = value[0];
+                uv[index * ((uv_channels + 3) & (~1)) + 2 + i][1] = value[1];
             });
         } else {
             std::unreachable();
@@ -172,19 +172,19 @@ void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, 
     }
 
     if ((attribute = find_attribute("NORMAL")) != nullptr) {
-        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, asset.accessors[attribute->accessorIndex], [&](fastgltf::math::fvec3 value, size_t index) {
-            normal[index * (2 + color_channels) + 0].x = value[0];
-            normal[index * (2 + color_channels) + 0].y = value[1];
-            normal[index * (2 + color_channels) + 0].z = value[2];
-            normal[index * (2 + color_channels) + 0].w = 0.f;
+        fastgltf::iterateAccessorWithIndex<fvec3>(asset, asset.accessors[attribute->accessorIndex], [&](fvec3 value, size_t index) {
+            normal[index * (2 + color_channels) + 0][0] = value[0];
+            normal[index * (2 + color_channels) + 0][1] = value[1];
+            normal[index * (2 + color_channels) + 0][2] = value[2];
+            normal[index * (2 + color_channels) + 0][3] = 0.f;
         });
     }
     if ((attribute = find_attribute("TANGENT")) != nullptr) {
-        fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(asset, asset.accessors[attribute->accessorIndex], [&](fastgltf::math::fvec4 value, size_t index) {
-            normal[index * (2 + color_channels) + 1].x = value[0];
-            normal[index * (2 + color_channels) + 1].y = value[1];
-            normal[index * (2 + color_channels) + 1].z = value[2];
-            normal[index * (2 + color_channels) + 1].w = value[3];
+        fastgltf::iterateAccessorWithIndex<fvec4>(asset, asset.accessors[attribute->accessorIndex], [&](fvec4 value, size_t index) {
+            normal[index * (2 + color_channels) + 1][0] = value[0];
+            normal[index * (2 + color_channels) + 1][1] = value[1];
+            normal[index * (2 + color_channels) + 1][2] = value[2];
+            normal[index * (2 + color_channels) + 1][3] = value[3];
         });
     }
     for (size_t i = 0; i < color_channels; i++) {
@@ -195,78 +195,78 @@ void load_mesh_buffers(const fastgltf::Asset& asset, std::span<vec4s> position, 
         auto& accessor = asset.accessors[attribute->accessorIndex];
         if (accessor.type == fastgltf::AccessorType::Vec3) {
             if (accessor.componentType == fastgltf::ComponentType::Byte) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::s8vec3>(asset, accessor, [&](fastgltf::math::s8vec3 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = std::clamp(value[0] / 127.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].g = std::clamp(value[1] / 127.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].b = std::clamp(value[2] / 127.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].a = 0;
+                fastgltf::iterateAccessorWithIndex<s8vec3>(asset, accessor, [&](s8vec3 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = std::clamp(value[0] / 127.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][1] = std::clamp(value[1] / 127.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][2] = std::clamp(value[2] / 127.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][3] = 0;
                 });
             } else if (accessor.componentType == fastgltf::ComponentType::UnsignedByte) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::u8vec3>(asset, accessor, [&](fastgltf::math::u8vec3 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = std::clamp(value[0] / 255.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].g = std::clamp(value[1] / 255.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].b = std::clamp(value[2] / 255.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].a = 0;
+                fastgltf::iterateAccessorWithIndex<u8vec3>(asset, accessor, [&](u8vec3 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = std::clamp(value[0] / 255.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][1] = std::clamp(value[1] / 255.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][2] = std::clamp(value[2] / 255.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][3] = 0;
                 });
             } else if (accessor.componentType == fastgltf::ComponentType::Short) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::s16vec3>(asset, accessor, [&](fastgltf::math::s16vec3 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = std::clamp(value[0] / 32767.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].g = std::clamp(value[1] / 32767.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].b = std::clamp(value[2] / 32767.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].a = 0;
+                fastgltf::iterateAccessorWithIndex<s16vec3>(asset, accessor, [&](s16vec3 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = std::clamp(value[0] / 32767.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][1] = std::clamp(value[1] / 32767.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][2] = std::clamp(value[2] / 32767.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][3] = 0;
                 });
             } else if (accessor.componentType == fastgltf::ComponentType::UnsignedShort) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::u16vec3>(asset, accessor, [&](fastgltf::math::u16vec3 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = std::clamp(value[0] / 65535.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].g = std::clamp(value[1] / 65535.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].b = std::clamp(value[2] / 65535.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].a = 0;
+                fastgltf::iterateAccessorWithIndex<u16vec3>(asset, accessor, [&](u16vec3 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = std::clamp(value[0] / 65535.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][1] = std::clamp(value[1] / 65535.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][2] = std::clamp(value[2] / 65535.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][3] = 0;
                 });
             } else if (accessor.componentType == fastgltf::ComponentType::Float) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec3>(asset, accessor, [&](fastgltf::math::fvec3 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = value[0];
-                    normal[index * (2 + color_channels) + 2 + i].g = value[1];
-                    normal[index * (2 + color_channels) + 2 + i].b = value[2];
-                    normal[index * (2 + color_channels) + 2 + i].a = 0;
+                fastgltf::iterateAccessorWithIndex<fvec3>(asset, accessor, [&](fvec3 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = value[0];
+                    normal[index * (2 + color_channels) + 2 + i][1] = value[1];
+                    normal[index * (2 + color_channels) + 2 + i][2] = value[2];
+                    normal[index * (2 + color_channels) + 2 + i][3] = 0;
                 });
             } else {
                 std::unreachable();
             }
         } else if (accessor.type == fastgltf::AccessorType::Vec4) {
             if (accessor.componentType == fastgltf::ComponentType::Byte) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::s8vec4>(asset, accessor, [&](fastgltf::math::s8vec4 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = std::clamp(value[0] / 127.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].g = std::clamp(value[1] / 127.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].b = std::clamp(value[2] / 127.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].a = std::clamp(value[3] / 127.f, -1.f, 1.f);
+                fastgltf::iterateAccessorWithIndex<s8vec4>(asset, accessor, [&](s8vec4 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = std::clamp(value[0] / 127.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][1] = std::clamp(value[1] / 127.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][2] = std::clamp(value[2] / 127.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][3] = std::clamp(value[3] / 127.f, -1.f, 1.f);
                 });
             } else if (accessor.componentType == fastgltf::ComponentType::UnsignedByte) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::u8vec4>(asset, accessor, [&](fastgltf::math::u8vec4 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = std::clamp(value[0] / 255.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].g = std::clamp(value[1] / 255.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].b = std::clamp(value[2] / 255.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].a = std::clamp(value[3] / 255.f, 0.f, 1.f);
+                fastgltf::iterateAccessorWithIndex<u8vec4>(asset, accessor, [&](u8vec4 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = std::clamp(value[0] / 255.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][1] = std::clamp(value[1] / 255.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][2] = std::clamp(value[2] / 255.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][3] = std::clamp(value[3] / 255.f, 0.f, 1.f);
                 });
             } else if (accessor.componentType == fastgltf::ComponentType::Short) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::s16vec4>(asset, accessor, [&](fastgltf::math::s16vec4 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = std::clamp(value[0] / 32767.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].g = std::clamp(value[1] / 32767.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].b = std::clamp(value[2] / 32767.f, -1.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].a = std::clamp(value[3] / 32767.f, -1.f, 1.f);
+                fastgltf::iterateAccessorWithIndex<s16vec4>(asset, accessor, [&](s16vec4 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = std::clamp(value[0] / 32767.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][1] = std::clamp(value[1] / 32767.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][2] = std::clamp(value[2] / 32767.f, -1.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][3] = std::clamp(value[3] / 32767.f, -1.f, 1.f);
                 });
             } else if (accessor.componentType == fastgltf::ComponentType::UnsignedShort) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::u16vec4>(asset, accessor, [&](fastgltf::math::u16vec4 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = std::clamp(value[0] / 65535.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].g = std::clamp(value[1] / 65535.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].b = std::clamp(value[2] / 65535.f, 0.f, 1.f);
-                    normal[index * (2 + color_channels) + 2 + i].a = std::clamp(value[3] / 65535.f, 0.f, 1.f);
+                fastgltf::iterateAccessorWithIndex<u16vec4>(asset, accessor, [&](u16vec4 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = std::clamp(value[0] / 65535.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][1] = std::clamp(value[1] / 65535.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][2] = std::clamp(value[2] / 65535.f, 0.f, 1.f);
+                    normal[index * (2 + color_channels) + 2 + i][3] = std::clamp(value[3] / 65535.f, 0.f, 1.f);
                 });
             } else if (accessor.componentType == fastgltf::ComponentType::Float) {
-                fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(asset, accessor, [&](fastgltf::math::fvec4 value, size_t index) {
-                    normal[index * (2 + color_channels) + 2 + i].r = value[0];
-                    normal[index * (2 + color_channels) + 2 + i].g = value[1];
-                    normal[index * (2 + color_channels) + 2 + i].b = value[2];
-                    normal[index * (2 + color_channels) + 2 + i].a = value[3];
+                fastgltf::iterateAccessorWithIndex<fvec4>(asset, accessor, [&](fvec4 value, size_t index) {
+                    normal[index * (2 + color_channels) + 2 + i][0] = value[0];
+                    normal[index * (2 + color_channels) + 2 + i][1] = value[1];
+                    normal[index * (2 + color_channels) + 2 + i][2] = value[2];
+                    normal[index * (2 + color_channels) + 2 + i][3] = value[3];
                 });
             } else {
                 std::unreachable();
@@ -308,35 +308,35 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, DataWri
             }
 
             size_t posn_bsize = (uv_channels + 3) / 2, norm_bsize = 2 + color_channels;
-            std::vector<vec4s> positions(ot->vertex_count * posn_bsize), normals(ot->vertex_count * norm_bsize);
+            std::vector<fvec4> positions(ot->vertex_count * posn_bsize), normals(ot->vertex_count * norm_bsize);
             load_mesh_buffers(asset, positions, normals, uv_channels, color_channels, [it](std::string_view name) {
                 const fastgltf::Attribute* attr = it->findAttribute(name);
                 return attr == it->attributes.end() ? nullptr : attr;
             });
 
             if (it->findAttribute("JOINTS_0") != it->attributes.end()) {
-                std::vector<vec4s> joints_data(ot->vertex_count * joint_channels * 2);
+                std::vector<fvec4> joints_data(ot->vertex_count * joint_channels * 2);
                 const fastgltf::Attribute* attribute;
                 char accessor_name[16];
-                ivec4s* joints_index_data = reinterpret_cast<ivec4s*>(joints_data.data());
+                ivec4* joints_index_data = reinterpret_cast<ivec4*>(joints_data.data());
                 for (size_t i = 0; i < joint_channels; i++) {
                     snprintf(accessor_name, 16, "JOINTS_%zu", i);
                     if ((attribute = it->findAttribute(accessor_name)) == it->attributes.end())
                         break;
 
-                    fastgltf::iterateAccessorWithIndex<fastgltf::math::ivec4>(asset, asset.accessors[attribute->accessorIndex], [&](fastgltf::math::ivec4 value, size_t index) {
-                        joints_index_data[index * 2 * joint_channels + i].x = value[0];
-                        joints_index_data[index * 2 * joint_channels + i].y = value[1];
-                        joints_index_data[index * 2 * joint_channels + i].z = value[2];
-                        joints_index_data[index * 2 * joint_channels + i].w = value[3];
+                    fastgltf::iterateAccessorWithIndex<ivec4>(asset, asset.accessors[attribute->accessorIndex], [&](ivec4 value, size_t index) {
+                        joints_index_data[index * 2 * joint_channels + i][0] = value[0];
+                        joints_index_data[index * 2 * joint_channels + i][1] = value[1];
+                        joints_index_data[index * 2 * joint_channels + i][2] = value[2];
+                        joints_index_data[index * 2 * joint_channels + i][3] = value[3];
                     });
 
                     snprintf(accessor_name, 16, "WEIGHTS_%zu", i);
-                    fastgltf::iterateAccessorWithIndex<fastgltf::math::fvec4>(asset, asset.accessors[it->findAttribute(accessor_name)->accessorIndex], [&](fastgltf::math::fvec4 value, size_t index) {
-                        joints_data[index * 2 * joint_channels + joint_channels + i].x = value[0];
-                        joints_data[index * 2 * joint_channels + joint_channels + i].y = value[1];
-                        joints_data[index * 2 * joint_channels + joint_channels + i].z = value[2];
-                        joints_data[index * 2 * joint_channels + joint_channels + i].w = value[3];
+                    fastgltf::iterateAccessorWithIndex<fvec4>(asset, asset.accessors[it->findAttribute(accessor_name)->accessorIndex], [&](fvec4 value, size_t index) {
+                        joints_data[index * 2 * joint_channels + joint_channels + i][0] = value[0];
+                        joints_data[index * 2 * joint_channels + joint_channels + i][1] = value[1];
+                        joints_data[index * 2 * joint_channels + joint_channels + i][2] = value[2];
+                        joints_data[index * 2 * joint_channels + joint_channels + i][3] = value[3];
                     });
                 }
                 ot->joints = out_data.push(std::move(joints_data));
@@ -348,11 +348,11 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, DataWri
             else
                 ot->material = 0;
 
-            std::vector<vec4s> position_displacements(positions.size() * ht->weights.size()), normal_displacements(normals.size() * ht->weights.size()),
+            std::vector<fvec4> position_displacements(positions.size() * ht->weights.size()), normal_displacements(normals.size() * ht->weights.size()),
                 ptp_pos(position_displacements.size()), ptp_nor(normal_displacements.size());
             ot->displace_weights.assign(ht->weights.begin(), ht->weights.end());
             for (size_t w = 0; w < ht->weights.size(); w++) {
-                std::span<vec4s> positions_data = std::span(ptp_pos).subspan(w * positions.size()), normals_data = std::span(ptp_nor).subspan(w * normals.size());
+                std::span<fvec4> positions_data = std::span(ptp_pos).subspan(w * positions.size()), normals_data = std::span(ptp_nor).subspan(w * normals.size());
                 load_mesh_buffers(asset, positions_data, normals_data, uv_channels, color_channels, [w, it](std::string_view name) {
                     const fastgltf::Attribute* attr = it->findTargetAttribute(w, name);
                     return attr == it->targets[w].end() ? nullptr : attr;
@@ -360,12 +360,12 @@ std::vector<std::vector<uint32_t>> load_meshes(fbs::AssetsT& out_assets, DataWri
             }
             for (size_t w = 0; w < ht->weights.size(); w++) {
                 for (size_t v = 0; v < ot->vertex_count; v++) {
-                    memcpy(position_displacements[posn_bsize * (v * ht->weights.size() + w)].raw,
-                        ptp_pos[posn_bsize * (v + ot->vertex_count * w)].raw,
-                        posn_bsize * sizeof(vec4));
-                    memcpy(normal_displacements[norm_bsize * (v * ht->weights.size() + w)].raw,
-                        ptp_nor[norm_bsize * (v + ot->vertex_count * w)].raw,
-                        norm_bsize * sizeof(vec4));
+                    memcpy(position_displacements[posn_bsize * (v * ht->weights.size() + w)].data(),
+                        ptp_pos[posn_bsize * (v + ot->vertex_count * w)].data(),
+                        posn_bsize * sizeof(fvec4));
+                    memcpy(normal_displacements[norm_bsize * (v * ht->weights.size() + w)].data(),
+                        ptp_nor[norm_bsize * (v + ot->vertex_count * w)].data(),
+                        norm_bsize * sizeof(fvec4));
                 }
             }
 
@@ -399,13 +399,13 @@ std::vector<size_t> load_skins(fbs::AssetsT& out_assets, DataWriter& out_data, c
         if (inserted) {
             const fastgltf::Skin& asset_skin = asset.skins[dedup_it->second];
             std::unique_ptr<fbs::SkeletonT>& skeleton = out_assets.skeletons.emplace_back(std::make_unique<fbs::SkeletonT>());
-            std::vector<fastgltf::math::fmat4x4> skin_matrices(k.first);
+            std::vector<fmat4x4> skin_matrices(k.first);
             if (k.second == std::numeric_limits<size_t>::max()) {
-                mat4 identity = GLM_MAT4_IDENTITY_INIT;
+                fmat4x4 identity;
                 for (size_t i = 0; i < k.first; i++)
-                    memcpy(skin_matrices[i].data(), identity, sizeof(mat4));
+                    memcpy(skin_matrices[i].data(), identity.data(), sizeof(fmat4x4));
             } else {
-                fastgltf::copyFromAccessor<fastgltf::math::fmat4x4>(asset, asset.accessors[k.second], skin_matrices.data());
+                fastgltf::copyFromAccessor<fmat4x4>(asset, asset.accessors[k.second], skin_matrices.data());
             }
             skeleton->skin_matrices = out_data.push(skin_matrices);
 
@@ -445,7 +445,7 @@ std::vector<size_t> load_skins(fbs::AssetsT& out_assets, DataWriter& out_data, c
                                        fbs::Vec3(std::span<const float, 3> { trs.translation.data(), 3 }),
                                        fbs::Vec3(std::span<const float, 3> { trs.scale.data(), 3 })));
                                },
-                               [&](const fastgltf::math::fmat4x4& mat) {
+                               [&](const fmat4x4& mat) {
                                    auto columns = std::to_array({ fbs::Vec4(std::span<const float, 4> { mat.col(0).data(), 4 }),
                                        fbs::Vec4(std::span<const float, 4> { mat.col(1).data(), 4 }),
                                        fbs::Vec4(std::span<const float, 4> { mat.col(2).data(), 4 }),
@@ -580,10 +580,10 @@ void load_animations(fbs::AssetsT& out_assets, DataWriter& out_data, const fastg
                         fastgltf::copyFromAccessor<float>(asset, acc, channel_data.data());
                         break;
                     case fastgltf::AccessorType::Vec3:
-                        fastgltf::copyFromAccessor<fastgltf::math::fvec3>(asset, acc, reinterpret_cast<fastgltf::math::fvec3*>(channel_data.data()));
+                        fastgltf::copyFromAccessor<fvec3>(asset, acc, reinterpret_cast<fvec3*>(channel_data.data()));
                         break;
                     case fastgltf::AccessorType::Vec4:
-                        fastgltf::copyFromAccessor<fastgltf::math::fvec4>(asset, acc, reinterpret_cast<fastgltf::math::fvec4*>(channel_data.data()));
+                        fastgltf::copyFromAccessor<fvec4>(asset, acc, reinterpret_cast<fvec4*>(channel_data.data()));
                         break;
                     default:
                         std::unreachable();
@@ -682,7 +682,7 @@ void load_scene(fbs::AssetsT& out_assets, const fastgltf::Asset& asset, const st
                                fbs::Vec3(std::span<const float, 3> { trs.translation.data(), 3 }),
                                fbs::Vec3(std::span<const float, 3> { trs.scale.data(), 3 })));
                        },
-                       [&](const fastgltf::math::fmat4x4& mat) {
+                       [&](const fmat4x4& mat) {
                            auto columns = std::to_array({ fbs::Vec4(std::span<const float, 4> { mat.col(0).data(), 4 }),
                                fbs::Vec4(std::span<const float, 4> { mat.col(1).data(), 4 }),
                                fbs::Vec4(std::span<const float, 4> { mat.col(2).data(), 4 }),

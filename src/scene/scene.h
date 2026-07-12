@@ -47,7 +47,7 @@ private:
     std::array<VkCommandPool, FRAMES_IN_FLIGHT> m_draw_cmd_pool;
     std::array<std::array<VkCommandBuffer, 1>, FRAMES_IN_FLIGHT> m_draw_cmd;
     ManagedBuffer m_vertices_buffer, m_mesh_refs_buffer, m_materials_buffer, m_binding_zero_buffer;
-    std::array<ManagedBuffer, FRAMES_IN_FLIGHT> m_instances_buffer, m_indirect_buffer;
+    std::array<ManagedBuffer, FRAMES_IN_FLIGHT> m_instances_buffer {}, m_indirect_buffer {}, m_varying_buffer {};
     std::span<std::byte> m_vertices_ptr;
     std::span<MeshEntry> m_mesh_refs;
     std::span<MaterialEntry> m_material_ptr;
@@ -60,8 +60,6 @@ private:
     void record_commands(IRenderer*, uint32_t frame_number);
 
 public:
-    std::array<ManagedBuffer, FRAMES_IN_FLIGHT> m_varying_buffer; // TODO this should be private once logic is moved into `IScene`
-
     virtual ~IScene();
     inline VkBuffer material_entries_buffer() const { return m_materials_buffer.handle; }
     inline std::span<MaterialEntry> material_entries() const { return m_material_ptr; }

@@ -118,7 +118,7 @@ bool DisplayHost::create_instance()
     const char* title = SDL_GetAppMetadataProperty(SDL_PROP_APP_METADATA_NAME_STRING);
     if (title == nullptr)
         title = "twogame";
-    if ((m_window = SDL_CreateWindow(title, 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE)) == nullptr) {
+    if ((m_window = SDL_CreateWindow(title, 1280, 720, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY)) == nullptr) {
         SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "SDL_CreateWindow: %s", SDL_GetError());
         return false;
     }

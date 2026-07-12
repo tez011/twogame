@@ -31,7 +31,6 @@ add_executable(gltf2tg
     "normals.cpp"
     "gltf2tg.cpp")
 target_link_libraries(gltf2tg
-    cglm
     fastgltf
     flatbuffers
     ktx

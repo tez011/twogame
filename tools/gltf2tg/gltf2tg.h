@@ -3,7 +3,6 @@
 #include <filesystem>
 #include <memory>
 #include <span>
-#include <cglm/struct.h>
 #include <fastgltf/tools.hpp>
 #include <volk.h>
 
