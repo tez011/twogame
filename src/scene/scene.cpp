@@ -319,8 +319,8 @@ void IScene::end_construct_assets(IRenderer* renderer)
     materials_write.offset = 0;
     materials_write.range = sizeof(MaterialEntry) * m_assets.materials().size();
 
-    std::array<VkDescriptorImageInfo, std::tuple_size<decltype(renderer->samplers())>::value> sampler_writes;
-    for (size_t i = 0; i < std::tuple_size<decltype(renderer->samplers())>::value; i++) {
+    std::array<VkDescriptorImageInfo, std::tuple_size<std::decay_t<decltype(renderer->samplers())>>::value> sampler_writes;
+    for (size_t i = 0; i < std::tuple_size<std::decay_t<decltype(renderer->samplers())>>::value; i++) {
         sampler_writes[i].sampler = renderer->samplers().at(i);
         sampler_writes[i].imageView = VK_NULL_HANDLE;
     }

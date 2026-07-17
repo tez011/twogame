@@ -1,7 +1,7 @@
 #include "mesh.h"
-#include "asset.fbs.hpp"
 #include "render/display_host.h"
 #include "render/staging_buffer.h"
+#include "scene.fbs.hpp"
 #include "scene/scene.h"
 #include "scene/scene_manifest.h"
 
@@ -30,7 +30,7 @@ namespace mesh {
             , mesh_index(dst_index)
             , entry({})
         {
-            const fbs::Assets* manifest = source.manifest().get();
+            const fbs::Scene* manifest = source.manifest().get();
             const fbs::Mesh* info = manifest->meshes()->Get(source_index);
             buffers[SubBuffer_Index] = info->indexes();
             buffers[SubBuffer_Position] = info->positions();

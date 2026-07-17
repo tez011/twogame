@@ -1,12 +1,12 @@
 #include "scene_manifest.h"
 #include <deque>
 #include <physfs.h>
-#include "asset.fbs.hpp"
 #include "assets/animation.h"
 #include "assets/image.h"
 #include "assets/material.h"
 #include "assets/mesh.h"
 #include "assets/skeleton.h"
+#include "scene.fbs.hpp"
 
 namespace twogame {
 
@@ -26,14 +26,13 @@ AssetContainer& AssetContainer::operator+=(const AssetContainer& other)
 SceneManifest::SceneManifest(const std::string& path)
 {
     PHYSFS_File* fh = PHYSFS_openRead(path.c_str());
-    if (fh == nullptr)
-        return;
+    SDL_assert(fh);
 
     size_t manifest_size = PHYSFS_fileLength(fh);
     std::shared_ptr<std::byte[]> manifest_data = std::make_shared<std::byte[]>(manifest_size);
     PHYSFS_readBytes(fh, manifest_data.get(), manifest_size);
     PHYSFS_close(fh);
-    m_manifest = std::shared_ptr<const fbs::Assets>(manifest_data, fbs::GetAssets(manifest_data.get()));
+    m_manifest = std::shared_ptr<const fbs::Scene>(manifest_data, fbs::GetScene(manifest_data.get()));
 
     m_slurp_buffer = [path_pfx = path.substr(0, path.find_last_of('.'))](size_t i, std::function<void*(size_t)> resize) {
         if (i > 0) {

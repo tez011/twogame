@@ -1,10 +1,10 @@
 #include "image.h"
 #include <vector>
 #include <ktx.h>
-#include "asset.fbs.hpp"
 #include "core/debug.h"
 #include "render/display_host.h"
 #include "render/staging_buffer.h"
+#include "scene.fbs.hpp"
 #include "scene/scene_manifest.h"
 
 namespace twogame::asset {

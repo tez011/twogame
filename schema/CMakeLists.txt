@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.31)
 
 set(FLATBUFFERS_SCHEMAS
-    "asset.fbs")
+    "scene.fbs")
 
 set(GENERATED_FILES)
 

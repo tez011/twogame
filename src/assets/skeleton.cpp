@@ -1,6 +1,6 @@
 #include "skeleton.h"
-#include "asset.fbs.hpp"
 #include "core/debug.h"
+#include "scene.fbs.hpp"
 #include "scene/scene_manifest.h"
 
 namespace twogame::asset {

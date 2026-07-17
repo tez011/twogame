@@ -1,6 +1,6 @@
 #include "animation.h"
 #include <algorithm>
-#include "asset.fbs.hpp"
+#include "scene.fbs.hpp"
 #include "scene/scene_manifest.h"
 
 namespace twogame::asset {
@@ -44,7 +44,7 @@ void Animation::Sampler::interpolate(float t, vec4* output, uint32_t* hint, bool
                 const_cast<float*>(channels[(keyframe + 1) * total_targets + step_targets + i].raw),
                 pct, reinterpret_cast<float*>(output + step_targets + i));
         for (uint32_t i = 0; i < slerp_targets; i++)
-            glm_quat_slerp(const_cast<float*>(channels[keyframe * total_targets + step_targets + lerp_targets + i].raw),
+            glm_quat_nlerp(const_cast<float*>(channels[keyframe * total_targets + step_targets + lerp_targets + i].raw),
                 const_cast<float*>(channels[(keyframe + 1) * total_targets + step_targets + lerp_targets + i].raw),
                 pct, reinterpret_cast<float*>(output + step_targets + lerp_targets + i));
     }

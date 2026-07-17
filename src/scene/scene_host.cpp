@@ -117,60 +117,6 @@ void SceneHost::init(IRenderer* renderer, IScene* initial)
     prepare(initial);
 }
 
-/*
-VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    uint64_t pass = 0;
-    auto buckets = initial->begin_construct_assets(m_renderer.get(), m_staging_buffers[0]);
-    while (pass < buckets.size()) {
-        for (auto it = buckets[pass].begin(); it != buckets[pass].end(); ++it) {
-            m_staging_buffers[0].advance((*it)->prepare(initial, m_staging_buffers[0]));
-            (*it)->post_prepare(pass + 1);
-        }
-
-        m_staging_buffers[0].finalize();
-        pass++;
-
-        VkSubmitInfo submit {};
-        VkTimelineSemaphoreSubmitInfo timeline_info {};
-        submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-        submit.commandBufferCount = 1;
-        submit.pCommandBuffers = &m_staging_buffers[0].m_xfer_commands;
-        submit.signalSemaphoreCount = 1;
-        timeline_info.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-        timeline_info.signalSemaphoreValueCount = 1;
-        timeline_info.pSignalSemaphoreValues = &pass;
-        if (m_graphics_queue == m_transfer_queue) {
-            submit.pNext = &timeline_info;
-            submit.pSignalSemaphores = &m_timeline;
-            VK_DEMAND(vkQueueSubmit(m_transfer_queue, 1, &submit, VK_NULL_HANDLE));
-        } else {
-            submit.pSignalSemaphores = &m_staging_buffers[0].m_post_xfer;
-            VK_DEMAND(vkQueueSubmit(m_transfer_queue, 1, &submit, VK_NULL_HANDLE));
-
-            submit.pNext = &timeline_info;
-            submit.waitSemaphoreCount = 1;
-            submit.pWaitSemaphores = &m_staging_buffers[0].m_post_xfer;
-            submit.pWaitDstStageMask = &wait_stage;
-            submit.pCommandBuffers = &m_staging_buffers[0].m_acquire_commands;
-            submit.pSignalSemaphores = &m_timeline;
-            VK_DEMAND(vkQueueSubmit(m_graphics_queue, 1, &submit, VK_NULL_HANDLE));
-        }
-
-        VkSemaphoreWaitInfo wait_info {};
-        wait_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_WAIT_INFO;
-        wait_info.semaphoreCount = 1;
-        wait_info.pSemaphores = &m_timeline;
-        wait_info.pValues = &pass;
-
-        VK_DEMAND(vkWaitSemaphores(DisplayHost::device(), &wait_info, UINT64_MAX));
-    }
-    m_scenes[initial] = pass;
-    m_requested_scene = initial;
-    m_max_ticket.store(pass + 1, std::memory_order_relaxed);
-    initial->end_construct_assets(m_renderer.get());
-    initial->tick(0, 0, 0, this);
-    */
-
 void SceneHost::drop()
 {
     s_self.reset();
@@ -188,7 +134,7 @@ void SceneHost::scene_loop()
         // Wait for the last frame's resources to be free before we record commands for the next frame.
         uint32_t render_frame_number = display.m_frame_number.load(std::memory_order_acquire);
         SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "scene  thread: F%u WAITING (H%u)", frame_number, render_frame_number);
-        while ((render_frame_number = display.m_frame_number.load(std::memory_order_acquire)) < frame_number)
+        while (m_active && (render_frame_number = display.m_frame_number.load(std::memory_order_acquire)) < frame_number)
             display.m_frame_number.wait(render_frame_number, std::memory_order_relaxed);
         if (m_active == false)
             break;
@@ -247,14 +193,11 @@ void SceneHost::scene_loop()
 
 void SceneHost::builder_loop(int thread_id)
 {
-    while (true) {
+    while (m_active) {
         BQData build_job;
         m_builder_queue.pop(build_job);
-        if (build_job.scene == nullptr && build_job.bringup == false) {
-            vmaDestroyBuffer(DisplayHost::allocator(), m_staging_buffers[thread_id].m_src_buffer, m_staging_buffers[thread_id].m_src_mem);
-            vkDestroySemaphore(DisplayHost::device(), m_staging_buffers[thread_id].m_post_xfer, nullptr);
-            return;
-        }
+        if (build_job.scene == nullptr && build_job.bringup == false)
+            break;
 
         if (build_job.bringup) {
             VkSemaphoreWaitInfo wait_info {};
@@ -278,17 +221,28 @@ void SceneHost::builder_loop(int thread_id)
                 SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup=%p", job.scene, job.ticket, job.commands);
 
                 // Because the builder thread blocks until the command buffer we just submitted is complete, we don't need any GPU waiting.
-                wait_info.pValues = &job.ticket;
-                VK_DEMAND(vkWaitSemaphores(DisplayHost::device(), &wait_info, UINT64_MAX));
+                if (m_active) {
+                    wait_info.pValues = &job.ticket;
+                    VK_DEMAND(vkWaitSemaphores(DisplayHost::device(), &wait_info, UINT64_MAX));
+                } else {
+                    SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p abort", build_job.scene);
+                    delete build_job.scene;
+                    break;
+                }
             }
-            SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup complete", job.scene, job.ticket);
-            job.scene->end_construct_assets(m_renderer.get());
-            m_return_queue.push(job);
+            if (m_active) {
+                SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p ticket=%" PRIu64 " bringup complete", job.scene, job.ticket);
+                job.scene->end_construct_assets(m_renderer.get());
+                m_return_queue.push(job);
+            }
         } else {
             SDL_LogTrace(SDL_LOG_CATEGORY_SYSTEM, "worker thread: scene=%p teardown", build_job.scene);
             delete build_job.scene;
         }
     }
+
+    vmaDestroyBuffer(DisplayHost::allocator(), m_staging_buffers[thread_id].m_src_buffer, m_staging_buffers[thread_id].m_src_mem);
+    vkDestroySemaphore(DisplayHost::device(), m_staging_buffers[thread_id].m_post_xfer, nullptr);
 }
 
 bool SceneHost::prepare(IScene* scene)

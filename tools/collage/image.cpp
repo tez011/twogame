@@ -3,15 +3,18 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define VK_ENABLE_BETA_EXTENSIONS
 #include <csignal>
+#include <cstddef>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <set>
-#include <string>
+#include <span>
 #include <vector>
+#include <fastgltf/tools.hpp>
 #include <ktx.h>
-#include "gltf2tg.h"
-#include "resample.h"
+#include <volk.h>
 #include "stb_image.h"
 #ifdef LINK_RENDERDOC
 #include <dlfcn.h>
@@ -47,7 +50,23 @@ constexpr static const char** INSTANCE_LAYERS = nullptr;
 constexpr static uint32_t INSTANCE_LAYERS_COUNT = 0;
 #endif
 
-PFN_vkDestroyDebugUtilsMessengerEXT ImageGenerator::s_vkDestroyDebugUtilsMessenger = nullptr;
+bool image_enable_uastc = false;
+static PFN_vkDestroyDebugUtilsMessengerEXT s_vkDestroyDebugUtilsMessenger = nullptr;
+static VkInstance s_instance = VK_NULL_HANDLE;
+static VkDebugUtilsMessengerEXT s_debug_messenger = VK_NULL_HANDLE;
+static VkPhysicalDevice s_hwd = VK_NULL_HANDLE;
+static VkDevice s_device = VK_NULL_HANDLE;
+static VkCommandPool s_command_pool;
+static VkQueue s_queue;
+static VkShaderModule s_shader;
+static VkDescriptorSetLayout s_descriptor_layout;
+static VkPipelineLayout s_pipeline_layout;
+static VkPipeline s_color_pipeline, s_vector_pipeline;
+static void* s_debugger = nullptr;
+
+extern const uint32_t resample_spv[];
+extern const uint32_t resample_spv_size;
+
 static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
     VkDebugUtilsMessageTypeFlagsEXT type, const VkDebugUtilsMessengerCallbackDataEXT* cb_data, void* user_data)
 {
@@ -68,48 +87,7 @@ static VKAPI_ATTR VkBool32 VKAPI_CALL vk_debug_callback(VkDebugUtilsMessageSever
     return VK_FALSE;
 }
 
-ImageGenerator::SerializedImage::SerializedImage(const void* data, size_t size)
-    : m_data(reinterpret_cast<const std::byte*>(data), [](const void* p) { std::free(const_cast<void*>(p)); })
-    , m_size(size)
-{
-}
-
-ImageGenerator::ImageGenerator()
-{
-    create_instance();
-    create_debug_messenger();
-    pick_physical_device();
-    create_logical_device();
-    create_pipeline();
-
-#ifdef LINK_RENDERDOC
-    if (void* mod = dlopen("/usr/lib/librenderdoc.so", RTLD_NOW)) {
-        pRENDERDOC_GetAPI s = (pRENDERDOC_GetAPI)dlsym(mod, "RENDERDOC_GetAPI");
-        int ret = s(eRENDERDOC_API_Version_1_1_2, &m_debugger);
-        assert(ret == 1);
-    } else {
-        fprintf(stderr, "dlopen: %s\n", dlerror());
-    }
-#else
-    m_debugger = nullptr;
-#endif
-}
-
-ImageGenerator::~ImageGenerator()
-{
-    vkDestroyPipeline(m_device, m_color_pipeline, nullptr);
-    vkDestroyPipeline(m_device, m_vector_pipeline, nullptr);
-    vkDestroyPipelineLayout(m_device, m_pipeline_layout, nullptr);
-    vkDestroyDescriptorSetLayout(m_device, m_descriptor_layout, nullptr);
-    vkDestroyShaderModule(m_device, m_shader, nullptr);
-    vkDestroyCommandPool(m_device, m_command_pool, nullptr);
-    vkDestroyDevice(m_device, nullptr);
-    if (m_debug_messenger)
-        s_vkDestroyDebugUtilsMessenger(m_instance, m_debug_messenger, nullptr);
-    vkDestroyInstance(m_instance, nullptr);
-}
-
-void ImageGenerator::create_instance()
+static void create_instance()
 {
     unsigned int n;
     std::vector<const char*> instance_extensions;
@@ -140,18 +118,18 @@ void ImageGenerator::create_instance()
     createinfo.ppEnabledLayerNames = INSTANCE_LAYERS;
     createinfo.enabledExtensionCount = instance_extensions.size();
     createinfo.ppEnabledExtensionNames = instance_extensions.data();
-    VK_DEMAND(vkCreateInstance(&createinfo, nullptr, &m_instance));
-    volkLoadInstance(m_instance);
+    VK_DEMAND(vkCreateInstance(&createinfo, nullptr, &s_instance));
+    volkLoadInstance(s_instance);
 }
 
-void ImageGenerator::create_debug_messenger()
+static void create_debug_messenger()
 {
     if (ENABLE_VALIDATION_LAYERS == false)
         return;
 
-    auto vkCreateDebugUtilsMessenger = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(m_instance, "vkCreateDebugUtilsMessengerEXT");
+    auto vkCreateDebugUtilsMessenger = (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(s_instance, "vkCreateDebugUtilsMessengerEXT");
     if (s_vkDestroyDebugUtilsMessenger == nullptr)
-        s_vkDestroyDebugUtilsMessenger = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(m_instance, "vkDestroyDebugUtilsMessengerEXT");
+        s_vkDestroyDebugUtilsMessenger = (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(s_instance, "vkDestroyDebugUtilsMessengerEXT");
     if (vkCreateDebugUtilsMessenger == nullptr || s_vkDestroyDebugUtilsMessenger == nullptr) {
         std::cerr << "[F] Requested extension " VK_EXT_DEBUG_UTILS_EXTENSION_NAME " not present" << std::endl;
         std::abort();
@@ -163,22 +141,22 @@ void ImageGenerator::create_debug_messenger()
     createinfo.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     createinfo.pfnUserCallback = vk_debug_callback;
 
-    VK_DEMAND(vkCreateDebugUtilsMessenger(m_instance, &createinfo, nullptr, &m_debug_messenger));
+    VK_DEMAND(vkCreateDebugUtilsMessenger(s_instance, &createinfo, nullptr, &s_debug_messenger));
 }
 
-void ImageGenerator::pick_physical_device()
+static void pick_physical_device()
 {
     uint32_t device_count = 0;
     std::vector<VkPhysicalDevice> devices;
-    vkEnumeratePhysicalDevices(m_instance, &device_count, nullptr);
+    vkEnumeratePhysicalDevices(s_instance, &device_count, nullptr);
     devices.resize(device_count);
-    vkEnumeratePhysicalDevices(m_instance, &device_count, devices.data());
+    vkEnumeratePhysicalDevices(s_instance, &device_count, devices.data());
 
     VkPhysicalDevice dGPU = VK_NULL_HANDLE, iGPU = VK_NULL_HANDLE;
     for (auto& device : devices) {
         VkPhysicalDeviceProperties device_props;
         vkGetPhysicalDeviceProperties(device, &device_props);
-        m_hwd = device;
+        s_hwd = device;
         if (device_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             dGPU = device;
         } else if (device_props.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU) {
@@ -186,39 +164,39 @@ void ImageGenerator::pick_physical_device()
         }
     }
 
-    // m_hwd is the last device that is barely usable; dGPU is the first discrete GPU; iGPU is the first integrated GPU.
+    // s_hwd is the last device that is barely usable; dGPU is the first discrete GPU; iGPU is the first integrated GPU.
     if (dGPU != VK_NULL_HANDLE)
-        m_hwd = dGPU;
+        s_hwd = dGPU;
     else if (iGPU != VK_NULL_HANDLE)
-        m_hwd = iGPU;
+        s_hwd = iGPU;
 }
 
-void ImageGenerator::create_logical_device()
+static void create_logical_device()
 {
     uint32_t count = 0;
     std::vector<VkExtensionProperties> available_exts;
     std::vector<const char*> extensions;
-    if (m_hwd == VK_NULL_HANDLE) {
+    if (s_hwd == VK_NULL_HANDLE) {
         std::cerr << "[F] no Vulkan devices were found on this machine" << std::endl;
         std::abort();
     }
 
-    vkEnumerateDeviceExtensionProperties(m_hwd, nullptr, &count, nullptr);
+    vkEnumerateDeviceExtensionProperties(s_hwd, nullptr, &count, nullptr);
     available_exts.resize(count);
-    vkEnumerateDeviceExtensionProperties(m_hwd, nullptr, &count, available_exts.data());
+    vkEnumerateDeviceExtensionProperties(s_hwd, nullptr, &count, available_exts.data());
     for (auto& ext : available_exts) {
         if (strcmp(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME, ext.extensionName) == 0)
             extensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
     }
 
     VkPhysicalDeviceProperties properties {};
-    vkGetPhysicalDeviceProperties(m_hwd, &properties);
+    vkGetPhysicalDeviceProperties(s_hwd, &properties);
     std::cerr << "[I] selecting device " << properties.deviceName << std::endl;
 
     std::vector<VkQueueFamilyProperties> qf_properties;
-    vkGetPhysicalDeviceQueueFamilyProperties(m_hwd, &count, nullptr);
+    vkGetPhysicalDeviceQueueFamilyProperties(s_hwd, &count, nullptr);
     qf_properties.resize(count);
-    vkGetPhysicalDeviceQueueFamilyProperties(m_hwd, &count, qf_properties.data());
+    vkGetPhysicalDeviceQueueFamilyProperties(s_hwd, &count, qf_properties.data());
 
     uint32_t qf_primary = UINT32_MAX;
     for (uint32_t i = 0; i < count; i++) {
@@ -244,24 +222,24 @@ void ImageGenerator::create_logical_device()
     createinfo.enabledExtensionCount = extensions.size();
     createinfo.ppEnabledExtensionNames = extensions.data();
     createinfo.pEnabledFeatures = &features;
-    VK_DEMAND(vkCreateDevice(m_hwd, &createinfo, nullptr, &m_device));
-    volkLoadDevice(m_device);
-    vkGetDeviceQueue(m_device, qf_primary, 0, &m_queue);
+    VK_DEMAND(vkCreateDevice(s_hwd, &createinfo, nullptr, &s_device));
+    volkLoadDevice(s_device);
+    vkGetDeviceQueue(s_device, qf_primary, 0, &s_queue);
 
     VkCommandPoolCreateInfo cmdpool_ci = {};
     cmdpool_ci.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     cmdpool_ci.queueFamilyIndex = qf_primary;
     cmdpool_ci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    VK_DEMAND(vkCreateCommandPool(m_device, &cmdpool_ci, nullptr, &m_command_pool));
+    VK_DEMAND(vkCreateCommandPool(s_device, &cmdpool_ci, nullptr, &s_command_pool));
 }
 
-void ImageGenerator::create_pipeline()
+static void create_pipeline()
 {
     VkShaderModuleCreateInfo shader_ci {};
     shader_ci.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
     shader_ci.codeSize = resample_spv_size;
     shader_ci.pCode = resample_spv;
-    VK_DEMAND(vkCreateShaderModule(m_device, &shader_ci, nullptr, &m_shader));
+    VK_DEMAND(vkCreateShaderModule(s_device, &shader_ci, nullptr, &s_shader));
 
     VkDescriptorSetLayoutBinding bindings[] = {
         { 0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr },
@@ -271,13 +249,13 @@ void ImageGenerator::create_pipeline()
     dlci.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
     dlci.bindingCount = 2;
     dlci.pBindings = bindings;
-    VK_DEMAND(vkCreateDescriptorSetLayout(m_device, &dlci, nullptr, &m_descriptor_layout));
+    VK_DEMAND(vkCreateDescriptorSetLayout(s_device, &dlci, nullptr, &s_descriptor_layout));
 
     VkPipelineLayoutCreateInfo layout_ci {};
     layout_ci.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
     layout_ci.setLayoutCount = 1;
-    layout_ci.pSetLayouts = &m_descriptor_layout;
-    VK_DEMAND(vkCreatePipelineLayout(m_device, &layout_ci, nullptr, &m_pipeline_layout));
+    layout_ci.pSetLayouts = &s_descriptor_layout;
+    VK_DEMAND(vkCreatePipelineLayout(s_device, &layout_ci, nullptr, &s_pipeline_layout));
 
     std::array<uint32_t, 2> spec_data = { 0, 1 };
     VkSpecializationMapEntry entry {};
@@ -290,100 +268,30 @@ void ImageGenerator::create_pipeline()
         createinfo[i].sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
         createinfo[i].stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         createinfo[i].stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        createinfo[i].stage.module = m_shader;
+        createinfo[i].stage.module = s_shader;
         createinfo[i].stage.pName = "main";
         createinfo[i].stage.pSpecializationInfo = &spec_info[i];
-        createinfo[i].layout = m_pipeline_layout;
+        createinfo[i].layout = s_pipeline_layout;
         spec_info[i].mapEntryCount = 1;
         spec_info[i].pMapEntries = &entry;
         spec_info[i].dataSize = sizeof(uint32_t);
         spec_info[i].pData = &spec_data[i];
     }
-    VK_DEMAND(vkCreateComputePipelines(m_device, nullptr, createinfo.size(), createinfo.data(), nullptr, pipeline.data()));
-    m_color_pipeline = pipeline[0];
-    m_vector_pipeline = pipeline[1];
+    VK_DEMAND(vkCreateComputePipelines(s_device, nullptr, createinfo.size(), createinfo.data(), nullptr, pipeline.data()));
+    s_color_pipeline = pipeline[0];
+    s_vector_pipeline = pipeline[1];
 }
 
-uint32_t ImageGenerator::find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags flags)
+static uint32_t find_memory_type(uint32_t type_filter, VkMemoryPropertyFlags flags)
 {
     VkPhysicalDeviceMemoryProperties props;
-    vkGetPhysicalDeviceMemoryProperties(m_hwd, &props);
+    vkGetPhysicalDeviceMemoryProperties(s_hwd, &props);
 
     for (uint32_t i = 0; i < props.memoryTypeCount; i++) {
         if ((type_filter & (1 << i)) && (props.memoryTypes[i].propertyFlags & flags) == flags)
             return i;
     }
     return UINT32_MAX;
-}
-
-static int stb_io_read(void* user, char* data, int size)
-{
-    std::ifstream* self = reinterpret_cast<std::ifstream*>(user);
-    self->read(data, size);
-    return self->gcount();
-}
-
-static void stb_io_skip(void* user, int n)
-{
-    std::ifstream* self = reinterpret_cast<std::ifstream*>(user);
-    self->seekg(n, std::ios_base::cur);
-}
-
-static int stb_io_eof(void* user)
-{
-    std::ifstream* self = reinterpret_cast<std::ifstream*>(user);
-    return self->eof();
-}
-
-ImageGenerator::SerializedImage ImageGenerator::generate(std::span<const std::byte> image_data, bool is_vector_image)
-{
-    int width, height, n;
-    const stbi_uc* image_ptr = reinterpret_cast<const stbi_uc*>(image_data.data());
-    if (stbi_is_hdr_from_memory(image_ptr, image_data.size())) {
-        float* rd = stbi_loadf_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
-        if (rd)
-            return generate(rd, width, height, VK_FORMAT_R32G32B32A32_SFLOAT, is_vector_image);
-        else
-            std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
-    } else if (stbi_is_16_bit_from_memory(image_ptr, image_data.size())) {
-        stbi_us* rd = stbi_load_16_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
-        if (rd)
-            return generate(rd, width, height, VK_FORMAT_R16G16B16A16_UINT, is_vector_image);
-        else
-            std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
-    } else {
-        stbi_uc* rd = stbi_load_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
-        if (rd)
-            return generate(rd, width, height, VK_FORMAT_R8G8B8A8_SRGB, is_vector_image);
-        else
-            std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
-    }
-    return SerializedImage();
-}
-
-ImageGenerator::SerializedImage ImageGenerator::generate(const std::filesystem::path& in, bool is_vector_image)
-{
-    int x, y, n;
-    if (stbi_is_hdr(in.c_str())) {
-        float* rd = stbi_loadf(in.c_str(), &x, &y, &n, 4);
-        if (rd)
-            return generate(rd, x, y, VK_FORMAT_R32G32B32A32_SFLOAT, is_vector_image);
-        else
-            std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
-    } else if (stbi_is_16_bit(in.c_str())) {
-        stbi_us* rd = stbi_load_16(in.c_str(), &x, &y, &n, 4);
-        if (rd)
-            return generate(rd, x, y, VK_FORMAT_R16G16B16A16_UINT, is_vector_image);
-        else
-            std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
-    } else {
-        stbi_uc* rd = stbi_load(in.c_str(), &x, &y, &n, 4);
-        if (rd)
-            return generate(rd, x, y, VK_FORMAT_R8G8B8A8_SRGB, is_vector_image);
-        else
-            std::cerr << "[E] failed to decode image " << in << ": " << stbi_failure_reason() << std::endl;
-    }
-    return SerializedImage();
 }
 
 static int format_size(VkFormat fmt)
@@ -401,7 +309,7 @@ static int format_size(VkFormat fmt)
     }
 }
 
-ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, int width, int height, VkFormat input_format, bool is_vector_image)
+static std::vector<std::byte> generate_image(void* raw_image_data, int width, int height, VkFormat input_format, bool is_vector_image)
 {
     size_t mip_count = 1 + floor(log2(std::max(width, height)));
     VkDescriptorPool descriptor_pool;
@@ -413,7 +321,7 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     descriptor_pool_ci.maxSets = mip_count * 2;
     descriptor_pool_ci.poolSizeCount = 1;
     descriptor_pool_ci.pPoolSizes = descriptor_pool_sizes;
-    VK_DEMAND(vkCreateDescriptorPool(m_device, &descriptor_pool_ci, nullptr, &descriptor_pool));
+    VK_DEMAND(vkCreateDescriptorPool(s_device, &descriptor_pool_ci, nullptr, &descriptor_pool));
 
     VkBuffer staging_buffer;
     VkDeviceMemory staging_buffer_mem;
@@ -421,7 +329,7 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     buffer_ci.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     buffer_ci.size = width * height * format_size(input_format) * 2;
     buffer_ci.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    VK_DEMAND(vkCreateBuffer(m_device, &buffer_ci, nullptr, &staging_buffer));
+    VK_DEMAND(vkCreateBuffer(s_device, &buffer_ci, nullptr, &staging_buffer));
 
     VkImage staging_image, storage_image, output_image;
     VkDeviceMemory staging_image_mem, storage_image_mem, output_image_mem;
@@ -437,36 +345,36 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     image_ci.samples = VK_SAMPLE_COUNT_1_BIT;
     image_ci.tiling = VK_IMAGE_TILING_OPTIMAL;
     image_ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    VK_DEMAND(vkCreateImage(m_device, &image_ci, nullptr, &staging_image));
+    VK_DEMAND(vkCreateImage(s_device, &image_ci, nullptr, &staging_image));
     image_ci.mipLevels = mip_count;
-    VK_DEMAND(vkCreateImage(m_device, &image_ci, nullptr, &output_image));
+    VK_DEMAND(vkCreateImage(s_device, &image_ci, nullptr, &output_image));
     image_ci.format = VK_FORMAT_R32G32B32A32_SFLOAT;
     image_ci.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-    VK_DEMAND(vkCreateImage(m_device, &image_ci, nullptr, &storage_image));
+    VK_DEMAND(vkCreateImage(s_device, &image_ci, nullptr, &storage_image));
 
     VkMemoryAllocateInfo alloc_info {};
     VkMemoryRequirements mem_requirements;
-    vkGetBufferMemoryRequirements(m_device, staging_buffer, &mem_requirements);
+    vkGetBufferMemoryRequirements(s_device, staging_buffer, &mem_requirements);
     alloc_info.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
     alloc_info.allocationSize = mem_requirements.size;
     alloc_info.memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-    VK_DEMAND(vkAllocateMemory(m_device, &alloc_info, nullptr, &staging_buffer_mem));
-    VK_DEMAND(vkBindBufferMemory(m_device, staging_buffer, staging_buffer_mem, 0));
-    vkGetImageMemoryRequirements(m_device, staging_image, &mem_requirements);
+    VK_DEMAND(vkAllocateMemory(s_device, &alloc_info, nullptr, &staging_buffer_mem));
+    VK_DEMAND(vkBindBufferMemory(s_device, staging_buffer, staging_buffer_mem, 0));
+    vkGetImageMemoryRequirements(s_device, staging_image, &mem_requirements);
     alloc_info.allocationSize = mem_requirements.size;
     alloc_info.memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VK_DEMAND(vkAllocateMemory(m_device, &alloc_info, nullptr, &staging_image_mem));
-    VK_DEMAND(vkBindImageMemory(m_device, staging_image, staging_image_mem, 0));
-    vkGetImageMemoryRequirements(m_device, storage_image, &mem_requirements);
+    VK_DEMAND(vkAllocateMemory(s_device, &alloc_info, nullptr, &staging_image_mem));
+    VK_DEMAND(vkBindImageMemory(s_device, staging_image, staging_image_mem, 0));
+    vkGetImageMemoryRequirements(s_device, storage_image, &mem_requirements);
     alloc_info.allocationSize = mem_requirements.size;
     alloc_info.memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VK_DEMAND(vkAllocateMemory(m_device, &alloc_info, nullptr, &storage_image_mem));
-    VK_DEMAND(vkBindImageMemory(m_device, storage_image, storage_image_mem, 0));
-    vkGetImageMemoryRequirements(m_device, output_image, &mem_requirements);
+    VK_DEMAND(vkAllocateMemory(s_device, &alloc_info, nullptr, &storage_image_mem));
+    VK_DEMAND(vkBindImageMemory(s_device, storage_image, storage_image_mem, 0));
+    vkGetImageMemoryRequirements(s_device, output_image, &mem_requirements);
     alloc_info.allocationSize = mem_requirements.size;
     alloc_info.memoryTypeIndex = find_memory_type(mem_requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-    VK_DEMAND(vkAllocateMemory(m_device, &alloc_info, nullptr, &output_image_mem));
-    VK_DEMAND(vkBindImageMemory(m_device, output_image, output_image_mem, 0));
+    VK_DEMAND(vkAllocateMemory(s_device, &alloc_info, nullptr, &output_image_mem));
+    VK_DEMAND(vkBindImageMemory(s_device, output_image, output_image_mem, 0));
 
     std::vector<VkImageView> image_views(mip_count);
     VkImageViewCreateInfo image_view_ci {};
@@ -480,22 +388,22 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     image_view_ci.subresourceRange.layerCount = 1;
     for (size_t i = 0; i < mip_count; i++) {
         image_view_ci.subresourceRange.baseMipLevel = i;
-        VK_DEMAND(vkCreateImageView(m_device, &image_view_ci, nullptr, &image_views[i]));
+        VK_DEMAND(vkCreateImageView(s_device, &image_view_ci, nullptr, &image_views[i]));
     }
 
     void* sbdata;
-    VK_DEMAND(vkMapMemory(m_device, staging_buffer_mem, 0, VK_WHOLE_SIZE, 0, &sbdata));
+    VK_DEMAND(vkMapMemory(s_device, staging_buffer_mem, 0, VK_WHOLE_SIZE, 0, &sbdata));
     memcpy(sbdata, raw_image_data, width * height * format_size(input_format));
-    vkUnmapMemory(m_device, staging_buffer_mem);
+    vkUnmapMemory(s_device, staging_buffer_mem);
     STBI_FREE(raw_image_data);
 
     VkCommandBuffer cmd;
     VkCommandBufferAllocateInfo cb_info {};
     cb_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     cb_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cb_info.commandPool = m_command_pool;
+    cb_info.commandPool = s_command_pool;
     cb_info.commandBufferCount = 1;
-    VK_DEMAND(vkAllocateCommandBuffers(m_device, &cb_info, &cmd));
+    VK_DEMAND(vkAllocateCommandBuffers(s_device, &cb_info, &cmd));
 
     std::vector<VkDescriptorSet> descriptor_sets(mip_count - 1);
     std::vector<VkDescriptorSetLayout> descriptor_alloc_layouts(descriptor_sets.size());
@@ -506,8 +414,8 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     descriptor_alloc_info.descriptorPool = descriptor_pool;
     descriptor_alloc_info.descriptorSetCount = descriptor_sets.size();
     descriptor_alloc_info.pSetLayouts = descriptor_alloc_layouts.data();
-    std::fill(descriptor_alloc_layouts.begin(), descriptor_alloc_layouts.end(), m_descriptor_layout);
-    vkAllocateDescriptorSets(m_device, &descriptor_alloc_info, descriptor_sets.data());
+    std::fill(descriptor_alloc_layouts.begin(), descriptor_alloc_layouts.end(), s_descriptor_layout);
+    vkAllocateDescriptorSets(s_device, &descriptor_alloc_info, descriptor_sets.data());
 
 #ifdef LINK_RENDERDOC
     if (m_debugger)
@@ -526,7 +434,7 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
         descriptor_images[i].imageView = image_views[(i + 1) / 2];
         descriptor_images[i].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
     }
-    vkUpdateDescriptorSets(m_device, descriptor_writes.size(), descriptor_writes.data(), 0, nullptr);
+    vkUpdateDescriptorSets(s_device, descriptor_writes.size(), descriptor_writes.data(), 0, nullptr);
 
     VkCommandBufferBeginInfo begin_info {};
     begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -587,7 +495,7 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, is_vector_image ? m_vector_pipeline : m_color_pipeline);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, is_vector_image ? s_vector_pipeline : s_color_pipeline);
 
     size_t mip_width = width / 2, mip_height = height / 2;
     for (size_t i = 1; i < mip_count; i++) {
@@ -600,7 +508,7 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
             vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &barrier);
         }
 
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, m_pipeline_layout, 0, 1, &descriptor_sets[i - 1], 0, nullptr);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, s_pipeline_layout, 0, 1, &descriptor_sets[i - 1], 0, nullptr);
         vkCmdDispatch(cmd, (mip_width + 7) / 8, (mip_height + 7) / 8, 1);
         mip_width /= 2;
         mip_height /= 2;
@@ -652,14 +560,15 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     submit.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submit.commandBufferCount = 1;
     submit.pCommandBuffers = &cmd;
-    vkQueueSubmit(m_queue, 1, &submit, VK_NULL_HANDLE);
-    vkDeviceWaitIdle(m_device);
+    vkQueueSubmit(s_queue, 1, &submit, VK_NULL_HANDLE);
+    vkDeviceWaitIdle(s_device);
 
 #ifdef LINK_RENDERDOC
     if (m_debugger)
         reinterpret_cast<RENDERDOC_API_1_1_2*>(m_debugger)->EndFrameCapture(nullptr, nullptr);
 #endif
 
+    ktx_error_code_e res;
     ktxTexture2* out_handle;
     ktxTextureCreateInfo ktx_ci {};
     ktx_ci.vkFormat = input_format;
@@ -669,20 +578,20 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     ktx_ci.numDimensions = 2;
     ktx_ci.numLevels = mip_count;
     ktx_ci.numLayers = ktx_ci.numFaces = 1;
-    assert(ktxTexture2_Create(&ktx_ci, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &out_handle) == KTX_SUCCESS);
+    res = ktxTexture2_Create(&ktx_ci, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &out_handle);
+    assert(res == KTX_SUCCESS);
 
-    VK_DEMAND(vkMapMemory(m_device, staging_buffer_mem, 0, VK_WHOLE_SIZE, 0, &sbdata));
+    VK_DEMAND(vkMapMemory(s_device, staging_buffer_mem, 0, VK_WHOLE_SIZE, 0, &sbdata));
     for (size_t i = 0; i < mip_count; i++) {
-        assert(ktxTexture_SetImageFromMemory(ktxTexture(out_handle), i, 0, 0,
-                   reinterpret_cast<const uint8_t*>(sbdata) + writeout[i].bufferOffset,
-                   (width >> i) * (height >> i) * format_size(input_format))
-            == KTX_SUCCESS);
+        res = ktxTexture_SetImageFromMemory(ktxTexture(out_handle), i, 0, 0,
+            reinterpret_cast<const uint8_t*>(sbdata) + writeout[i].bufferOffset,
+            (width >> i) * (height >> i) * format_size(input_format));
+        assert(res == KTX_SUCCESS);
     }
-    vkUnmapMemory(m_device, staging_buffer_mem);
+    vkUnmapMemory(s_device, staging_buffer_mem);
 
-    if (input_format == VK_FORMAT_R8G8B8A8_SRGB && m_enable_uastc) {
+    if (input_format == VK_FORMAT_R8G8B8A8_SRGB && image_enable_uastc) {
         ktxBasisParams basis {};
-        ktx_error_code_e res;
         basis.structSize = sizeof(ktxBasisParams);
         basis.uastc = KTX_TRUE;
         basis.uastcRDO = KTX_TRUE;
@@ -696,19 +605,103 @@ ImageGenerator::SerializedImage ImageGenerator::generate(void* raw_image_data, i
     ktx_uint8_t* out_buffer;
     ktxTexture_WriteToMemory(ktxTexture(out_handle), &out_buffer, &out_size);
 
-    SerializedImage ser(out_buffer, out_size);
+    std::vector<std::byte> ser(out_size);
+    memcpy(ser.data(), out_buffer, out_size);
     ktxTexture_Destroy(ktxTexture(out_handle));
 
     for (auto it = image_views.begin(); it != image_views.end(); ++it)
-        vkDestroyImageView(m_device, *it, nullptr);
-    vkDestroyImage(m_device, staging_image, nullptr);
-    vkDestroyImage(m_device, storage_image, nullptr);
-    vkDestroyImage(m_device, output_image, nullptr);
-    vkDestroyBuffer(m_device, staging_buffer, nullptr);
-    vkFreeMemory(m_device, staging_buffer_mem, nullptr);
-    vkFreeMemory(m_device, staging_image_mem, nullptr);
-    vkFreeMemory(m_device, storage_image_mem, nullptr);
-    vkFreeMemory(m_device, output_image_mem, nullptr);
-    vkDestroyDescriptorPool(m_device, descriptor_pool, nullptr);
+        vkDestroyImageView(s_device, *it, nullptr);
+    vkDestroyImage(s_device, staging_image, nullptr);
+    vkDestroyImage(s_device, storage_image, nullptr);
+    vkDestroyImage(s_device, output_image, nullptr);
+    vkDestroyBuffer(s_device, staging_buffer, nullptr);
+    vkFreeMemory(s_device, staging_buffer_mem, nullptr);
+    vkFreeMemory(s_device, staging_image_mem, nullptr);
+    vkFreeMemory(s_device, storage_image_mem, nullptr);
+    vkFreeMemory(s_device, output_image_mem, nullptr);
+    vkDestroyDescriptorPool(s_device, descriptor_pool, nullptr);
     return ser;
+}
+
+static struct ImageGeneratorRAII {
+    ImageGeneratorRAII()
+    {
+        if (volkInitialize() != VK_SUCCESS)
+            std::abort();
+        create_instance();
+        create_debug_messenger();
+        pick_physical_device();
+        create_logical_device();
+        create_pipeline();
+
+#ifdef LINK_RENDERDOC
+        if (void* mod = dlopen("/usr/lib/librenderdoc.so", RTLD_NOW)) {
+            pRENDERDOC_GetAPI s = (pRENDERDOC_GetAPI)dlsym(mod, "RENDERDOC_GetAPI");
+            int ret = s(eRENDERDOC_API_Version_1_1_2, &s_debugger);
+            assert(ret == 1);
+        } else {
+            fprintf(stderr, "dlopen: %s\n", dlerror());
+        }
+#else
+        s_debugger = nullptr;
+#endif
+    }
+    ~ImageGeneratorRAII()
+    {
+        vkDestroyPipeline(s_device, s_color_pipeline, nullptr);
+        vkDestroyPipeline(s_device, s_vector_pipeline, nullptr);
+        vkDestroyPipelineLayout(s_device, s_pipeline_layout, nullptr);
+        vkDestroyDescriptorSetLayout(s_device, s_descriptor_layout, nullptr);
+        vkDestroyShaderModule(s_device, s_shader, nullptr);
+        vkDestroyCommandPool(s_device, s_command_pool, nullptr);
+        vkDestroyDevice(s_device, nullptr);
+        if (s_debug_messenger)
+            s_vkDestroyDebugUtilsMessenger(s_instance, s_debug_messenger, nullptr);
+        vkDestroyInstance(s_instance, nullptr);
+    }
+} s_lifetime_manager;
+
+static int stb_io_read(void* user, char* data, int size)
+{
+    std::ifstream* self = reinterpret_cast<std::ifstream*>(user);
+    self->read(data, size);
+    return self->gcount();
+}
+
+static void stb_io_skip(void* user, int n)
+{
+    std::ifstream* self = reinterpret_cast<std::ifstream*>(user);
+    self->seekg(n, std::ios_base::cur);
+}
+
+static int stb_io_eof(void* user)
+{
+    std::ifstream* self = reinterpret_cast<std::ifstream*>(user);
+    return self->eof();
+}
+
+std::vector<std::byte> generate_image(std::span<const std::byte> image_data, bool is_vector_image)
+{
+    int width, height, n;
+    const stbi_uc* image_ptr = reinterpret_cast<const stbi_uc*>(image_data.data());
+    if (stbi_is_hdr_from_memory(image_ptr, image_data.size())) {
+        float* rd = stbi_loadf_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
+        if (rd)
+            return generate_image(rd, width, height, VK_FORMAT_R32G32B32A32_SFLOAT, is_vector_image);
+        else
+            std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
+    } else if (stbi_is_16_bit_from_memory(image_ptr, image_data.size())) {
+        stbi_us* rd = stbi_load_16_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
+        if (rd)
+            return generate_image(rd, width, height, VK_FORMAT_R16G16B16A16_UINT, is_vector_image);
+        else
+            std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
+    } else {
+        stbi_uc* rd = stbi_load_from_memory(image_ptr, image_data.size(), &width, &height, &n, 4);
+        if (rd)
+            return generate_image(rd, width, height, VK_FORMAT_R8G8B8A8_SRGB, is_vector_image);
+        else
+            std::cerr << "[E] failed to decode image: " << stbi_failure_reason() << std::endl;
+    }
+    return {};
 }

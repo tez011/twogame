@@ -40,7 +40,7 @@ class SceneHost final {
     std::unordered_map<IScene*, uint64_t> m_scenes;
     std::queue<std::pair<IScene*, frame_number_t>> m_purge_queue;
     std::atomic_uint64_t m_max_ticket;
-    bool m_active;
+    std::atomic_bool m_active;
 
     // Owned by render thread
     std::unique_ptr<IRenderer> m_renderer;

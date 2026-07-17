@@ -15,7 +15,7 @@ class DemoScene : public twogame::IScene {
 public:
     DemoScene()
     {
-        twogame::SceneManifest assets("/data/sponza_base.tgs");
+        twogame::SceneManifest assets("/d0/sponza_base.tgs");
         m_assets += assets.assets();
         m_scenegraph = assets.scene();
         m_cameras.assign(assets.cameras().begin(), assets.cameras().end());
@@ -42,44 +42,26 @@ public:
             }
         }
     }
+};
 
-    virtual void logic(uint64_t frame_number, uint64_t frame_time, uint64_t delta_time, twogame::SceneHost* stage) override
-    {
-        if (m_cameras.empty()) {
-            // Fox
-            // vec3s eye = { { 100.f,
-            //           100.f,
-            //           150.f } },
-            //       toward = { { 0,
-            //           50.f,
-            //           0 } },
-            //       up = { { 0,
-            //           1.f,
-            //           0 } };
-            // Bars/Cube
-            // vec3s eye = { { 0.f,
-            //           2.f,
-            //           3.f } },
-            //       toward = { { 0,
-            //           1.f,
-            //           0 } },
-            //       up = { { 0,
-            //           1.f,
-            //           0 } };
-            // Sponza
-            vec3s eye = { { -4.f,
-                      1.5f,
-                      -0.5f } },
-                  toward = { { -3.f,
-                      2.f,
-                      -0.5f } },
-                  up = { { 0,
-                      1.f,
-                      0 } };
-            m_binding_zero[frame_number % FRAMES_IN_FLIGHT].view = glms_lookat(eye, toward, up);
+static SDL_EnumerationResult find_resource_packs(void* ud, const char* dirname, const char* fname)
+{
+    static char fullpath[3072], mountpoint[1024];
+    snprintf(fullpath, sizeof(fullpath), "%s%s", dirname, fname);
+    SDL_PathInfo path_info;
+    if (SDL_GetPathInfo(fullpath, &path_info) && (path_info.type == SDL_PATHTYPE_FILE || path_info.type == SDL_PATHTYPE_DIRECTORY)) {
+        const char* ext = strrchr(fname, '.');
+        if (ext != nullptr && strncasecmp(ext, ".pk2", 4) == 0) {
+            snprintf(mountpoint, 1024, "/%.*s", static_cast<int>(ext - fname), fname);
+            if (PHYSFS_mount(fullpath, mountpoint, 1) == 0) {
+                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "failed to mount %s -> %s/: %s", fullpath, mountpoint, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+            } else {
+                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "mounted %s -> %s/", fullpath, mountpoint);
+            }
         }
     }
-};
+    return SDL_ENUM_CONTINUE;
+}
 
 SDL_AppResult SDL_AppInit(void** _appstate, int argc, char** argv)
 {
@@ -98,47 +80,21 @@ SDL_AppResult SDL_AppInit(void** _appstate, int argc, char** argv)
         return SDL_APP_FAILURE;
     }
 
-#ifdef DEBUG_BUILD
-    constexpr const char* rsrc_root = TWOGAME_SOURCE_ROOT "/resources";
-    constexpr const char* pref_root = TWOGAME_SOURCE_ROOT "/prefs";
-    if (PHYSFS_init(argv[0]) == 0) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "PHYSFS_init: %s", PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
-        return SDL_APP_FAILURE;
-    }
-    if (PHYSFS_mount(rsrc_root, "/data", 0) == 0) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "mount %s -> /data/: %s", rsrc_root, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
-        return SDL_APP_FAILURE;
-    }
-    if (PHYSFS_mount(pref_root, "/pref", 1) == 0) {
-        SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "mount %s -> /pref/: %s", pref_root, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
-        return SDL_APP_FAILURE;
-    }
-    PHYSFS_setWriteDir(pref_root);
-#else
-    twogame::init_filesystem(argv[0], SHORT_ORG_NAME, SHORT_APP_NAME);
-    char mountpoint[4096];
     const char* base_path = SDL_GetBasePath();
-
     if (PHYSFS_init(argv[0]) == 0) {
         SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "PHYSFS_init: %s", PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
         return SDL_APP_FAILURE;
     }
-    for (const auto& dirent : std::filesystem::directory_iterator(base_path)) {
-        if (dirent.is_regular_file() == false && dirent.is_directory() == false)
-            continue;
+    SDL_LogDebug(SDL_LOG_CATEGORY_APPLICATION, "searching for resource packs in %s", base_path);
+    SDL_EnumerateDirectory(base_path, find_resource_packs, nullptr);
 
-        const auto& path = dirent.path();
-        if (path.has_filename() && path.has_stem() && strncasecmp(path.extension().c_str(), ".pk2", 4) == 0) {
-            const char* fullpath = path.c_str();
-            snprintf(mountpoint, 4096, "/%s", path.stem().c_str());
-            if (PHYSFS_mount(fullpath, mountpoint, 1) == 0) {
-                SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "failed to mount %s -> %s/: %s", fullpath, mountpoint, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
-            } else {
-                SDL_LogInfo(SDL_LOG_CATEGORY_APPLICATION, "mounted %s -> %s/", fullpath, mountpoint);
-            }
-        }
+#ifdef DEBUG_BUILD
+    if (PHYSFS_mount(TWOGAME_SOURCE_ROOT "/prefs", "/pref", 1) == 0) {
+        SDL_LogCritical(SDL_LOG_CATEGORY_ERROR, "mount " TWOGAME_SOURCE_ROOT "/prefs -> /pref/: %s", PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));
+        return SDL_APP_FAILURE;
     }
-
+    PHYSFS_setWriteDir(TWOGAME_SOURCE_ROOT "/prefs");
+#else
     char* pref_path = SDL_GetPrefPath(SHORT_ORG_NAME, SHORT_APP_NAME);
     if (PHYSFS_mount(pref_path, "/pref", 1) == 0) {
         SDL_LogCritical(SDL_LOG_CATEGORY_APPLICATION, "failed to mount %s -> /pref/: %s", pref_path, PHYSFS_getErrorByCode(PHYSFS_getLastErrorCode()));

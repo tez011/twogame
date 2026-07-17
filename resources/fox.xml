@@ -1,0 +1,13 @@
+<scene>
+    <glTF source="glTF/Fox/glTF-Binary/Fox.glb" />
+
+    <graph>
+        <node>
+            <camera>1</camera>
+            <transform>
+                <translation>100.0 0.0 150.0</translation>
+                <rotation>0.129076 0.287137 0.039081 0.948348</rotation>
+            </transform>
+        </node>
+    </graph>
+</scene>

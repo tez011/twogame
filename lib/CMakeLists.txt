@@ -24,11 +24,6 @@ CPMAddPackage(NAME physicsfs
               GIT_REPOSITORY https://github.com/icculus/physfs.git
               GIT_TAG release-3.2.0
               DOWNLOAD_ONLY TRUE)
-CPMAddPackage(NAME pugixml
-              VERSION 1.15
-              GIT_REPOSITORY https://github.com/zeux/pugixml.git
-              EXCLUDE_FROM_ALL TRUE
-              OPTIONS "BUILD_SHARED_LIBS OFF")
 CPMAddPackage(NAME vulkanmemoryallocator
               VERSION 3.3.0
               GIT_REPOSITORY https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git

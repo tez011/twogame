@@ -103,13 +103,7 @@ table Animation {
     targets: [AnimationTarget];
 }
 
-table Names {
-    images: [string];
-    materials: [string];
-    meshes: [string];
-    animations: [string];
-}
-table Assets {
+table Scene {
     buffers: [ulong];
     images: [uint32];
     materials: [Material];
@@ -118,7 +112,6 @@ table Assets {
     roots: [uint]; // SceneNode*
     skeletons: [Skeleton];
     animations: [Animation];
-    names: Names;
 }
 
-root_type Assets;
+root_type Scene;

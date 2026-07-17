@@ -11,7 +11,7 @@
 namespace twogame {
 
 namespace fbs {
-    struct Assets;
+    struct Scene;
 }
 
 class AssetContainer {
@@ -39,7 +39,7 @@ public:
 };
 
 class SceneManifest {
-    std::shared_ptr<const fbs::Assets> m_manifest;
+    std::shared_ptr<const fbs::Scene> m_manifest;
     AssetContainer m_container;
     SceneGraph m_scenegraph;
     std::vector<CameraNode> m_cameras;
@@ -48,7 +48,7 @@ class SceneManifest {
 
 public:
     SceneManifest(const std::string& path);
-    inline std::shared_ptr<const fbs::Assets> manifest() const { return m_manifest; }
+    inline std::shared_ptr<const fbs::Scene> manifest() const { return m_manifest; }
     inline const AssetContainer& assets() const { return m_container; }
     inline const SceneGraph& scene() const { return m_scenegraph; }
     inline std::span<const CameraNode> cameras() const { return m_cameras; }
@@ -62,7 +62,8 @@ public:
             out.resize((nsz + sizeof(T) - 1) / sizeof(T));
             return out.data();
         };
-        SDL_assert(m_slurp_buffer(i, resize));
+        if (m_slurp_buffer(i, resize) == false)
+            std::abort();
         return out;
     }
     template <typename T = std::byte>
@@ -74,7 +75,8 @@ public:
                 out.resize((nsz + sizeof(T) - 1) / sizeof(T));
                 return out.data();
             };
-            SDL_assert(slurp(i, resize));
+            if (slurp(i, resize) == false)
+                std::abort();
             return out;
         };
     }

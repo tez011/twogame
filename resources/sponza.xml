@@ -1,0 +1,13 @@
+<scene>
+    <glTF source="glTF/Sponza/glTF/Sponza.gltf" />
+
+    <graph>
+        <node>
+            <camera>1</camera>
+            <transform>
+                <translation>-4.0 1.5 -0.5</translation>
+                <rotation>0.1625 -0.6882 0.1625 0.6882</rotation>
+            </transform>
+        </node>
+    </graph>
+</scene>

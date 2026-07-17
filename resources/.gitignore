@@ -1,3 +1,2 @@
-*.bin
-*.ktx2
-*.tgs
+# for i in ...; do ln -s /glTF-Sample-Assets/Models/$i glTF/$i; done
+glTF/

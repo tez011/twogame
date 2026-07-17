@@ -48,8 +48,8 @@ public:
     inline mat4s ortho_projection() const { return m_ortho_projection; }
     inline VkPipeline graphics_pipeline(size_t i) const { return m_graphics_pipelines.at(i); }
     inline VkPipelineLayout pipeline_layout(size_t i) const { return m_pipeline_layouts.at(i); }
-    inline auto descriptor_set_layouts() const { return m_descriptor_set_layout; }
-    inline auto samplers() const { return m_samplers; }
+    inline auto& descriptor_set_layouts() const { return m_descriptor_set_layout; }
+    inline auto& samplers() const { return m_samplers; }
 
     virtual Output draw(uint32_t frame_number) = 0;
     virtual void recreate_subpass_data(uint32_t frame_number) = 0;

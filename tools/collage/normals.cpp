@@ -14,7 +14,7 @@ std::pair<StaticVector<std::byte>, ComponentType> writeIndices(PrimitiveType typ
 
 }
 
-void generate_mesh_normals(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
+static void generate_mesh_normals(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
 {
     auto& acc_positions = asset.accessors[mesh.findAttribute("POSITION")->accessorIndex];
     std::vector<fvec3> positions(acc_positions.count);
@@ -282,7 +282,7 @@ static void mikk_setTSpaceBasic(const SMikkTSpaceContext* context, const float* 
     ud->out_tangents[idx][3] = sign;
 }
 
-void generate_mesh_tangents(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
+static void generate_mesh_tangents(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
 {
     MikkUserData mud { asset };
     auto& acc_base_positions = asset.accessors[mesh.findAttribute("POSITION")->accessorIndex];
@@ -337,7 +337,8 @@ void generate_mesh_tangents(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
     SMikkTSpaceContext mikk_context;
     mikk_context.m_pInterface = &mikk_interface;
     mikk_context.m_pUserData = &mud;
-    assert(genTangSpaceDefault(&mikk_context));
+    if (!genTangSpaceDefault(&mikk_context))
+        std::abort();
 
     std::vector<fvec4> base_tangents = std::move(mud.out_tangents);
     std::vector<std::vector<fvec4>> morph_tangents(mesh.targets.size());
@@ -354,7 +355,8 @@ void generate_mesh_tangents(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
         }
         mud.positions = xposn.data();
         mud.normals = xnorm.data();
-        assert(genTangSpaceDefault(&mikk_context));
+        if (!genTangSpaceDefault(&mikk_context))
+            std::abort();
 
         morph_tangents[t].resize(mud.vertex_count);
         for (size_t i = 0; i < mud.vertex_count; i++)
@@ -400,7 +402,7 @@ void generate_mesh_tangents(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
     export_buffer.data = fastgltf::sources::Vector(std::move(export_data));
 }
 
-void generate_indexes(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
+static void generate_indexes(fastgltf::Asset& asset, fastgltf::Primitive& mesh)
 {
     auto* positionAttribute = mesh.findAttribute("POSITION");
     auto positionCount = asset.accessors[positionAttribute->accessorIndex].count;

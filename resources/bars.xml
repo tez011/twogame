@@ -1,0 +1,13 @@
+<scene>
+    <glTF source="glTF/MorphStressTest/glTF/MorphStressTest.gltf" />
+
+    <graph>
+        <node>
+            <camera>1</camera>
+            <transform>
+                <translation>0.0 2.0 3.0</translation>
+                <rotation>-0.1602 0.0 0.0 0.9871</rotation>
+            </transform>
+        </node>
+    </graph>
+</scene>

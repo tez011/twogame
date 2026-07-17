@@ -1,6 +1,6 @@
 #include "material.h"
-#include "asset.fbs.hpp"
 #include "render/staging_buffer.h"
+#include "scene.fbs.hpp"
 #include "scene/scene.h"
 #include "scene/scene_manifest.h"
 

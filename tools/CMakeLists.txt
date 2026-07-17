@@ -4,12 +4,16 @@ CPMAddPackage(NAME fastgltf
               VERSION 0.9.0
               GIT_REPOSITORY https://github.com/spnda/fastgltf.git
               EXCLUDE_FROM_ALL TRUE
-              OPTIONS "BUILD_SHARED_LIBS OFF"
-                      "FASTGLTF_ENABLE_KHR_PHYSICS_RIGID_BODIES ON")
+              OPTIONS "BUILD_SHARED_LIBS OFF")
 CPMAddPackage(NAME mikktspace
               GIT_REPOSITORY https://github.com/mmikk/MikkTSpace.git
               GIT_TAG 3e895b49d05ea07e4c2133156cfa94369e19e409
               DOWNLOAD_ONLY YES)
+CPMAddPackage(NAME pugixml
+              VERSION 1.15
+              GIT_REPOSITORY https://github.com/zeux/pugixml.git
+              EXCLUDE_FROM_ALL TRUE
+              OPTIONS "BUILD_SHARED_LIBS OFF")
 CPMAddPackage(NAME stb
               VERSION 2.30
               GIT_REPOSITORY https://github.com/nothings/stb.git
@@ -25,4 +29,4 @@ if (stb_ADDED)
     target_include_directories(stb_image INTERFACE "${stb_SOURCE_DIR}")
 endif()
 
-add_subdirectory(gltf2tg)
+add_subdirectory(collage)
